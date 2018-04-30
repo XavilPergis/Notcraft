@@ -10,35 +10,6 @@ use gl_api::shader::program::LinkedProgram;
 use gl_api::buffer::UsageType;
 use std::sync::mpsc;
 
-struct AroundVector {
-    center: Vector3<i32>,
-    radius: i32,
-    amount: i32,
-}
-
-impl AroundVector {
-    fn new(center: Vector3<i32>, radius: i32) -> Self {
-        AroundVector {
-            center,
-            radius,
-            amount: 0,
-        }
-    }
-}
-
-impl Iterator for AroundVector {
-    type Item = Vector3<i32>;
-    fn next(&mut self) -> Option<Self::Item> {
-        let length = 2*self.radius+1;
-        if self.amount >= length*length*length { return None; }
-        let x = self.amount % length;
-        let y = self.amount/length % length;
-        let z = self.amount/length/length % length;
-        self.amount += 1;
-        Some(Vector3::new(x, y, z) + self.center - Vector3::new(self.radius,self.radius,self.radius))
-    }
-}
-
 /// Get a chunk position from a world position
 fn get_chunk_pos(pos: Vector3<i32>) -> (Vector3<i32>, Vector3<i32>) {
     const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
@@ -86,7 +57,10 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         let (chunk_tx, chunk_rx) = mpsc::channel();
         thread::spawn(move || {
             while let Ok(request) = chunk_req_rx.recv() {
-                chunk_tx.send((request, generator.generate(request)));
+                // Unwrapping is fine here, since the only time the rx has hung up is after
+                // the lifetime of the program (or a panic), and in either case, we want to
+                // end this thread.
+                chunk_tx.send((request, generator.generate(request))).unwrap();
             }    
         });
 

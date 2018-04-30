@@ -1,5 +1,6 @@
 use gl;
 
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 #[repr(u32)]
 pub enum PolygonMode {

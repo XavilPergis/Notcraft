@@ -109,7 +109,8 @@ pub fn draw_frame(bbox: Aabb3<f32>, program: &mut LinkedProgram, thickness: f32)
         static ref DEBUG_VBO: Mutex<InternalBuffer> = Mutex::new(InternalBuffer(VertexBuffer::new()));
         static ref DEBUG_VAO: Mutex<InternalVao> = {
             let mut vao = VertexArray::new();
-            vao.add_buffer(&DEBUG_VBO.lock().unwrap().0);
+            // TODO: unwrap
+            vao.add_buffer(&DEBUG_VBO.lock().unwrap().0).unwrap();
             Mutex::new(InternalVao(vao))
         };
     }
@@ -121,8 +122,8 @@ pub fn draw_frame(bbox: Aabb3<f32>, program: &mut LinkedProgram, thickness: f32)
 
     program.bind();
     {
-        let vao = DEBUG_VAO.lock().unwrap().0.bind();
-        let mut vbo = &mut DEBUG_VBO.lock().unwrap().0;
+        DEBUG_VAO.lock().unwrap().0.bind();
+        let vbo = &mut DEBUG_VBO.lock().unwrap().0;
         vbo.upload(&buf, UsageType::Static).unwrap();
         vbo.bind();
     }

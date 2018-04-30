@@ -20,38 +20,11 @@ use collision::{Aabb3, Ray3};
 use gl_api::shader::program::LinkedProgram;
 use std::collections::HashSet;
 use glfw::{Action, Context, Key, Window, MouseButton, WindowEvent, WindowHint};
-use cgmath::{Deg, InnerSpace, Matrix4, Vector3};
-use noise::NoiseFn;
+use cgmath::{Deg, InnerSpace, Vector3};
 use engine::chunk_manager::ChunkManager;
-use engine::mesh::{IndexingType, Mesh};
 use engine::camera::Rotation;
-use gl_api::layout::InternalLayout;
 use gl_api::shader::*;
 use gl_api::misc;
-
-struct Entity<V: InternalLayout, I: IndexingType> {
-    mesh: Mesh<V, I>,
-    translation: Vector3<f32>,
-    rotation: Vector3<Deg<f32>>,
-    scale: f32
-}
-
-impl<V: InternalLayout, I: IndexingType> Entity<V, I> {
-    fn transform_matrix(&self) -> Matrix4<f32> {
-        let rotation_y = Matrix4::from_axis_angle(Vector3::unit_y(), self.rotation.y);
-        let rotation_z = Matrix4::from_axis_angle(Vector3::unit_z(), self.rotation.z);
-        let rotation_x = Matrix4::from_axis_angle(Vector3::unit_x(), self.rotation.x);
-        
-        Matrix4::from_translation(self.translation)
-            * rotation_x * rotation_y * rotation_z
-            * Matrix4::from_scale(self.scale)
-    }
-
-    pub fn draw_with(&self, pipeline: &mut LinkedProgram) {
-        pipeline.set_uniform("u_Transform", &self.transform_matrix());
-        self.mesh.draw_with(pipeline).unwrap();
-    }
-}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 enum Block {
@@ -115,7 +88,6 @@ struct Application {
     speed_z: f32,
     max_speed: f32,
     cam_acceleration: f32,
-    looking_at: Option<Vector3<f32>>,
 
     pipeline: LinkedProgram,
     debug_pipeline: LinkedProgram,
@@ -164,7 +136,6 @@ impl Application {
             max_speed: 1.5,
             cam_acceleration: 0.03,
             frames: 0,
-            looking_at: None,
             time: 0.0,
             wireframe: false,
             debug_frames: false,
@@ -359,7 +330,7 @@ fn main() {
 
     let program = simple_pipeline("resources/terrain.vs", "resources/terrain.fs")
         .expect("Pipeline creation failure");
-    let mut debug_program = simple_pipeline("resources/debug.vs", "resources/debug.fs")
+    let debug_program = simple_pipeline("resources/debug.vs", "resources/debug.fs")
         .expect("Pipeline creation failure");
 
     let mut application = Application::new(program, debug_program);

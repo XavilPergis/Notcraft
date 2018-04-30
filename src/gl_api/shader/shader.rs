@@ -9,13 +9,14 @@ fn shader_info_log(shader: &Shader) -> Option<String> {
     let id = shader.id;
     unsafe {
         let mut length = 0;
-        gl_call!(GetShaderiv(id, gl::INFO_LOG_LENGTH, &mut length));
+        gl_call!(GetShaderiv(id, gl::INFO_LOG_LENGTH, &mut length)).unwrap();
 
         if length == 0 {
             None
         } else {
             let mut buffer = Vec::<u8>::with_capacity(length as usize);
-            gl_call!(GetShaderInfoLog(id, length, ptr::null_mut(), buffer.as_mut_ptr() as *mut i8));
+            // TODO: unwrap
+            gl_call!(GetShaderInfoLog(id, length, ptr::null_mut(), buffer.as_mut_ptr() as *mut i8)).unwrap();
             buffer.set_len((length - 1) as usize);
 
             Some(String::from_utf8(buffer).expect("Shader info log was not UTF-8"))
@@ -23,6 +24,7 @@ fn shader_info_log(shader: &Shader) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
 #[repr(u32)]
 pub enum ShaderType {
     Vertex = gl::VERTEX_SHADER,
@@ -77,7 +79,7 @@ impl Shader {
             // the compile status is part of the Shader object's state
             let mut status = 1;
             gl_call!(CompileShader(self.id)).unwrap();
-            gl_call!(GetShaderiv(self.id, gl::COMPILE_STATUS, &mut status));
+            gl_call!(GetShaderiv(self.id, gl::COMPILE_STATUS, &mut status)).unwrap();
             if status == 0 {
                 let log = shader_info_log(&self).unwrap();
                 Err(ShaderError::Shader(log))
@@ -91,7 +93,7 @@ impl Shader {
 
 impl Drop for Shader {
     fn drop(&mut self) {
-        unsafe { gl_call!(DeleteShader(self.id)); }
+        unsafe { gl_call!(DeleteShader(self.id)).unwrap(); }
     }
 }
 

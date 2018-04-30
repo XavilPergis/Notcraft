@@ -7,10 +7,6 @@ use gl::types::*;
 use gl;
 use gl_api::uniform::{Uniform, UniformLocation};
 
-lazy_static! {
-    static ref OCCUPIED_TEXTURE_SLOTS: i32 = 0;
-}
-
 pub type TextureResult<T> = Result<T, TextureError>;
 pub enum TextureError {
     Image(ImageError),
@@ -89,7 +85,7 @@ impl Texture {
 impl Drop for Texture {
     fn drop(&mut self) {
         unsafe {
-            gl_call!(DeleteTextures(1, &self.id));
+            gl_call!(DeleteTextures(1, &self.id)).unwrap();
         }
     }
 }

@@ -49,9 +49,5 @@ impl<V: InternalLayout, I: IndexingType> Mesh<V, I> {
         unsafe { gl_call!(DrawElements(gl::TRIANGLES, self.indices.len() as i32, I::INDEX_TYPE, 0 as *const _)) }
     }
 
-    pub(crate) fn face_count(&self) -> usize {
-        self.indices.len() / 6
-    }
-
     pub fn vertex_count(&self) -> usize { self.vertices.len() }
 }

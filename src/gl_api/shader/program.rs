@@ -2,7 +2,6 @@ use super::super::error::{GlResult, GlError};
 use super::shader::CompiledShader;
 use std::collections::HashMap;
 use gl_api::uniform::*;
-use std::ptr;
 use gl::types::*;
 
 pub struct Program {
@@ -23,7 +22,7 @@ impl Program {
     }
 
     pub fn bind(&self) {
-        unsafe { gl_call!(UseProgram(self.id)); }
+        unsafe { gl_call!(UseProgram(self.id)).unwrap(); }
     }
 
     pub fn attach_shader(&self, shader: CompiledShader) {
@@ -78,29 +77,29 @@ pub enum LinkError {
     Gl(GlError),
 }
 
-fn check_program_status(id: GLuint, ty: GLenum) -> Result<(), String> {
-    let mut status = 1;
-    unsafe { gl_call!(GetProgramiv(id, ty, &mut status)); }
+// fn check_program_status(id: GLuint, ty: GLenum) -> Result<(), String> {
+//     let mut status = 1;
+//     unsafe { gl_call!(GetProgramiv(id, ty, &mut status)); }
 
-    if status == 0 {
-        Err(program_info_log(id).unwrap())
-    } else {
-        Ok(())
-    }
-}
+//     if status == 0 {
+//         Err(program_info_log(id).unwrap())
+//     } else {
+//         Ok(())
+//     }
+// }
 
-fn program_info_log(id: GLuint) -> Option<String> {
-    unsafe {
-        let mut length = 0;
-        gl_call!(GetProgramiv(id, gl::INFO_LOG_LENGTH, &mut length));
-        if length == 0 {
-            None
-        } else {
-            let mut buffer = Vec::<u8>::with_capacity(length as usize);
-            gl_call!(GetProgramInfoLog(id, length, ptr::null_mut(), buffer.as_mut_ptr() as *mut i8));
-            buffer.set_len((length - 1) as usize);
+// fn program_info_log(id: GLuint) -> Option<String> {
+//     unsafe {
+//         let mut length = 0;
+//         gl_call!(GetProgramiv(id, gl::INFO_LOG_LENGTH, &mut length));
+//         if length == 0 {
+//             None
+//         } else {
+//             let mut buffer = Vec::<u8>::with_capacity(length as usize);
+//             gl_call!(GetProgramInfoLog(id, length, ptr::null_mut(), buffer.as_mut_ptr() as *mut i8));
+//             buffer.set_len((length - 1) as usize);
 
-            Some(String::from_utf8(buffer).expect("Program info log was not UTF-8"))
-        }
-    }
-}
+//             Some(String::from_utf8(buffer).expect("Program info log was not UTF-8"))
+//         }
+//     }
+// }

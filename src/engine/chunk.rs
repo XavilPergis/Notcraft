@@ -51,15 +51,6 @@ impl<T> Chunk<T> {
         x < SIZE_I && y < SIZE_I && z < SIZE_I && x >= 0 && y >= 0 && z >= 0
     }
 
-    pub(crate) fn slice_row(&self, range: ::std::ops::Range<usize>, y: usize, z: usize) -> Option<&[T]> {
-        if range.end >= CHUNK_SIZE || y >= CHUNK_SIZE || z >= CHUNK_SIZE {
-            None
-        } else {
-            let zy = CHUNK_SIZE * CHUNK_SIZE * z + CHUNK_SIZE * y;
-            Some(&self.data[zy + range.start..zy + range.end])
-        }
-    }
-
     pub fn all_transparent(&self) -> bool {
         self.solid_count == 0
     }
@@ -207,69 +198,69 @@ impl<'c, T: Voxel + 'c> Mesher<ChunkVertex, u32> for CullMesher<'c, T> {
     }
 }
 
-pub struct GreedyMesher<'c, T: Voxel + 'c> {
-    chunk: &'c Chunk<T>,
-    visited_mask: Box<[bool]>,
-    vertices: Vec<ChunkVertex>,
-    indices: Vec<u32>,
-}
+// pub struct GreedyMesher<'c, T: Voxel + 'c> {
+//     chunk: &'c Chunk<T>,
+//     visited_mask: Box<[bool]>,
+//     vertices: Vec<ChunkVertex>,
+//     indices: Vec<u32>,
+// }
 
-impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
-    fn new(chunk: &'c Chunk<T>) -> Self {
-        GreedyMesher {
-            chunk,
-            visited_mask: vec![false; chunk.size()].into_boxed_slice(),
-            vertices: Vec::new(),
-            indices: Vec::new(),
-        }
-    }
+// impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
+//     fn new(chunk: &'c Chunk<T>) -> Self {
+//         GreedyMesher {
+//             chunk,
+//             visited_mask: vec![false; chunk.size()].into_boxed_slice(),
+//             vertices: Vec::new(),
+//             indices: Vec::new(),
+//         }
+//     }
 
-    fn try_expand_right(&self, x: usize, y: usize, z: usize) -> Quad where T: PartialEq {
-        // Infinite iterator, but chunk.get should return None in
-        // less than CHUNK_SIZE + 1 iterations
-        for x_off in 0.. {
-            let cur = self.chunk.get(x+x_off, y, z);
-            let next = self.chunk.get(x+x_off+1, y, z);
-            let quad = Quad { x, y, w: x_off + 1, h: 1 };
-            match next {
-                // Having no next face means we are at a chunk border and can't
-                // expand the quad more anyways
-                None => return quad,
-                // UNWRAP: next having a value means that cur also has a value.
-                Some(voxel) => if cur.unwrap() != voxel { return quad; }
-            }
-        }
+//     fn try_expand_right(&self, x: usize, y: usize, z: usize) -> Quad where T: PartialEq {
+//         // Infinite iterator, but chunk.get should return None in
+//         // less than CHUNK_SIZE + 1 iterations
+//         for x_off in 0.. {
+//             let cur = self.chunk.get(x+x_off, y, z);
+//             let next = self.chunk.get(x+x_off+1, y, z);
+//             let quad = Quad { x, y, w: x_off + 1, h: 1 };
+//             match next {
+//                 // Having no next face means we are at a chunk border and can't
+//                 // expand the quad more anyways
+//                 None => return quad,
+//                 // UNWRAP: next having a value means that cur also has a value.
+//                 Some(voxel) => if cur.unwrap() != voxel { return quad; }
+//             }
+//         }
 
-        // Should always return before this point
-        unreachable!()
-    }
+//         // Should always return before this point
+//         unreachable!()
+//     }
 
-    fn try_expand_down(&self, quad: Quad, z: usize) -> Quad where T: PartialEq {
-        assert!(quad.h >= 1);
-        for y_off in 0.. {
-            let row = self.chunk.slice_row(quad.x..quad.x+quad.w, quad.y+y_off, z);
-            let next_row = self.chunk.slice_row(quad.x..quad.x+quad.w, quad.y+y_off+1, z);
-            // Quad to return if we can't go further down in this iteration
-            let quad = Quad { x: quad.x, y: quad.y, w: quad.w, h: quad.h + y_off };
-            if let Some(next_row) = next_row {
-                if next_row.iter().zip(row.unwrap()).any(|(a, b)| a != b) {
-                    return quad;
-                }
-            } else {
-                return quad;
-            }
-        }
+//     fn try_expand_down(&self, quad: Quad, z: usize) -> Quad where T: PartialEq {
+//         assert!(quad.h >= 1);
+//         for y_off in 0.. {
+//             let row = self.chunk.slice_row(quad.x..quad.x+quad.w, quad.y+y_off, z);
+//             let next_row = self.chunk.slice_row(quad.x..quad.x+quad.w, quad.y+y_off+1, z);
+//             // Quad to return if we can't go further down in this iteration
+//             let quad = Quad { x: quad.x, y: quad.y, w: quad.w, h: quad.h + y_off };
+//             if let Some(next_row) = next_row {
+//                 if next_row.iter().zip(row.unwrap()).any(|(a, b)| a != b) {
+//                     return quad;
+//                 }
+//             } else {
+//                 return quad;
+//             }
+//         }
 
-        unreachable!()
-    }
-}
+//         unreachable!()
+//     }
+// }
 
-struct Quad {
-    x: usize,
-    y: usize,
-    w: usize,
-    h: usize,
-}
+// struct Quad {
+//     x: usize,
+//     y: usize,
+//     w: usize,
+//     h: usize,
+// }
 
 // impl<'c, T: Voxel + 'c> Mesher<T, ChunkVertex, u32> for GreedyMesher<'c, T> {
 //     fn generate_mesh(&mut self) -> Mesh<ChunkVertex, u32> {
