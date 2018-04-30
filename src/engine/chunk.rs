@@ -90,6 +90,8 @@ pub trait Mesher<V, I> {
     }
 }
 
+// NOTE: You probably should never debug print this, unless CHUNK_SIZE is pretty small.
+// Otherwise, your terminal will be spitting out text for a solid 3 minutes straight.
 pub struct CullMesher<'c, T: Voxel + 'c> {
     chunk: &'c Chunk<T>,
     top: &'c Chunk<T>,

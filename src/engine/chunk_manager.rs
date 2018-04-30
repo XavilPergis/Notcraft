@@ -73,7 +73,7 @@ pub struct ChunkManager<T> {
     meshes: HashMap<Vector3<i32>, Mesh<ChunkVertex, u32>>,
     dirty: HashSet<Vector3<i32>>,
     gen_queue: HashSet<Vector3<i32>>,
-    mesh_queue: Vec<Vector3<i32>>,
+    mesh_queue: HashSet<Vector3<i32>>,
     center: Vector3<i32>,
     radius: i32,
     chunk_tx: mpsc::Sender<Vector3<i32>>,
@@ -98,7 +98,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
             meshes: HashMap::new(),
             dirty: HashSet::new(),
             gen_queue: HashSet::new(),
-            mesh_queue: Vec::new(),
+            mesh_queue: HashSet::new(),
             center: Vector3::new(0, 0, 0),
             radius: 2,
             chunk_tx: chunk_req_tx,
@@ -166,7 +166,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
                 for z in self.center.z - self.radius..self.center.z + self.radius {
                     let pos = Vector3::new(x, y, z);
                     if !self.meshes.contains_key(&pos) {
-                        self.mesh_queue.push(Vector3::new(x, y, z));
+                        self.mesh_queue.insert(Vector3::new(x, y, z));
                     }
                 }
             }
@@ -214,20 +214,19 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         }
 
         if self.mesh_queue.len() > 0 {
-            // Reverse so we can pop off the queue without shifting items back.
             // This sets up all the meshers, filtering out any mesher that doesn't
             // have all the neighbor chunks generated yet. All the mess with passing
             // around `pos` in a tuple is because we need to know which meshes belong
             // to which chunks.
-            let meshers = self.mesh_queue.iter().rev().take(4)
+            let meshers = self.mesh_queue.iter()
                 .map(|pos| (pos, self.get_mesher(*pos)))
                 .filter(|&(_, ref opt)| if let &None = opt { false } else { true })
-                .map(|(pos, opt)| (pos, opt.unwrap()))
+                .map(|(pos, opt)| (*pos, opt.unwrap()))
+                .take(4)
                 .collect::<Vec<_>>();
             
             // The heavy-lifting parallel iterator that iterates the meshers in parallel
             // and generates the mesh data
-            let num_meshers = meshers.len();
             let meshes = meshers.into_par_iter()
                 .map(|(pos, mesher)| (pos, mesher.gen_vertex_data()))
                 .collect::<Vec<_>>();
@@ -239,10 +238,10 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
                 let (vertices, indices) = mesh;
                 let mut mesh = Mesh::new().unwrap(); // TODO: unwrap
                 mesh.upload(vertices, indices, UsageType::Static).unwrap();
-                self.meshes.insert(*pos, mesh);
+                self.meshes.insert(pos, mesh);
+                self.mesh_queue.remove(&pos);
                 println!("Meshed chunk ({:?}), mesh_queue: {}", pos, self.meshes.len());
             }
-            self.mesh_queue.truncate(self.mesh_queue.len() - num_meshers);
         }
 
         if self.dirty.len() > 0 {
