@@ -9,6 +9,7 @@ use engine::mesh::Mesh;
 use gl_api::shader::program::LinkedProgram;
 use gl_api::buffer::UsageType;
 use rayon::{ThreadPoolBuilder, ThreadPool};
+use std::sync::mpsc;
 
 pub trait ChunkGenerator<T> {
     fn generate(&self, pos: Vector3<i32>) -> Chunk<T>;
@@ -67,28 +68,41 @@ fn get_chunk_pos(pos: Vector3<i32>) -> (Vector3<i32>, Vector3<i32>) {
     // (Vector3::new(cx, cy, cz), Vector3::new(x, y, z))
 }
 
-pub struct ChunkManager<T, G: ChunkGenerator<T>> {
+pub struct ChunkManager<T> {
     chunks: HashMap<Vector3<i32>, Chunk<T>>,
     meshes: HashMap<Vector3<i32>, Mesh<ChunkVertex, u32>>,
     dirty: HashSet<Vector3<i32>>,
-    gen_queue: Vec<Vector3<i32>>,
+    gen_queue: HashSet<Vector3<i32>>,
     mesh_queue: Vec<Vector3<i32>>,
     center: Vector3<i32>,
     radius: i32,
-    generator: G,
+    chunk_tx: mpsc::Sender<Vector3<i32>>,
+    chunk_rx: mpsc::Receiver<(Vector3<i32>, Chunk<T>)>,
+    // mesh_tx: mpsc::Sender<Vector3<i32>>,
+    // mesh_rx: mpsc::Receiver<(Vec<ChunkVertex>, Vec<u32>)>,
 }
 
-impl<T: Voxel + Clone + Send + Sync, G: ChunkGenerator<T> + Sync> ChunkManager<T, G> {
-    pub fn new(generator: G) -> Self {
+impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
+    pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G) -> Self {
+        use std::thread;
+        let (chunk_req_tx, chunk_req_rx) = mpsc::channel();
+        let (chunk_tx, chunk_rx) = mpsc::channel();
+        thread::spawn(move || {
+            while let Ok(request) = chunk_req_rx.recv() {
+                chunk_tx.send((request, generator.generate(request)));
+            }    
+        });
+
         let mut manager = ChunkManager {
             chunks: HashMap::new(),
             meshes: HashMap::new(),
             dirty: HashSet::new(),
-            gen_queue: Vec::new(),
+            gen_queue: HashSet::new(),
             mesh_queue: Vec::new(),
             center: Vector3::new(0, 0, 0),
             radius: 2,
-            generator,
+            chunk_tx: chunk_req_tx,
+            chunk_rx,
         };
         manager.queue_in_range();
         manager
@@ -140,7 +154,8 @@ impl<T: Voxel + Clone + Send + Sync, G: ChunkGenerator<T> + Sync> ChunkManager<T
                 for z in self.center.z - self.radius - 1..self.center.z + self.radius + 1 {
                     let pos = Vector3::new(x, y, z);
                     if !self.chunks.contains_key(&pos) {
-                        self.gen_queue.push(pos);
+                        self.gen_queue.insert(pos);
+                        self.chunk_tx.send(pos).unwrap();
                     }
                 }
             }
@@ -189,18 +204,13 @@ impl<T: Voxel + Clone + Send + Sync, G: ChunkGenerator<T> + Sync> ChunkManager<T
     }
 
     pub fn tick(&mut self) {
-        use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, IntoParallelIterator, ParallelIterator};
-        let &mut ChunkManager { ref mut generator, ref mut chunks, .. } = self;
+        use rayon::iter::{IntoParallelIterator, ParallelIterator};
         if self.gen_queue.len() > 0 {
-            // Reverse so we can pop off the queue without shifting items back
-            let new_chunks = self.gen_queue.par_iter().rev().take(8)
-                .map(|pos| (pos, generator.generate(*pos)))
-                .collect::<Vec<_>>();
-            let num_chunks = new_chunks.len();
-            for (pos, chunk) in new_chunks.into_iter() {
-                chunks.insert(*pos, chunk);
+            for (pos, chunk) in self.chunk_rx.try_iter() {
+                self.chunks.insert(pos, chunk);
+                self.gen_queue.remove(&pos);
+                println!("Generated chunk ({:?}), gen_queue: {}", pos, self.gen_queue.len());
             }
-            self.gen_queue.truncate(self.gen_queue.len() - num_chunks);
         }
 
         if self.mesh_queue.len() > 0 {
@@ -209,7 +219,7 @@ impl<T: Voxel + Clone + Send + Sync, G: ChunkGenerator<T> + Sync> ChunkManager<T
             // have all the neighbor chunks generated yet. All the mess with passing
             // around `pos` in a tuple is because we need to know which meshes belong
             // to which chunks.
-            let meshers = self.mesh_queue.iter().rev().take(8)
+            let meshers = self.mesh_queue.iter().rev().take(4)
                 .map(|pos| (pos, self.get_mesher(*pos)))
                 .filter(|&(_, ref opt)| if let &None = opt { false } else { true })
                 .map(|(pos, opt)| (pos, opt.unwrap()))
@@ -230,8 +240,8 @@ impl<T: Voxel + Clone + Send + Sync, G: ChunkGenerator<T> + Sync> ChunkManager<T
                 let mut mesh = Mesh::new().unwrap(); // TODO: unwrap
                 mesh.upload(vertices, indices, UsageType::Static).unwrap();
                 self.meshes.insert(*pos, mesh);
+                println!("Meshed chunk ({:?}), mesh_queue: {}", pos, self.meshes.len());
             }
-            println!("mesh_queue.len() = {}, num_meshers = {}", self.mesh_queue.len(), num_meshers);
             self.mesh_queue.truncate(self.mesh_queue.len() - num_meshers);
         }
 

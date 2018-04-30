@@ -107,26 +107,38 @@ impl Inputs {
 
 struct NoiseGenerator {
     noise: noise::SuperSimplex,
-    // cave_noise: noise::Perlin,
+    lacunarity: f64,
+    persistance: f64,
+    scale: f64,
+    octaves: usize,
 }
 
 impl ChunkGenerator<Block> for NoiseGenerator {
     fn generate(&self, pos: Vector3<i32>) -> Chunk<Block> {
         let mut buffer = Vec::with_capacity(50*50*50);
+        for z in 0..50 {
+            for y in 0..50 {
+                for x in 0..50 {
+                    let x = ((50*pos.x) as f64 + x as f64) / 50.0;
+                    let y = (pos.y*50) as f64 + y as f64;
+                    let z = ((50*pos.z) as f64 + z as f64) / 50.0;
+                    let mut total = 0.0;
+                    
+                    for octave in 0..self.octaves-1 {
+                        let x = x * self.lacunarity.powf(octave as f64);
+                        let z = z * self.lacunarity.powf(octave as f64);
+                        total += self.scale * self.persistance.powf(octave as f64) * self.noise.get([x, z]);
+                    }
 
-        for i in 0..50*50*50 {
-            let x = ((50*pos.x) as f64 + (i % 50) as f64)/50.0;
-            let y = (50*pos.y) as f64 + ((i/50) % 50) as f64;
-            let z = ((50*pos.z) as f64 + ((i/(50*50)) % 50) as f64)/50.0;
-            let n = (40.0 * self.noise.get([x, z])).ceil();
-            
-            buffer.push(
-                if n-3.0 >= y { Block::Stone }
-                else if n-1.0 >= y { Block::Dirt }
-                else if n >= y { Block::Grass }
-                else if y <= -35.0 { Block::Water }
-                else { Block::Air }
-            );
+                    buffer.push(
+                        if total-3.0 >= y { Block::Stone }
+                        else if total-1.0 >= y { Block::Dirt }
+                        else if total >= y { Block::Grass }
+                        else if y <= -35.0 { Block::Water }
+                        else { Block::Air }
+                    );
+                }
+            }
         }
 
         Chunk::new(pos.x, pos.y, pos.z, buffer)
@@ -153,7 +165,7 @@ struct Application {
 
     pipeline: LinkedProgram,
     debug_pipeline: LinkedProgram,
-    chunk_manager: ChunkManager<Block, NoiseGenerator>,
+    chunk_manager: ChunkManager<Block>,
 }
 
 impl Application {
@@ -178,7 +190,13 @@ impl Application {
         pipeline.set_uniform("u_LightAttenuation", &attenuations.as_slice());
         pipeline.set_uniform("u_LightAmbient", &Vector3::<f32>::new(0.2, 0.25, 0.3));
 
-        let chunk_manager = ChunkManager::new(NoiseGenerator { noise: noise::SuperSimplex::new() });
+        let chunk_manager = ChunkManager::new(NoiseGenerator {
+            noise: noise::SuperSimplex::new(),
+            lacunarity: 2.0,
+            persistance: 0.9,
+            scale: 20.0,
+            octaves: 4,
+        });
 
         Application {
             speed_x: 0.0,
