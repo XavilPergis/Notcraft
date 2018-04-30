@@ -79,6 +79,7 @@ struct Application {
     mouse_capture: bool,
     debug_frames: bool,
     camera: Camera,
+    // prev_camera: Camera,
     previous_cursor_x: f32,
     previous_cursor_y: f32,
     frames: i32,
@@ -141,6 +142,7 @@ impl Application {
             debug_frames: false,
             mouse_capture: false,
             camera: Camera::default(),
+            // prev_camera: Camera::default(),
             previous_cursor_x: 0.0,
             previous_cursor_y: 0.0,
             pipeline,
@@ -206,25 +208,37 @@ impl Application {
         if inputs.is_down(Key::Down) { self.camera.rotate(Rotation::AboutX(Deg(1.0))); }
 
         if inputs.is_down(Key::W) {
-            let look_vec = self.camera.get_horizontal_look_vec();
+            let look_vec = self.camera.get_orentation_vecs().2;
+            self.speed_x = ::util::clamp(self.speed_x - self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
+            self.speed_z = ::util::clamp(self.speed_z - self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
+        }
+
+        if inputs.is_down(Key::S) {
+            let look_vec = self.camera.get_orentation_vecs().2;
             self.speed_x = ::util::clamp(self.speed_x + self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
             self.speed_z = ::util::clamp(self.speed_z + self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
         }
 
-        if inputs.is_down(Key::S) {
-            let look_vec = self.camera.get_horizontal_look_vec();
+        if inputs.is_down(Key::A) {
+            let look_vec = self.camera.get_orentation_vecs().0;
             self.speed_x = ::util::clamp(self.speed_x - self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
             self.speed_z = ::util::clamp(self.speed_z - self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
+        }
+
+        if inputs.is_down(Key::D) {
+            let look_vec = self.camera.get_orentation_vecs().0;
+            self.speed_x = ::util::clamp(self.speed_x + self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
+            self.speed_z = ::util::clamp(self.speed_z + self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
         }
 
         if inputs.is_down(Key::Space) {
             // No need to multiply the cam accel by anything because we only ever travel
             // straight up and down the Y axis.
-            self.speed_y = ::util::clamp(self.speed_y - self.cam_acceleration, -self.max_speed, self.max_speed);
+            self.speed_y = ::util::clamp(self.speed_y + self.cam_acceleration, -self.max_speed, self.max_speed);
         }
 
         if inputs.is_down(Key::LeftShift) {
-            self.speed_y = ::util::clamp(self.speed_y + self.cam_acceleration, -self.max_speed, self.max_speed);
+            self.speed_y = ::util::clamp(self.speed_y - self.cam_acceleration, -self.max_speed, self.max_speed);
         }
 
         if inputs.is_down(Key::LeftControl) {
@@ -243,9 +257,25 @@ impl Application {
     fn update(&mut self) {
         let view = self.camera.transform_matrix();
         self.pipeline.set_uniform("u_Time", &self.time);
-        self.pipeline.set_uniform("u_CameraPosition", &-self.camera.position);
+        self.pipeline.set_uniform("u_CameraPosition", &self.camera.position);
         self.pipeline.set_uniform("u_View", &view);
         self.debug_pipeline.set_uniform("view", &view);
+        
+        // let cam_pos = self.camera.position;
+        // let cam_pos_int = Vector3::new(cam_pos.x as i32, cam_pos.y as i32, cam_pos.z as i32);
+        // let low_pos = ::util::to_point(cam_pos + Vector3::new(-0.5, -1.5, -0.5));
+        // let high_pos = ::util::to_point(cam_pos + Vector3::new(0.5, 0.5, 0.5));
+        // let player_aabb = Aabb3::new(low_pos, high_pos);
+        // let colliders = self.chunk_manager.colliders_around_point(cam_pos_int, 2);
+        // for collider in colliders {
+        //     if player_aabb.intersects(&collider) {
+        //         self.speed_x = 0.0;
+        //         self.speed_y = 0.0;
+        //         self.speed_z = 0.0;
+        //         self.camera.position = self.prev_camera.position;
+        //         break;
+        //     }
+        // }
 
         let translation = Vector3::new(self.speed_x, self.speed_y, self.speed_z);
         if translation.magnitude() != 0.0 {
@@ -258,17 +288,18 @@ impl Application {
         self.speed_y *= 0.95;
         self.speed_z *= 0.95;
 
-        self.chunk_manager.update_player_position(-self.camera.position);
+        self.chunk_manager.update_player_position(self.camera.position);
         self.chunk_manager.tick();
+        // self.prev_camera = self.camera;
         self.time += 0.007;
     }
 
     fn get_look_pos(&self) -> Option<Vector3<i32>> {
         use std::cmp::Ordering;
-        let cam_pos = -self.camera.position;
+        let cam_pos = self.camera.position;
         let cam_pos_int = Vector3::new(cam_pos.x as i32, cam_pos.y as i32, cam_pos.z as i32);
-        let look_vec = -self.camera.get_horizontal_look_vec();
-        let ray = Ray3::new(::util::to_point(-self.camera.position), look_vec);
+        let look_vec = -self.camera.get_look_vec();
+        let ray = Ray3::new(::util::to_point(self.camera.position), look_vec);
 
         let colliders = self.chunk_manager.colliders_around_point(cam_pos_int, 9);
         let mut colliders: Vec<_> = colliders.iter()
@@ -291,8 +322,8 @@ impl Application {
 
         if self.debug_frames {
             ::util::draw_frame(Aabb3::new(
-                ::util::to_point(-(self.camera.position - Vector3::new(9.0, 9.0, 9.0))),
-                ::util::to_point(-(self.camera.position + Vector3::new(9.0, 9.0, 9.0))),
+                ::util::to_point(self.camera.position - Vector3::new(9.0, 9.0, 9.0)),
+                ::util::to_point(self.camera.position + Vector3::new(9.0, 9.0, 9.0)),
             ), &mut self.debug_pipeline, 0.02);
         }
 

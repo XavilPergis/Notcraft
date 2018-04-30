@@ -38,17 +38,30 @@ impl Camera {
         self.position += translation;
     }
 
-    pub fn get_horizontal_look_vec(&self) -> Vector3<f32> {
-        use cgmath::InnerSpace;
+    pub fn get_look_vec(&self) -> Vector3<f32> {
+        use cgmath::{Angle, InnerSpace};
         let a = Matrix3::from_angle_x(self.pitch) * -Vector3::unit_z();
         let b = Matrix3::from_angle_y(self.yaw) * -Vector3::unit_z();
+        let hs = self.pitch.cos();
 
-        Vector3::new(b.x, a.y, -1.0 * b.z).normalize()
+        Vector3::new(hs * b.x, a.y, -1.0 * hs * b.z).normalize()
+    }
+
+    // Get the camera (right, up, forward) vectors
+    pub fn get_orentation_vecs(&self) -> (Vector3<f32>, Vector3<f32>, Vector3<f32>) {
+        let rot = Matrix3::from_angle_x(self.pitch) * Matrix3::from_angle_y(self.yaw);
+        let mut x = rot * Vector3::unit_x();
+        let mut y = rot * Vector3::unit_y();
+        let mut z = rot * -Vector3::unit_z();
+        x.z *= -1.0;
+        y.z *= -1.0;
+        z.z *= -1.0;
+        (x, y, z)
     }
 
     pub fn transform_matrix(&self) -> Matrix4<f32> {
         let pitch = Matrix4::from_angle_x(self.pitch);
         let yaw = Matrix4::from_angle_y(self.yaw);
-        pitch * yaw * Matrix4::from_translation(self.position)
+        pitch * yaw * Matrix4::from_translation(-self.position)
     }
 }

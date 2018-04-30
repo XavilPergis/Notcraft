@@ -1,8 +1,9 @@
-use super::super::error::{GlResult, GlError};
+use super::super::error::GlError;
 use super::shader::CompiledShader;
 use std::collections::HashMap;
 use gl_api::uniform::*;
 use gl::types::*;
+use gl;
 
 pub struct Program {
     id: GLuint,
@@ -21,8 +22,11 @@ impl Program {
         }
     }
 
+    #[inline(never)]
     pub fn bind(&self) {
-        unsafe { gl_call!(UseProgram(self.id)).unwrap(); }
+        // glUseProgram fails, even though program validation succeeds, and using the program
+        // seems to bind it just fine... Smells like a driver bug to me.
+        unsafe { let _ = gl_call!(UseProgram(self.id)); }
     }
 
     pub fn attach_shader(&self, shader: CompiledShader) {
@@ -30,10 +34,14 @@ impl Program {
         unsafe { gl_call!(AttachShader(self.id, shader.shader.id)).unwrap(); }
     }
 
-    pub fn link(self) -> GlResult<LinkedProgram> {
+    pub fn link(self) -> Result<LinkedProgram, LinkError> {
         self.bind();
         unsafe {
+            assert!(self.id != 0);
             gl_call!(LinkProgram(self.id))?;
+            check_program_status(self.id, gl::LINK_STATUS)?;
+            gl_call!(ValidateProgram(self.id))?;
+            check_program_status(self.id, gl::VALIDATE_STATUS)?;
         }
         Ok(LinkedProgram { program: self, uniform_cache: HashMap::new() })
     }
@@ -77,29 +85,33 @@ pub enum LinkError {
     Gl(GlError),
 }
 
-// fn check_program_status(id: GLuint, ty: GLenum) -> Result<(), String> {
-//     let mut status = 1;
-//     unsafe { gl_call!(GetProgramiv(id, ty, &mut status)); }
+impl From<::gl_api::error::GlError> for LinkError {
+    fn from(err: ::gl_api::error::GlError) -> Self { LinkError::Gl(err) }
+}
 
-//     if status == 0 {
-//         Err(program_info_log(id).unwrap())
-//     } else {
-//         Ok(())
-//     }
-// }
+fn check_program_status(id: GLuint, ty: GLenum) -> Result<(), LinkError> {
+    let mut status = 1;
+    unsafe { gl_call!(GetProgramiv(id, ty, &mut status)).unwrap(); }
 
-// fn program_info_log(id: GLuint) -> Option<String> {
-//     unsafe {
-//         let mut length = 0;
-//         gl_call!(GetProgramiv(id, gl::INFO_LOG_LENGTH, &mut length));
-//         if length == 0 {
-//             None
-//         } else {
-//             let mut buffer = Vec::<u8>::with_capacity(length as usize);
-//             gl_call!(GetProgramInfoLog(id, length, ptr::null_mut(), buffer.as_mut_ptr() as *mut i8));
-//             buffer.set_len((length - 1) as usize);
+    if status == 0 {
+        Err(LinkError::Other(program_info_log(id).unwrap_or(String::new())))
+    } else {
+        Ok(())
+    }
+}
 
-//             Some(String::from_utf8(buffer).expect("Program info log was not UTF-8"))
-//         }
-//     }
-// }
+fn program_info_log(id: GLuint) -> Option<String> {
+    unsafe {
+        let mut length = 0;
+        gl_call!(GetProgramiv(id, gl::INFO_LOG_LENGTH, &mut length)).unwrap();
+        if length == 0 {
+            None
+        } else {
+            let mut buffer = Vec::<u8>::with_capacity(length as usize);
+            gl_call!(GetProgramInfoLog(id, length, ::std::ptr::null_mut(), buffer.as_mut_ptr() as *mut i8)).unwrap();
+            buffer.set_len((length - 1) as usize);
+
+            Some(String::from_utf8(buffer).expect("Program info log was not UTF-8"))
+        }
+    }
+}
