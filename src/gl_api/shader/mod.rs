@@ -1,6 +1,5 @@
 use std::path::Path;
-use std::fs::File;
-use std::io::{self, Read};
+use std::io;
 
 pub mod program;
 pub mod shader;

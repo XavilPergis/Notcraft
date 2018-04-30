@@ -16,16 +16,13 @@ pub mod util;
 
 use cgmath::MetricSpace;
 use collision::Discrete;
-use collision::Continuous;
 use collision::{Aabb3, Ray3};
-use cgmath::Point3;
 use gl_api::shader::program::LinkedProgram;
 use std::collections::HashSet;
 use glfw::{Action, Context, Key, Window, MouseButton, WindowEvent, WindowHint};
 use cgmath::{Deg, InnerSpace, Matrix4, Vector3};
-use noise::{Perlin, NoiseFn};
-use engine::chunk_manager::{ChunkGenerator, ChunkManager};
-use engine::chunk::Chunk;
+use noise::NoiseFn;
+use engine::chunk_manager::ChunkManager;
 use engine::mesh::{IndexingType, Mesh};
 use engine::camera::Rotation;
 use gl_api::layout::InternalLayout;
@@ -103,47 +100,6 @@ impl Inputs {
     }
 }
 
-struct NoiseGenerator {
-    noise: noise::SuperSimplex,
-    lacunarity: f64,
-    persistance: f64,
-    scale: f64,
-    octaves: usize,
-}
-
-impl ChunkGenerator<Block> for NoiseGenerator {
-    fn generate(&self, pos: Vector3<i32>) -> Chunk<Block> {
-        let mut buffer = Vec::with_capacity(50*50*50);
-        for z in 0..50 {
-            for y in 0..50 {
-                for x in 0..50 {
-                    let x = ((50*pos.x) as f64 + x as f64) / 50.0;
-                    let y = (pos.y*50) as f64 + y as f64;
-                    let z = ((50*pos.z) as f64 + z as f64) / 50.0;
-                    let mut total = 0.0;
-                    
-                    for octave in 0..self.octaves-1 {
-                        let x = x * self.lacunarity.powf(octave as f64);
-                        let z = z * self.lacunarity.powf(octave as f64);
-                        total += self.scale * self.persistance.powf(octave as f64) * self.noise.get([x, z]);
-                    }
-
-                    buffer.push(
-                        if total-3.0 >= y { Block::Stone }
-                        else if total-1.0 >= y { Block::Dirt }
-                        else if total >= y { Block::Grass }
-                        else if y <= -35.0 { Block::Water }
-                        else { Block::Air }
-                    );
-                }
-            }
-        }
-
-        Chunk::new(pos.x, pos.y, pos.z, buffer)
-    }
-}
-
-
 struct Application {
     time: f32,
     wireframe: bool,
@@ -188,13 +144,18 @@ impl Application {
         pipeline.set_uniform("u_LightAttenuation", &attenuations.as_slice());
         pipeline.set_uniform("u_LightAmbient", &Vector3::<f32>::new(0.2, 0.25, 0.3));
 
-        let chunk_manager = ChunkManager::new(NoiseGenerator {
-            noise: noise::SuperSimplex::new(),
-            lacunarity: 2.0,
-            persistance: 0.9,
-            scale: 20.0,
-            octaves: 4,
-        });
+        use engine::terrain::NoiseGenerator;
+
+        let chunk_manager = ChunkManager::new(NoiseGenerator::new_default(
+            noise::OpenSimplex::default(),
+            |pos: Vector3<f64>, n| {
+                if n-3.0 >= pos.y { Block::Stone }
+                else if n-1.0 >= pos.y { Block::Dirt }
+                else if n >= pos.y { Block::Grass }
+                else if pos.y <= -35.0 { Block::Water }
+                else { Block::Air }
+            }
+        ));
 
         Application {
             speed_x: 0.0,
@@ -326,9 +287,7 @@ impl Application {
         self.speed_y *= 0.95;
         self.speed_z *= 0.95;
 
-        let cam_pos = self.camera.position;
-        let int_pos = -Vector3::new((cam_pos.x / 50.0).ceil() as i32, (cam_pos.y / 50.0).ceil() as i32, (cam_pos.z / 50.0).ceil() as i32);
-        self.chunk_manager.update_player_position(int_pos);
+        self.chunk_manager.update_player_position(-self.camera.position);
         self.chunk_manager.tick();
         self.time += 0.007;
     }

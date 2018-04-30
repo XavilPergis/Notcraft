@@ -8,12 +8,7 @@ use engine::chunk::*;
 use engine::mesh::Mesh;
 use gl_api::shader::program::LinkedProgram;
 use gl_api::buffer::UsageType;
-use rayon::{ThreadPoolBuilder, ThreadPool};
 use std::sync::mpsc;
-
-pub trait ChunkGenerator<T> {
-    fn generate(&self, pos: Vector3<i32>) -> Chunk<T>;
-}
 
 struct AroundVector {
     center: Vector3<i32>,
@@ -81,6 +76,8 @@ pub struct ChunkManager<T> {
     // mesh_tx: mpsc::Sender<Vector3<i32>>,
     // mesh_rx: mpsc::Receiver<(Vec<ChunkVertex>, Vec<u32>)>,
 }
+
+use super::terrain::ChunkGenerator;
 
 impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G) -> Self {
@@ -195,7 +192,11 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         }
     }
 
-    pub fn update_player_position(&mut self, pos: Vector3<i32>) {
+    pub fn update_player_position(&mut self, pos: Vector3<f32>) {
+        let x = (pos.x / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
+        let y = (pos.y / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
+        let z = (pos.z / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
+        let pos = Vector3::new(x, y, z);
         // Don't run the expensive stuff if we haven't moved
         if pos == self.center { return; }
         self.center = pos;

@@ -4,7 +4,7 @@ use gl_api::buffer::UsageType;
 use engine::mesh::{IndexingType, Mesh};
 use gl_api::layout::InternalLayout;
 
-pub const CHUNK_SIZE: usize = 50;
+pub const CHUNK_SIZE: usize = 32;
 const CHUNK_VOLUME: usize = CHUNK_SIZE*CHUNK_SIZE*CHUNK_SIZE;
 
 vertex! {

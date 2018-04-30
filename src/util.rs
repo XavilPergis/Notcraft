@@ -1,8 +1,5 @@
-use std::cell::RefCell;
-use cgmath::Matrix4;
 use std::sync::Mutex;
 use gl_api::shader::program::LinkedProgram;
-use gl_api::shader::simple_pipeline;
 use gl_api::buffer::{UsageType, VertexBuffer};
 use gl_api::vertex_array::VertexArray;
 use cgmath::{Point3, Vector3};
