@@ -8,8 +8,6 @@ extern crate noise;
 extern crate smallvec;
 extern crate collision;
 extern crate rayon;
-// extern crate imgui;
-#[macro_use] extern crate error_chain;
 #[macro_use] extern crate lazy_static;
 
 #[macro_use] mod gl_api;
