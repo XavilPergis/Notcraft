@@ -1,8 +1,8 @@
-use cgmath::{Deg, Matrix4, Matrix3, Vector3};
+use cgmath::{Deg, Matrix4, Matrix3, Point3, Vector3};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Camera {
-    pub position: Vector3<f32>,
+    pub position: Point3<f32>,
     pub pitch: Deg<f32>,
     pub yaw: Deg<f32>,
 }
@@ -15,7 +15,7 @@ pub enum Rotation {
 impl Default for Camera {
     fn default() -> Self {
         Camera {
-            position: Vector3::new(0.0, 0.0, 0.0),
+            position: Point3::new(0.0, 0.0, 0.0),
             pitch: Deg(0.0),
             yaw: Deg(0.0),
         }
@@ -47,21 +47,19 @@ impl Camera {
         Vector3::new(hs * b.x, a.y, -1.0 * hs * b.z).normalize()
     }
 
-    // Get the camera (right, up, forward) vectors
-    pub fn get_orentation_vecs(&self) -> (Vector3<f32>, Vector3<f32>, Vector3<f32>) {
-        let rot = Matrix3::from_angle_x(self.pitch) * Matrix3::from_angle_y(self.yaw);
-        let mut x = rot * Vector3::unit_x();
-        let mut y = rot * Vector3::unit_y();
-        let mut z = rot * -Vector3::unit_z();
-        x.z *= -1.0;
-        y.z *= -1.0;
-        z.z *= -1.0;
-        (x, y, z)
+    /// Get the camera (forward, right) vectors without a pitch component
+    pub fn get_spin_vecs(&self) -> (Vector3<f32>, Vector3<f32>) {
+        let yaw = Matrix3::from_angle_y(self.yaw);
+        let mut forward = yaw * -Vector3::unit_z();
+        let mut right = yaw * Vector3::unit_x();
+        forward.z *= -1.0;
+        right.z *= -1.0;
+        (forward, right)
     }
 
     pub fn transform_matrix(&self) -> Matrix4<f32> {
         let pitch = Matrix4::from_angle_x(self.pitch);
         let yaw = Matrix4::from_angle_y(self.yaw);
-        pitch * yaw * Matrix4::from_translation(-self.position)
+        pitch * yaw * Matrix4::from_translation(-::util::to_vector(self.position))
     }
 }

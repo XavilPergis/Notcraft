@@ -1,3 +1,4 @@
+use cgmath::Point3;
 use collision::Aabb3;
 use std::collections::HashSet;
 use gl_api::error::GlResult;
@@ -166,7 +167,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         }
     }
 
-    pub fn update_player_position(&mut self, pos: Vector3<f32>) {
+    pub fn update_player_position(&mut self, pos: Point3<f32>) {
         let x = (pos.x / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
         let y = (pos.y / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
         let z = (pos.z / super::chunk::CHUNK_SIZE as f32).ceil() as i32;

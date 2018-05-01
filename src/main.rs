@@ -3,7 +3,7 @@
 extern crate gl;
 extern crate glfw;
 extern crate image;
-extern crate cgmath;
+#[macro_use] extern crate cgmath;
 extern crate noise;
 extern crate smallvec;
 extern crate collision;
@@ -208,25 +208,25 @@ impl Application {
         if inputs.is_down(Key::Down) { self.camera.rotate(Rotation::AboutX(Deg(1.0))); }
 
         if inputs.is_down(Key::W) {
-            let look_vec = self.camera.get_orentation_vecs().2;
+            let look_vec = self.camera.get_spin_vecs().0;
             self.speed_x = ::util::clamp(self.speed_x - self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
             self.speed_z = ::util::clamp(self.speed_z - self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
         }
 
         if inputs.is_down(Key::S) {
-            let look_vec = self.camera.get_orentation_vecs().2;
+            let look_vec = self.camera.get_spin_vecs().0;
             self.speed_x = ::util::clamp(self.speed_x + self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
             self.speed_z = ::util::clamp(self.speed_z + self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
         }
 
         if inputs.is_down(Key::A) {
-            let look_vec = self.camera.get_orentation_vecs().0;
+            let look_vec = self.camera.get_spin_vecs().1;
             self.speed_x = ::util::clamp(self.speed_x - self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
             self.speed_z = ::util::clamp(self.speed_z - self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
         }
 
         if inputs.is_down(Key::D) {
-            let look_vec = self.camera.get_orentation_vecs().0;
+            let look_vec = self.camera.get_spin_vecs().1;
             self.speed_x = ::util::clamp(self.speed_x + self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
             self.speed_z = ::util::clamp(self.speed_z + self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
         }
@@ -257,26 +257,10 @@ impl Application {
     fn update(&mut self) {
         let view = self.camera.transform_matrix();
         self.pipeline.set_uniform("u_Time", &self.time);
-        self.pipeline.set_uniform("u_CameraPosition", &self.camera.position);
+        self.pipeline.set_uniform("u_CameraPosition", &::util::to_vector(self.camera.position));
         self.pipeline.set_uniform("u_View", &view);
         self.debug_pipeline.set_uniform("view", &view);
         
-        // let cam_pos = self.camera.position;
-        // let cam_pos_int = Vector3::new(cam_pos.x as i32, cam_pos.y as i32, cam_pos.z as i32);
-        // let low_pos = ::util::to_point(cam_pos + Vector3::new(-0.5, -1.5, -0.5));
-        // let high_pos = ::util::to_point(cam_pos + Vector3::new(0.5, 0.5, 0.5));
-        // let player_aabb = Aabb3::new(low_pos, high_pos);
-        // let colliders = self.chunk_manager.colliders_around_point(cam_pos_int, 2);
-        // for collider in colliders {
-        //     if player_aabb.intersects(&collider) {
-        //         self.speed_x = 0.0;
-        //         self.speed_y = 0.0;
-        //         self.speed_z = 0.0;
-        //         self.camera.position = self.prev_camera.position;
-        //         break;
-        //     }
-        // }
-
         let translation = Vector3::new(self.speed_x, self.speed_y, self.speed_z);
         if translation.magnitude() != 0.0 {
             // normalize fails whenever the magnitude of the vector is 0
@@ -299,14 +283,14 @@ impl Application {
         let cam_pos = self.camera.position;
         let cam_pos_int = Vector3::new(cam_pos.x as i32, cam_pos.y as i32, cam_pos.z as i32);
         let look_vec = -self.camera.get_look_vec();
-        let ray = Ray3::new(::util::to_point(self.camera.position), look_vec);
+        let ray = Ray3::new(self.camera.position, look_vec);
 
         let colliders = self.chunk_manager.colliders_around_point(cam_pos_int, 9);
         let mut colliders: Vec<_> = colliders.iter()
             .filter(|aabb| ray.intersects(&aabb)).collect();
         
-        colliders.sort_by(|a, b| a.min.distance2(::util::to_point(cam_pos))
-            .partial_cmp(&b.min.distance2(::util::to_point(cam_pos)))
+        colliders.sort_by(|a, b| a.min.distance2(cam_pos)
+            .partial_cmp(&b.min.distance2(cam_pos))
             .unwrap_or(Ordering::Equal));
         
         colliders.get(0).map(|aabb| {
@@ -317,27 +301,29 @@ impl Application {
 
     fn draw(&mut self) {
         if let Some(look) = self.get_look_pos() {
-            self.frame_at_voxel(Vector3::new(look.x as f32, look.y as f32, look.z as f32), 0.02);
+            self.frame_at_voxel(Vector3::new(look.x as f32, look.y as f32, look.z as f32), Vector3::new(0.2, 0.2, 0.2), 0.02);
         }
 
-        if self.debug_frames {
-            ::util::draw_frame(Aabb3::new(
-                ::util::to_point(self.camera.position - Vector3::new(9.0, 9.0, 9.0)),
-                ::util::to_point(self.camera.position + Vector3::new(9.0, 9.0, 9.0)),
-            ), &mut self.debug_pipeline, 0.02);
-        }
+        self.draw_frame(Aabb3::new(
+            ::util::to_point(::util::to_vector(self.camera.position) - Vector3::new(9.0, 9.0, 9.0)),
+            ::util::to_point(::util::to_vector(self.camera.position) + Vector3::new(9.0, 9.0, 9.0)),
+        ), Vector3::new(0.0, 1.0, 0.0), 0.02);
 
         self.chunk_manager.draw(&mut self.pipeline).expect("Drawing chunks failed");
         self.frames += 1;
     }
 
-    fn frame_at_voxel(&mut self, pos: Vector3<f32>, thickness: f32) {
+    fn draw_frame(&mut self, aabb: Aabb3<f32>, color: Vector3<f32>, thickness: f32) {
         if self.debug_frames {
-            ::util::draw_frame(Aabb3::new(
-                ::util::to_point(pos),
-                ::util::to_point(pos + Vector3::new(1.0, 1.0, 1.0)),
-            ), &mut self.debug_pipeline, thickness);
+            ::util::draw_frame(&mut self.debug_pipeline, aabb, color, thickness);
         }
+    }
+
+    fn frame_at_voxel(&mut self, pos: Vector3<f32>, color: Vector3<f32>, thickness: f32) {
+        self.draw_frame(Aabb3::new(
+            ::util::to_point(pos),
+            ::util::to_point(pos + Vector3::new(1.0, 1.0, 1.0)),
+        ), color, thickness);
     }
 }
 

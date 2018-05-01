@@ -75,7 +75,7 @@ fn box_around_segment(a: Vector3<f32>, b: Vector3<f32>, thickness: f32) -> Aabb3
     Aabb3::new(to_point(min - tv), to_point(max + tv))
 }
 
-pub fn draw_frame(bbox: Aabb3<f32>, program: &mut LinkedProgram, thickness: f32) {
+pub fn draw_frame(program: &mut LinkedProgram, bbox: Aabb3<f32>, color: Vector3<f32>, thickness: f32) {
     let Aabb3 { min: l, max: h } = bbox;
     // Front edges
     let fl = box_around_segment(Vector3::new(l.x, l.y, h.z), Vector3::new(l.x, h.y, h.z), thickness); // left
@@ -126,6 +126,7 @@ pub fn draw_frame(bbox: Aabb3<f32>, program: &mut LinkedProgram, thickness: f32)
         let vbo = &mut DEBUG_VBO.lock().unwrap().0;
         vbo.upload(&buf, UsageType::Static).unwrap();
         vbo.bind();
+        program.set_uniform("u_color", &color);
     }
 
     unsafe {
