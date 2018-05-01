@@ -257,13 +257,7 @@ impl Application {
         self.pipeline.set_uniform("u_View", &view);
         self.debug_pipeline.set_uniform("view", &view);
         
-        if self.velocity.magnitude() != 0.0 {
-            // normalize fails whenever the magnitude of the vector is 0
-            // We normalize here so that you don't go faster in a diagonal than you
-            // would go going straight.
-            self.camera.translate(self.velocity.magnitude() * self.velocity.normalize());
-        }
-
+        self.camera.translate(self.velocity.magnitude() * self.velocity.normalize());
         self.velocity *= 0.95;
 
         self.chunk_manager.update_player_position(self.camera.position);
