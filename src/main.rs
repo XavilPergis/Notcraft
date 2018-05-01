@@ -84,9 +84,7 @@ struct Application {
     previous_cursor_y: f32,
     frames: i32,
 
-    speed_x: f32,
-    speed_y: f32,
-    speed_z: f32,
+    velocity: Vector3<f32>,
     max_speed: f32,
     cam_acceleration: f32,
 
@@ -131,9 +129,7 @@ impl Application {
         ));
 
         Application {
-            speed_x: 0.0,
-            speed_y: 0.0,
-            speed_z: 0.0,
+            velocity: Vector3::new(0.0, 0.0, 0.0),
             max_speed: 1.5,
             cam_acceleration: 0.03,
             frames: 0,
@@ -209,36 +205,36 @@ impl Application {
 
         if inputs.is_down(Key::W) {
             let look_vec = self.camera.get_spin_vecs().0;
-            self.speed_x = ::util::clamp(self.speed_x - self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
-            self.speed_z = ::util::clamp(self.speed_z - self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
+            self.velocity.x = ::util::clamp(self.velocity.x - self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
+            self.velocity.z = ::util::clamp(self.velocity.z - self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
         }
 
         if inputs.is_down(Key::S) {
             let look_vec = self.camera.get_spin_vecs().0;
-            self.speed_x = ::util::clamp(self.speed_x + self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
-            self.speed_z = ::util::clamp(self.speed_z + self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
+            self.velocity.x = ::util::clamp(self.velocity.x + self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
+            self.velocity.z = ::util::clamp(self.velocity.z + self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
         }
 
         if inputs.is_down(Key::A) {
             let look_vec = self.camera.get_spin_vecs().1;
-            self.speed_x = ::util::clamp(self.speed_x - self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
-            self.speed_z = ::util::clamp(self.speed_z - self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
+            self.velocity.x = ::util::clamp(self.velocity.x - self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
+            self.velocity.z = ::util::clamp(self.velocity.z - self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
         }
 
         if inputs.is_down(Key::D) {
             let look_vec = self.camera.get_spin_vecs().1;
-            self.speed_x = ::util::clamp(self.speed_x + self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
-            self.speed_z = ::util::clamp(self.speed_z + self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
+            self.velocity.x = ::util::clamp(self.velocity.x + self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
+            self.velocity.z = ::util::clamp(self.velocity.z + self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
         }
 
         if inputs.is_down(Key::Space) {
             // No need to multiply the cam accel by anything because we only ever travel
             // straight up and down the Y axis.
-            self.speed_y = ::util::clamp(self.speed_y + self.cam_acceleration, -self.max_speed, self.max_speed);
+            self.velocity.y = ::util::clamp(self.velocity.y + self.cam_acceleration, -self.max_speed, self.max_speed);
         }
 
         if inputs.is_down(Key::LeftShift) {
-            self.speed_y = ::util::clamp(self.speed_y - self.cam_acceleration, -self.max_speed, self.max_speed);
+            self.velocity.y = ::util::clamp(self.velocity.y - self.cam_acceleration, -self.max_speed, self.max_speed);
         }
 
         if inputs.is_down(Key::LeftControl) {
@@ -261,16 +257,14 @@ impl Application {
         self.pipeline.set_uniform("u_View", &view);
         self.debug_pipeline.set_uniform("view", &view);
         
-        let translation = Vector3::new(self.speed_x, self.speed_y, self.speed_z);
-        if translation.magnitude() != 0.0 {
+        if self.velocity.magnitude() != 0.0 {
             // normalize fails whenever the magnitude of the vector is 0
-            let magnitude = (self.speed_x*self.speed_x + self.speed_y*self.speed_y + self.speed_z*self.speed_z).sqrt();
-            self.camera.translate(magnitude * translation.normalize());
+            // We normalize here so that you don't go faster in a diagonal than you
+            // would go going straight.
+            self.camera.translate(self.velocity.magnitude() * self.velocity.normalize());
         }
 
-        self.speed_x *= 0.95;
-        self.speed_y *= 0.95;
-        self.speed_z *= 0.95;
+        self.velocity *= 0.95;
 
         self.chunk_manager.update_player_position(self.camera.position);
         self.chunk_manager.tick();
@@ -300,6 +294,7 @@ impl Application {
     }
 
     fn draw(&mut self) {
+        // Draw frame around the block we're looking at
         if let Some(look) = self.get_look_pos() {
             self.frame_at_voxel(Vector3::new(look.x as f32, look.y as f32, look.z as f32), Vector3::new(0.2, 0.2, 0.2), 0.02);
         }
