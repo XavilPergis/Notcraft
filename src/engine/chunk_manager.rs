@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 use cgmath::Point3;
 use collision::Aabb3;
 use std::collections::HashSet;
@@ -10,6 +11,7 @@ use engine::mesh::Mesh;
 use gl_api::shader::program::LinkedProgram;
 use gl_api::buffer::UsageType;
 use std::sync::mpsc;
+use super::terrain::ChunkGenerator;
 
 /// Get a chunk position from a world position
 fn get_chunk_pos(pos: Vector3<i32>) -> (Vector3<i32>, Vector3<i32>) {
@@ -22,97 +24,145 @@ fn get_chunk_pos(pos: Vector3<i32>) -> (Vector3<i32>, Vector3<i32>) {
     let bpos = pos - (SIZE*cpos);
 
     (cpos, bpos)
-
-    // // The almighty modulo-matic operation that Does What I Want:tm:
-    // // (aka does not go negative when x goes negative)
-    // // (x % N + N) % N
-
-    // // let x = (pos.x % SIZE + SIZE) % SIZE;
-    // let x = pos.x % SIZE + if pos.x < 0 { SIZE } else { 0 };
-    // let y = pos.y % SIZE + if pos.y < 0 { SIZE } else { 0 };
-    // let z = pos.z % SIZE + if pos.z < 0 { SIZE } else { 0 };
-
-    // (Vector3::new(cx, cy, cz), Vector3::new(x, y, z))
 }
 
-pub struct ChunkManager<T> {
-    chunks: HashMap<Vector3<i32>, Chunk<T>>,
-    meshes: HashMap<Vector3<i32>, Mesh<ChunkVertex, u32>>,
-    dirty: HashSet<Vector3<i32>>,
-    gen_queue: HashSet<Vector3<i32>>,
-    mesh_queue: HashSet<Vector3<i32>>,
-    center: Vector3<i32>,
-    radius: i32,
-    chunk_tx: mpsc::Sender<Vector3<i32>>,
-    chunk_rx: mpsc::Receiver<(Vector3<i32>, Chunk<T>)>,
-    // mesh_tx: mpsc::Sender<Vector3<i32>>,
-    // mesh_rx: mpsc::Receiver<(Vec<ChunkVertex>, Vec<u32>)>,
+pub type WorldPos = Vector3<i32>;
+pub type ChunkPos = Vector3<i32>;
+
+pub struct World<T> {
+    chunks: HashMap<ChunkPos, Chunk<T>>,
+    queue: HashSet<ChunkPos>,
+    gen_tx: mpsc::Sender<ChunkPos>,
+    gen_rx: mpsc::Receiver<(ChunkPos, Chunk<T>)>,
 }
 
-use super::terrain::ChunkGenerator;
-
-impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
-    pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G) -> Self {
+impl<T> World<T> {
+    pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G) -> Self where T: Send + 'static {
         use std::thread;
-        let (chunk_req_tx, chunk_req_rx) = mpsc::channel();
-        let (chunk_tx, chunk_rx) = mpsc::channel();
+        let (req_tx, req_rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            while let Ok(request) = chunk_req_rx.recv() {
+            while let Ok(request) = req_rx.recv() {
                 // Unwrapping is fine here, since the only time the rx has hung up is after
                 // the lifetime of the program (or a panic), and in either case, we want to
                 // end this thread.
-                chunk_tx.send((request, generator.generate(request))).unwrap();
+                tx.send((request, generator.generate(request))).unwrap();
             }    
         });
 
-        let mut manager = ChunkManager {
+        World {
             chunks: HashMap::new(),
-            meshes: HashMap::new(),
-            dirty: HashSet::new(),
-            gen_queue: HashSet::new(),
-            mesh_queue: HashSet::new(),
-            center: Vector3::new(0, 0, 0),
-            radius: 2,
-            chunk_tx: chunk_req_tx,
-            chunk_rx,
-        };
-        manager.queue_in_range();
-        manager
+            queue: HashSet::new(),
+            gen_tx: req_tx,
+            gen_rx: rx,
+        }
     }
 
-    pub fn set_voxel(&mut self, pos: Vector3<i32>, voxel: T) where T: PartialEq {
-        const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
+    pub fn set_voxel(&mut self, pos: WorldPos, voxel: T) where T: PartialEq {
         let (cpos, bpos) = get_chunk_pos(pos);
         // get the chunk the voxel is in, if it is loaded
         if let Some(chunk) = self.chunks.get_mut(&cpos) {
             let pos = (bpos.x as usize, bpos.y as usize, bpos.z as usize);
-            // Don't trigger a remesh if there is no change in the type of block
-            if chunk[pos] != voxel {
-                chunk[pos] = voxel;
+            chunk[pos] = voxel;
+        }
+    }
+
+    #[inline]
+    pub fn queue(&mut self, pos: ChunkPos) {
+        if !self.chunks.contains_key(&pos) {
+            self.queue.insert(pos);
+            self.gen_tx.send(pos).unwrap();
+        }
+    }
+
+    pub fn unload<I: IntoIterator<Item=ChunkPos>>(&mut self, iter: I) {
+        for location in iter {
+            self.chunks.remove(&location);
+        }
+    }
+
+    fn tick(&mut self) {
+        for (pos, chunk) in self.gen_rx.try_iter() {
+            println!("Generated chunk at ({:?}) => queue.len() = {}", pos, self.queue.len());
+            self.queue.remove(&pos);
+            self.chunks.insert(pos, chunk);
+        }
+    }
+
+    pub fn get_voxel(&self, pos: WorldPos) -> Option<&T> {
+        let (cpos, bpos) = get_chunk_pos(pos);
+        let pos = (bpos.x as usize, bpos.y as usize, bpos.z as usize);
+        self.chunks.get(&cpos).map(|chunk| &chunk[pos])
+    }
+
+    pub fn get_voxel_mut(&mut self, pos: WorldPos) -> Option<&mut T> {
+        let (cpos, bpos) = get_chunk_pos(pos);
+        let pos = (bpos.x as usize, bpos.y as usize, bpos.z as usize);
+        self.chunks.get_mut(&cpos).map(|chunk| &mut chunk[pos])
+    }
+}
+
+pub struct ChunkManager<T> {
+    world: World<T>,
+    meshes: HashMap<ChunkPos, Mesh<ChunkVertex, u32>>,
+    dirty: HashSet<ChunkPos>,
+    queue: HashSet<ChunkPos>,
+    center: ChunkPos,
+    radius: i32,
+}
+
+impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
+    pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G) -> Self {
+        let mut manager = ChunkManager {
+            world: World::new(generator),
+            meshes: HashMap::new(),
+            dirty: HashSet::new(),
+            queue: HashSet::new(),
+            center: Vector3::new(0, 0, 0),
+            radius: 3,
+        };
+
+        manager.queue_in_range();
+        manager
+    }
+
+    pub fn world(&self) -> &World<T> { &self.world }
+
+    /// Be careful with this! It is *your* responsibility to not clear voxels without
+    /// remeshing, because this will **NOT** cause a remesh of any chunks!
+    pub fn world_mut(&mut self) -> &mut World<T> { &mut self.world }
+
+    /// Set a voxel, causing remeshes as needed.
+    pub fn set_voxel(&mut self, pos: WorldPos, voxel: T) where T: PartialEq {
+        const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
+        let (cpos, bpos) = get_chunk_pos(pos);
+        if let Some(world_voxel) = self.world.get_voxel_mut(pos) {
+            if *world_voxel != voxel {
+                *world_voxel = voxel;
                 // Mark as dirty for remeshing
                 self.dirty.insert(cpos);
                 // Also mark neighboring chunks as dirty if we destroy a block on the
                 // border of a chunk
-                if bpos.x == 0    { println!("Left"); self.dirty.insert(cpos - Vector3::unit_x()); } // Left
-                if bpos.x == SIZE { println!("Right"); self.dirty.insert(cpos + Vector3::unit_x()); } // Right
-                if bpos.y == 0    { println!("Bottom"); self.dirty.insert(cpos - Vector3::unit_y()); } // Bottom
-                if bpos.y == SIZE { println!("Top"); self.dirty.insert(cpos + Vector3::unit_y()); } // Top
-                if bpos.z == 0    { println!("Back"); self.dirty.insert(cpos - Vector3::unit_z()); } // Back
-                if bpos.z == SIZE { println!("Front"); self.dirty.insert(cpos + Vector3::unit_z()); } // Front
+                if bpos.x == 0    { self.dirty.insert(cpos - Vector3::unit_x()); } // Left
+                if bpos.x == SIZE { self.dirty.insert(cpos + Vector3::unit_x()); } // Right
+                if bpos.y == 0    { self.dirty.insert(cpos - Vector3::unit_y()); } // Bottom
+                if bpos.y == SIZE { self.dirty.insert(cpos + Vector3::unit_y()); } // Top
+                if bpos.z == 0    { self.dirty.insert(cpos - Vector3::unit_z()); } // Back
+                if bpos.z == SIZE { self.dirty.insert(cpos + Vector3::unit_z()); } // Front
             }
         }
     }
 
     /// Get the mesher for the chunk passed in, on none if not all of the neighbor chunks
     /// are loaded yet
-    fn get_mesher<'c>(&'c self, pos: Vector3<i32>) -> Option<CullMesher<'c, T>> {
-        let chunk = self.chunks.get(&pos)?;
-        let top = self.chunks.get(&(pos + Vector3::unit_y()))?;
-        let bottom = self.chunks.get(&(pos - Vector3::unit_y()))?;
-        let right = self.chunks.get(&(pos + Vector3::unit_x()))?;
-        let left = self.chunks.get(&(pos - Vector3::unit_x()))?;
-        let front = self.chunks.get(&(pos + Vector3::unit_z()))?;
-        let back = self.chunks.get(&(pos - Vector3::unit_z()))?;
+    fn get_mesher<'c>(&'c self, pos: ChunkPos) -> Option<CullMesher<'c, T>> {
+        let chunk = self.world.chunks.get(&pos)?;
+        let top = self.world.chunks.get(&(pos + Vector3::unit_y()))?;
+        let bottom = self.world.chunks.get(&(pos - Vector3::unit_y()))?;
+        let right = self.world.chunks.get(&(pos + Vector3::unit_x()))?;
+        let left = self.world.chunks.get(&(pos - Vector3::unit_x()))?;
+        let front = self.world.chunks.get(&(pos + Vector3::unit_z()))?;
+        let back = self.world.chunks.get(&(pos - Vector3::unit_z()))?;
 
         Some(CullMesher::new(chunk, top, bottom, left, right, front, back))
     }
@@ -121,14 +171,11 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     fn queue_in_range(&mut self) {
         // Generate chunks one outside the radius so the mesher can properly
         // mesh all the chunks in the radius
+        println!("self.center = {:?}, self.radius = {:?}", self.center, self.radius);
         for x in self.center.x - self.radius - 1..self.center.x + self.radius + 1 {
             for y in self.center.y - self.radius - 1..self.center.y + self.radius + 1 {
                 for z in self.center.z - self.radius - 1..self.center.z + self.radius + 1 {
-                    let pos = Vector3::new(x, y, z);
-                    if !self.chunks.contains_key(&pos) {
-                        self.gen_queue.insert(pos);
-                        self.chunk_tx.send(pos).unwrap();
-                    }
+                    self.world.queue(Vector3::new(x, y, z));
                 }
             }
         }
@@ -138,7 +185,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
                 for z in self.center.z - self.radius..self.center.z + self.radius {
                     let pos = Vector3::new(x, y, z);
                     if !self.meshes.contains_key(&pos) {
-                        self.mesh_queue.insert(Vector3::new(x, y, z));
+                        self.queue.insert(Vector3::new(x, y, z));
                     }
                 }
             }
@@ -146,25 +193,20 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     }
 
     fn unload(&mut self) {
-        let mut to_unload = Vec::new();
-        for loaded_coords in self.chunks.keys() {
-            let x = loaded_coords.x > self.center.x + self.radius + 1 ||
-                    loaded_coords.x < self.center.x - self.radius - 1;
-            let y = loaded_coords.y > self.center.y + self.radius + 1 ||
-                    loaded_coords.y < self.center.y - self.radius - 1;
-            let z = loaded_coords.z > self.center.z + self.radius + 1 ||
-                    loaded_coords.z < self.center.z - self.radius - 1;
-
-            if x || y || z {
-                to_unload.push(*loaded_coords);
-            }
+        let to_unload: SmallVec<[ChunkPos; 32]> = self.world.chunks.keys()
+            .filter(|p| {
+                p.x > self.center.x + self.radius + 1 ||
+                p.x < self.center.x - self.radius - 1 ||
+                p.y > self.center.y + self.radius + 1 ||
+                p.y < self.center.y - self.radius - 1 ||
+                p.z > self.center.z + self.radius + 1 ||
+                p.z < self.center.z - self.radius - 1
+            })
+            .map(|p| *p).collect();
+        for pos in &to_unload {
+            self.meshes.remove(pos);
         }
-
-        for pos in to_unload {
-            self.chunks.remove(&pos);
-            // Removing an empty space doesn't do anything bad
-            self.meshes.remove(&pos);
-        }
+        self.world.unload(to_unload);
     }
 
     pub fn update_player_position(&mut self, pos: Point3<f32>) {
@@ -181,20 +223,14 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
 
     pub fn tick(&mut self) {
         use rayon::iter::{IntoParallelIterator, ParallelIterator};
-        if self.gen_queue.len() > 0 {
-            for (pos, chunk) in self.chunk_rx.try_iter() {
-                self.chunks.insert(pos, chunk);
-                self.gen_queue.remove(&pos);
-                println!("Generated chunk ({:?}), gen_queue: {}", pos, self.gen_queue.len());
-            }
-        }
 
-        if self.mesh_queue.len() > 0 {
+        self.world.tick();
+        if self.queue.len() > 0 {
             // This sets up all the meshers, filtering out any mesher that doesn't
             // have all the neighbor chunks generated yet. All the mess with passing
             // around `pos` in a tuple is because we need to know which meshes belong
             // to which chunks.
-            let meshers = self.mesh_queue.iter()
+            let meshers = self.queue.iter()
                 .map(|pos| (pos, self.get_mesher(*pos)))
                 .filter(|&(_, ref opt)| if let &None = opt { false } else { true })
                 .map(|(pos, opt)| (*pos, opt.unwrap()))
@@ -215,14 +251,17 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
                 let mut mesh = Mesh::new().unwrap(); // TODO: unwrap
                 mesh.upload(vertices, indices, UsageType::Static).unwrap();
                 self.meshes.insert(pos, mesh);
-                self.mesh_queue.remove(&pos);
-                println!("Meshed chunk ({:?}), mesh_queue: {}", pos, self.meshes.len());
+                self.queue.remove(&pos);
+                println!("Meshed chunk ({:?}), meshes: {}", pos, self.meshes.len());
             }
         }
 
         if self.dirty.len() > 0 {
             // Update all dirty at once to avoid problems where unfinished meshes flash
             // after a block is destroyed.
+            // NOTE: any dirty positions that were marked in the one-chunk gap between
+            // meshed chunks and nothing will get removed here, but this is not a problem
+            // since we haven't meshed them anyways.
             let meshes = self.dirty.drain()
                 .collect::<Vec<_>>()
                 .into_iter()
@@ -236,25 +275,17 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         }
     }
 
-    fn get_voxel(&self, pos: Vector3<i32>) -> Option<&T> {
-        let (cpos, bpos) = get_chunk_pos(pos);
-        if let Some(chunk) = self.chunks.get(&cpos) {
-            let pos = (bpos.x as usize, bpos.y as usize, bpos.z as usize);
-            Some(&chunk[pos])
-        } else {
-            None
-        }
-    }
-
     pub fn colliders_around_point(&self, pos: Vector3<i32>, radius: i32) -> Vec<Aabb3<f32>> {
         assert!(radius >= 0);
+        // TODO: We allocate here, but likely don't need to. It would be better if this
+        // function returned an iterator...
         let mut buf = Vec::with_capacity((radius*radius*radius) as usize);
         for x in pos.x - radius..pos.x + radius {
             for y in pos.y - radius..pos.y + radius {
                 for z in pos.z - radius..pos.z + radius {
                     let pos = Vector3::new(x, y, z);
                     let fpos = Vector3::new(x as f32, y as f32, z as f32);
-                    if let Some(voxel) = self.get_voxel(pos) {
+                    if let Some(voxel) = self.world.get_voxel(pos) {
                         if !voxel.has_transparency() {
                             buf.push(Aabb3::new(
                                 ::util::to_point(fpos),
@@ -271,7 +302,9 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     pub fn draw(&mut self, pipeline: &mut LinkedProgram) -> GlResult<()> {
         pipeline.set_uniform("u_Transform", &Matrix4::<f32>::identity());
         for mesh in self.meshes.values() {
-            mesh.draw_with(&pipeline)?;
+            if mesh.vertex_count() > 0 {
+                mesh.draw_with(&pipeline)?;
+            }
         }
         Ok(())
     }

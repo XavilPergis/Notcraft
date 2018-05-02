@@ -95,6 +95,8 @@ pub struct CullMesher<'c, T: Voxel + 'c> {
     indices: Vec<u32>,
 }
 
+use super::Side;
+
 impl<'c, T: Voxel + 'c> CullMesher<'c, T> {
     pub fn new(chunk: &'c Chunk<T>,
                top: &'c Chunk<T>,
@@ -168,12 +170,6 @@ impl<'c, T: Voxel + 'c> CullMesher<'c, T> {
             else { false }
         }
     }
-}
-
-enum Side {
-    Top, Bottom,
-    Right, Left,
-    Front, Back,
 }
 
 impl<'c, T: Voxel + 'c> Mesher<ChunkVertex, u32> for CullMesher<'c, T> {

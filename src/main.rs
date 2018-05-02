@@ -257,7 +257,7 @@ impl Application {
         self.pipeline.set_uniform("u_View", &view);
         self.debug_pipeline.set_uniform("view", &view);
         
-        self.camera.translate(self.velocity.magnitude() * self.velocity.normalize());
+        self.camera.translate(self.velocity);
         self.velocity *= 0.95;
 
         self.chunk_manager.update_player_position(self.camera.position);
