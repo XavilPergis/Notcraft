@@ -43,10 +43,12 @@ impl<T> World<T> {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             while let Ok(request) = req_rx.recv() {
-                // Unwrapping is fine here, since the only time the rx has hung up is after
-                // the lifetime of the program (or a panic), and in either case, we want to
-                // end this thread.
-                tx.send((request, generator.generate(request))).unwrap();
+                // Err means the rx has hung up, so we can just shut down this thread
+                // if that happens
+                match tx.send((request, generator.generate(request))) {
+                    Ok(_) => (),
+                    Err(_) => break,
+                }
             }    
         });
 
