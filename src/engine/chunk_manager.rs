@@ -61,7 +61,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
                 // the lifetime of the program (or a panic), and in either case, we want to
                 // end this thread.
                 chunk_tx.send((request, generator.generate(request))).unwrap();
-            }    
+            }
         });
 
         let mut manager = ChunkManager {
@@ -199,13 +199,13 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
                 .map(|(pos, opt)| (*pos, opt.unwrap()))
                 .take(4)
                 .collect::<Vec<_>>();
-            
+
             // The heavy-lifting parallel iterator that iterates the meshers in parallel
             // and generates the mesh data
             let meshes = meshers.into_par_iter()
                 .map(|(pos, mesher)| (pos, mesher.gen_vertex_data()))
                 .collect::<Vec<_>>();
-            
+
             // Iterate the generated meshes, construct the actual mesh (the one with the
             // actual vertex and index buffer), and insert them into the mesh map.
             // NOTE: We need to construct the mesh on the main OpenGL thread.
@@ -228,14 +228,14 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
                 .map(|pos| (pos, self.get_mesher(pos)))
                 .filter_map(|(pos, mesher)| mesher.map(|m| (pos, m.gen_mesh().unwrap())))
                 .collect::<Vec<_>>();
-            
+
             for (pos, mesh) in meshes {
                 self.meshes.insert(pos, mesh);
             }
         }
     }
 
-    fn get_voxel(&self, pos: Vector3<i32>) -> Option<&T> {
+    pub fn get_voxel(&self, pos: Vector3<i32>) -> Option<&T> {
         let (cpos, bpos) = get_chunk_pos(pos);
         if let Some(chunk) = self.chunks.get(&cpos) {
             let pos = (bpos.x as usize, bpos.y as usize, bpos.z as usize);
