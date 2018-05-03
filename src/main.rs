@@ -15,13 +15,16 @@ pub mod engine;
 pub mod util;
 
 use cgmath::MetricSpace;
+use collision::algorithm::minkowski::GJK3;
+use collision::primitive::Cuboid;
 use collision::Discrete;
-use collision::{Aabb3, Ray3};
+use collision::{Aabb3, Ray3, CollisionStrategy};
 use gl_api::shader::program::LinkedProgram;
 use std::collections::HashSet;
 use glfw::{Action, Context, Key, Window, MouseButton, WindowEvent, WindowHint};
-use cgmath::{Deg, InnerSpace, Vector3};
+use cgmath::{Deg, InnerSpace, Vector3, Matrix4};
 use engine::chunk_manager::ChunkManager;
+use engine::chunk::Voxel;
 use engine::camera::Rotation;
 use gl_api::shader::*;
 use gl_api::misc;
@@ -89,6 +92,7 @@ struct Application {
     speed_z: f32,
     max_speed: f32,
     cam_acceleration: f32,
+    player_is_falling: bool,
 
     pipeline: LinkedProgram,
     debug_pipeline: LinkedProgram,
@@ -136,6 +140,7 @@ impl Application {
             speed_z: 0.0,
             max_speed: 1.5,
             cam_acceleration: 0.03,
+            player_is_falling: false,
             frames: 0,
             time: 0.0,
             wireframe: false,
@@ -193,7 +198,7 @@ impl Application {
             WindowEvent::Key(Key::F1, _, Action::Press, _) => self.toggle_debug_frames(),
             WindowEvent::Key(Key::F2, _, Action::Press, _) => self.toggle_wireframe(),
             WindowEvent::Key(Key::F3, _, Action::Press, _) => self.toggle_mouse_capture(window),
-            
+
             WindowEvent::Size(width, height) => self.set_viewport(width, height),
             _ => {}
         }
@@ -260,7 +265,7 @@ impl Application {
         self.pipeline.set_uniform("u_CameraPosition", &self.camera.position);
         self.pipeline.set_uniform("u_View", &view);
         self.debug_pipeline.set_uniform("view", &view);
-        
+
         // let cam_pos = self.camera.position;
         // let cam_pos_int = Vector3::new(cam_pos.x as i32, cam_pos.y as i32, cam_pos.z as i32);
         // let low_pos = ::util::to_point(cam_pos + Vector3::new(-0.5, -1.5, -0.5));
@@ -277,11 +282,101 @@ impl Application {
         //     }
         // }
 
-        let translation = Vector3::new(self.speed_x, self.speed_y, self.speed_z);
-        if translation.magnitude() != 0.0 {
-            // normalize fails whenever the magnitude of the vector is 0
-            let magnitude = (self.speed_x*self.speed_x + self.speed_y*self.speed_y + self.speed_z*self.speed_z).sqrt();
-            self.camera.translate(magnitude * translation.normalize());
+        let acc_due_to_gravity = 2.0;
+        let substeps = 3;
+        // TODO: Should use a real delta time ;^)
+        let timestep = 0.007 / (substeps as f32);
+        for _ in 0..substeps {
+            // apply this as if it was for the full timetep because we divide the magnitude
+            // the check for less than slightly positive speed is a hack to enable simple upwards
+            // movement. Doesn't work very well most of the time.
+            if self.player_is_falling && self.speed_y <= 0.01 {
+                self.speed_y -= acc_due_to_gravity * timestep;
+            }
+            // attempt to advance player position
+            let translation = Vector3::new(self.speed_x, self.speed_y, self.speed_z);
+            if translation.magnitude() != 0.0 {
+                // normalize fails whenever the magnitude of the vector is 0
+                let magnitude = (
+                    self.speed_x*self.speed_x +
+                    self.speed_y*self.speed_y +
+                    self.speed_z*self.speed_z
+                ).sqrt() / (substeps as f32);
+                self.camera.translate(magnitude * translation.normalize());
+            }
+            // compute the location of the feet.
+            let mut feet_pos = self.camera.position + Vector3::new(0.0, -1.8, 0.0);
+            // in reality we should probably check each corner of the players AABB/bounding volume
+            // but that's a simple extension once this works; so just check directly below the player
+            // this *should* be the block containing the lower half of the body
+            // (this doesn't actually do what I want... it's off slightly)
+
+            let mut feet_block_pos = Vector3::new(
+                feet_pos.x.floor(),
+                feet_pos.y.floor(),
+                feet_pos.z.floor(),
+            ).cast()
+                .unwrap();
+            if let Some(feet_block) = self.chunk_manager.get_voxel(feet_block_pos) {
+                if !feet_block.has_transparency() {
+                    // example:
+                    // if the player's feet are at y = 0.3, then they should be pushed up to
+                    // be at y = 1.0; just take the ceiling.
+                    self.camera.position.y = feet_pos.y.ceil() + 1.8;
+                    self.player_is_falling = false;
+                    self.speed_y = 0.0;
+                } else if !self.player_is_falling {
+                    // we need to check the block *below* the player's feet for transparency
+                    // if this block is transparent then the player needs to be falling
+                    let block_below_pos = feet_block_pos + Vector3::new(0, -1, 0);
+                    if let Some(block_below) = self.chunk_manager.get_voxel(block_below_pos) {
+                        if block_below.has_transparency() {
+                            self.player_is_falling = true;
+                        }
+                    }
+                }
+            } // else if there was no block then let us float (or technically keep doing what we're doing)!
+
+            // check the blocks around the player and resolve them along the XZ axes
+            let collider = Cuboid::new(1.0, 1.0, 1.0);
+            let player = Cuboid::new(1.0, 1.9, 1.0);
+            let gjk = GJK3::new();
+            for x in -3..4 {
+                for z in -3..4 {
+                    for y in 0..2 {
+                        feet_pos = self.camera.position + Vector3::new(0.0, -1.8, 0.0);
+                        feet_block_pos = Vector3::new(
+                            feet_pos.x.floor(),
+                            feet_pos.y.floor(),
+                            feet_pos.z.floor(),
+                        ).cast()
+                            .unwrap();
+                        let block_pos = feet_block_pos + Vector3::new(x, y, z);
+                        if let Some(block) = self.chunk_manager.get_voxel(block_pos) {
+                            let block_tfm = Matrix4::from_translation(
+                                block_pos.cast().unwrap() + Vector3::new(0.5, 0.5, 0.5),
+                            );
+                            let player_tfm = Matrix4::from_translation(
+                                self.camera.position + Vector3::new(0., 0.1 - 1.9 / 2.0, 0.),
+                            );
+                            if !block.has_transparency() {
+                                if let Some(contact) = gjk.intersection(
+                                    &CollisionStrategy::FullResolution,
+                                    &player,
+                                    &player_tfm,
+                                    &collider,
+                                    &block_tfm
+                                ) {
+                                    let mut resolution = contact.penetration_depth * contact.normal;
+                                    resolution.y = 0.0;
+                                    resolution *= -1.0;
+                                    self.camera.translate(resolution);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         self.speed_x *= 0.95;
@@ -304,11 +399,11 @@ impl Application {
         let colliders = self.chunk_manager.colliders_around_point(cam_pos_int, 9);
         let mut colliders: Vec<_> = colliders.iter()
             .filter(|aabb| ray.intersects(&aabb)).collect();
-        
+
         colliders.sort_by(|a, b| a.min.distance2(::util::to_point(cam_pos))
             .partial_cmp(&b.min.distance2(::util::to_point(cam_pos)))
             .unwrap_or(Ordering::Equal));
-        
+
         colliders.get(0).map(|aabb| {
             let fv = ::util::to_vector(aabb.min);
             Vector3::new(fv.x as i32, fv.y as i32, fv.z as i32)
@@ -344,7 +439,7 @@ impl Application {
 fn main() {
     let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
     println!("GLFW init");
-    
+
     glfw.window_hint(WindowHint::ContextVersion(4, 5));
     glfw.window_hint(WindowHint::DepthBits(Some(24)));
 
@@ -381,7 +476,7 @@ fn main() {
     while !window.should_close() {
         misc::clear(misc::ClearMode::Color(0.529411765, 0.807843137, 0.921568627, 1.0));
         misc::clear(misc::ClearMode::Depth(1.0));
-        
+
         glfw.poll_events();
         for (_, event) in glfw::flush_messages(&events) {
             if let WindowEvent::Key(key, _, action, _) = event {
