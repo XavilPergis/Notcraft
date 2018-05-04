@@ -164,12 +164,12 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
                 self.dirty.insert(cpos);
                 // Also mark neighboring chunks as dirty if we destroy a block on the
                 // border of a chunk
-                if bpos.x == 0    { self.dirty.insert(cpos - Vector3::unit_x()); } // Left
-                if bpos.x == SIZE { self.dirty.insert(cpos + Vector3::unit_x()); } // Right
-                if bpos.y == 0    { self.dirty.insert(cpos - Vector3::unit_y()); } // Bottom
-                if bpos.y == SIZE { self.dirty.insert(cpos + Vector3::unit_y()); } // Top
-                if bpos.z == 0    { self.dirty.insert(cpos - Vector3::unit_z()); } // Back
-                if bpos.z == SIZE { self.dirty.insert(cpos + Vector3::unit_z()); } // Front
+                if bpos.x == 0      { self.dirty.insert(cpos - Vector3::unit_x()); } // Left
+                if bpos.x == SIZE-1 { self.dirty.insert(cpos + Vector3::unit_x()); } // Right
+                if bpos.y == 0      { self.dirty.insert(cpos - Vector3::unit_y()); } // Bottom
+                if bpos.y == SIZE-1 { self.dirty.insert(cpos + Vector3::unit_y()); } // Top
+                if bpos.z == 0      { self.dirty.insert(cpos - Vector3::unit_z()); } // Back
+                if bpos.z == SIZE-1 { self.dirty.insert(cpos + Vector3::unit_z()); } // Front
             }
         }
     }
@@ -294,30 +294,6 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
                 self.meshes.insert(pos, mesh);
             }
         }
-    }
-
-    pub fn colliders_around_point(&self, pos: WorldPos, radius: i32) -> Vec<Aabb3<f32>> {
-        assert!(radius >= 0);
-        // TODO: We allocate here, but likely don't need to. It would be better if this
-        // function returned an iterator...
-        let mut buf = Vec::with_capacity((radius*radius*radius) as usize);
-        for x in pos.x - radius..pos.x + radius {
-            for y in pos.y - radius..pos.y + radius {
-                for z in pos.z - radius..pos.z + radius {
-                    let pos = Vector3::new(x, y, z);
-                    let fpos = Vector3::new(x as f32, y as f32, z as f32);
-                    if let Some(voxel) = self.world.get_voxel(pos) {
-                        if !voxel.has_transparency() {
-                            buf.push(Aabb3::new(
-                                ::util::to_point(fpos),
-                                ::util::to_point(fpos + Vector3::new(1.0, 1.0, 1.0)),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        buf
     }
 
     pub fn draw(&mut self, pipeline: &mut LinkedProgram) -> GlResult<()> {
