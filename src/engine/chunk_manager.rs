@@ -1,5 +1,4 @@
 use smallvec::SmallVec;
-use cgmath::Point3;
 use collision::Aabb3;
 use std::collections::HashSet;
 use gl_api::error::GlResult;
@@ -14,7 +13,7 @@ use std::sync::mpsc;
 use super::terrain::ChunkGenerator;
 
 /// Get a chunk position from a world position
-fn get_chunk_pos(pos: Vector3<i32>) -> (Vector3<i32>, Vector3<i32>) {
+pub fn get_chunk_pos(pos: Vector3<i32>) -> (Vector3<i32>, Vector3<i32>) {
     const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
     let cx = ::util::floor_div(pos.x, SIZE);
     let cy = ::util::floor_div(pos.y, SIZE);
@@ -101,6 +100,26 @@ impl<T> World<T> {
         let (cpos, bpos) = get_chunk_pos(pos);
         let pos = (bpos.x as usize, bpos.y as usize, bpos.z as usize);
         self.chunks.get_mut(&cpos).map(|chunk| &mut chunk[pos])
+    }
+
+    pub fn around_voxel<U, F: Fn(WorldPos, &T) -> Option<U>>(&self, pos: WorldPos, radius: u32, func: F) -> Vec<U> {
+        let radius = radius as i32;
+        // TODO: We allocate here, but likely don't need to. It would be better if this
+        // function returned an iterator...
+        let mut buf = Vec::with_capacity((radius*radius*radius) as usize);
+        for x in pos.x - radius..pos.x + radius {
+            for y in pos.y - radius..pos.y + radius {
+                for z in pos.z - radius..pos.z + radius {
+                    let pos = Vector3::new(x, y, z);
+                    if let Some(voxel) = self.get_voxel(pos) {
+                        if let Some(item) = func(pos, voxel) {
+                            buf.push(item);
+                        }
+                    }
+                }
+            }
+        }
+        buf
     }
 }
 
@@ -211,7 +230,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         self.world.unload(to_unload);
     }
 
-    pub fn update_player_position(&mut self, pos: Point3<f32>) {
+    pub fn update_player_position(&mut self, pos: Vector3<f32>) {
         let x = (pos.x / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
         let y = (pos.y / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
         let z = (pos.z / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
@@ -277,7 +296,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         }
     }
 
-    pub fn colliders_around_point(&self, pos: Vector3<i32>, radius: i32) -> Vec<Aabb3<f32>> {
+    pub fn colliders_around_point(&self, pos: WorldPos, radius: i32) -> Vec<Aabb3<f32>> {
         assert!(radius >= 0);
         // TODO: We allocate here, but likely don't need to. It would be better if this
         // function returned an iterator...

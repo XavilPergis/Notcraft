@@ -14,9 +14,12 @@ extern crate rayon;
 pub mod engine;
 pub mod util;
 
-use cgmath::MetricSpace;
+use collision::algorithm::minkowski::GJK3;
+use collision::primitive::Cuboid;
 use collision::Discrete;
-use collision::{Aabb3, Ray3};
+use collision::{Aabb3, Ray3, CollisionStrategy};
+use engine::chunk::Voxel;
+use cgmath::{MetricSpace, Matrix4};
 use gl_api::shader::program::LinkedProgram;
 use std::collections::HashSet;
 use glfw::{Action, Context, Key, Window, MouseButton, WindowEvent, WindowHint};
@@ -78,12 +81,15 @@ struct Application {
     wireframe: bool,
     mouse_capture: bool,
     debug_frames: bool,
+    noclip: bool,
     camera: Camera,
+    player_pos: Vector3<f32>,
     // prev_camera: Camera,
     previous_cursor_x: f32,
     previous_cursor_y: f32,
     frames: i32,
 
+    jumping: bool,
     velocity: Vector3<f32>,
     max_speed: f32,
     cam_acceleration: f32,
@@ -130,13 +136,16 @@ impl Application {
 
         Application {
             velocity: Vector3::new(0.0, 0.0, 0.0),
-            max_speed: 1.5,
-            cam_acceleration: 0.03,
+            max_speed: 24.0,
+            cam_acceleration: 0.1,
             frames: 0,
+            player_pos: Vector3::new(0.0, 0.0, 0.0),
             time: 0.0,
             wireframe: false,
             debug_frames: false,
             mouse_capture: false,
+            noclip: false,
+            jumping: false,
             camera: Camera::default(),
             // prev_camera: Camera::default(),
             previous_cursor_x: 0.0,
@@ -189,6 +198,7 @@ impl Application {
             WindowEvent::Key(Key::F1, _, Action::Press, _) => self.toggle_debug_frames(),
             WindowEvent::Key(Key::F2, _, Action::Press, _) => self.toggle_wireframe(),
             WindowEvent::Key(Key::F3, _, Action::Press, _) => self.toggle_mouse_capture(window),
+            WindowEvent::Key(Key::F4, _, Action::Press, _) => self.noclip = !self.noclip,
             
             WindowEvent::Size(width, height) => self.set_viewport(width, height),
             _ => {}
@@ -196,51 +206,60 @@ impl Application {
         false
     }
 
-    fn handle_inputs(&mut self, inputs: &Inputs) {
+    fn handle_inputs(&mut self, inputs: &Inputs, dt: f64) {
         // println!("camera={:?}", self.camera);
         if inputs.is_down(Key::Right) { self.camera.rotate(Rotation::AboutY(Deg(1.0))); }
         if inputs.is_down(Key::Left) { self.camera.rotate(Rotation::AboutY(-Deg(1.0))); }
         if inputs.is_down(Key::Up) { self.camera.rotate(Rotation::AboutX(-Deg(1.0))); }
         if inputs.is_down(Key::Down) { self.camera.rotate(Rotation::AboutX(Deg(1.0))); }
-
+        
+        let accel = self.cam_acceleration;
         if inputs.is_down(Key::W) {
-            let look_vec = self.camera.get_spin_vecs().0;
-            self.velocity.x = ::util::clamp(self.velocity.x - self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
-            self.velocity.z = ::util::clamp(self.velocity.z - self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
+            let look_vec = accel * self.camera.get_spin_vecs().0;
+            self.velocity.x = self.velocity.x - look_vec.x;
+            self.velocity.z = self.velocity.z - look_vec.z;
         }
 
         if inputs.is_down(Key::S) {
             let look_vec = self.camera.get_spin_vecs().0;
-            self.velocity.x = ::util::clamp(self.velocity.x + self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
-            self.velocity.z = ::util::clamp(self.velocity.z + self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
+            self.velocity.x = self.velocity.x + accel * look_vec.x;
+            self.velocity.z = self.velocity.z + accel * look_vec.z;
         }
 
         if inputs.is_down(Key::A) {
             let look_vec = self.camera.get_spin_vecs().1;
-            self.velocity.x = ::util::clamp(self.velocity.x - self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
-            self.velocity.z = ::util::clamp(self.velocity.z - self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
+            self.velocity.x = self.velocity.x - accel * look_vec.x;
+            self.velocity.z = self.velocity.z - accel * look_vec.z;
         }
 
         if inputs.is_down(Key::D) {
             let look_vec = self.camera.get_spin_vecs().1;
-            self.velocity.x = ::util::clamp(self.velocity.x + self.cam_acceleration * look_vec.x, -self.max_speed, self.max_speed);
-            self.velocity.z = ::util::clamp(self.velocity.z + self.cam_acceleration * look_vec.z, -self.max_speed, self.max_speed);
+            self.velocity.x = self.velocity.x + accel * look_vec.x;
+            self.velocity.z = self.velocity.z + accel * look_vec.z;
         }
 
         if inputs.is_down(Key::Space) {
+            if !self.jumping {
+                self.jumping = true;
+                self.velocity.y = 6.5;
+            }
             // No need to multiply the cam accel by anything because we only ever travel
             // straight up and down the Y axis.
-            self.velocity.y = ::util::clamp(self.velocity.y + self.cam_acceleration, -self.max_speed, self.max_speed);
+            // self.velocity.y = self.velocity.y + accel;
+            // if !self.jumping {
+                // self.velocity.y = 0.5;
+                // self.jumping = true;
+            // }
         }
 
         if inputs.is_down(Key::LeftShift) {
-            self.velocity.y = ::util::clamp(self.velocity.y - self.cam_acceleration, -self.max_speed, self.max_speed);
+            // self.velocity.y = self.velocity.y - accel;
         }
 
         if inputs.is_down(Key::LeftControl) {
-            self.cam_acceleration = 0.1;
+            self.cam_acceleration = 2.0;
         } else {
-            self.cam_acceleration = 0.03;
+            self.cam_acceleration = 0.1;
         }
     }
 
@@ -250,19 +269,79 @@ impl Application {
         }
     }
 
-    fn update(&mut self) {
+    fn apply_motion(&mut self, dt: f64) {
+        let substeps = 3;
+        let timestep = dt as f32 / (substeps as f32);
+        for _ in 0..substeps {
+            self.player_pos += self.velocity * timestep;
+
+            let world = self.chunk_manager.world();
+            let feet = Vector3::new(
+                self.player_pos.x.floor() as i32,
+                self.player_pos.y.floor() as i32,
+                self.player_pos.z.floor() as i32);
+            let gjk = GJK3::new();
+            let around = world.around_voxel(feet, 3, |pos, voxel| if voxel.has_transparency() { None } else { Some(pos) });
+
+            const PLAYER_WIDTH: f32 = 0.45;
+            const PLAYER_HEIGHT: f32 = 1.8;
+
+            for block_pos in around {
+                self.frame_at_voxel(block_pos.cast().unwrap(), Vector3::new(0.0, 1.0, 1.0), 0.003);
+                let block_tfm = Matrix4::from_translation(
+                    block_pos.cast().unwrap() + Vector3::new(0.5, 0.5, 0.5),
+                );
+
+                let player_tfm = Matrix4::from_translation(
+                    self.player_pos + Vector3::new(0.0, PLAYER_HEIGHT / 2.0, 0.0),
+                );
+
+                // NOTE: non-transparent blocks were filtered out
+                if let Some(contact) = gjk.intersection(
+                    &CollisionStrategy::FullResolution,
+                    &Cuboid::new(PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_WIDTH),
+                    &player_tfm,
+                    &Cuboid::new(1.0, 1.0, 1.0),
+                    &block_tfm
+                ) {
+                    let resolution = -1.0 * contact.penetration_depth * contact.normal;
+
+                    // We check two cuboids here, so normals should be axis-aligned. If any of
+                    // the components are not zero, that means we've had a collision on that
+                    // face and should cancel velocity in that direction. Alternatively, you
+                    // could multiply the component by something like -0.8 and have a lot of fun!
+                    if resolution.x.abs() > 0.0 { self.velocity.x = 0.0; }
+                    if resolution.y.abs() > 0.0 { self.velocity.y = 0.0; self.jumping = false; }
+                    if resolution.z.abs() > 0.0 { self.velocity.z = 0.0; }
+                    self.player_pos += resolution;
+                }
+            }
+        }
+    }
+
+    fn update(&mut self, dt: f64) {
         let view = self.camera.transform_matrix();
         self.pipeline.set_uniform("u_Time", &self.time);
         self.pipeline.set_uniform("u_CameraPosition", &::util::to_vector(self.camera.position));
         self.pipeline.set_uniform("u_View", &view);
         self.debug_pipeline.set_uniform("view", &view);
-        
-        self.camera.translate(self.velocity);
-        self.velocity *= 0.95;
 
-        self.chunk_manager.update_player_position(self.camera.position);
+        const FRICTION: f32 = 0.02;
+
+        self.velocity.x *= FRICTION.powf(dt as f32);
+        self.velocity.z *= FRICTION.powf(dt as f32);
+
+        if self.noclip {
+            self.velocity.y *= FRICTION.powf(dt as f32);
+            self.player_pos += self.velocity * dt as f32;
+        } else {
+            self.velocity.y -= 14.0 * dt as f32;
+            self.apply_motion(dt);
+        }
+        self.camera.position = ::util::to_point(self.player_pos + Vector3::new(0.0, 1.8 - 0.45, 0.0));
+
+        self.chunk_manager.update_player_position(self.player_pos);
         self.chunk_manager.tick();
-        // self.prev_camera = self.camera;
         self.time += 0.007;
     }
 
@@ -273,7 +352,15 @@ impl Application {
         let look_vec = -self.camera.get_look_vec();
         let ray = Ray3::new(self.camera.position, look_vec);
 
-        let colliders = self.chunk_manager.colliders_around_point(cam_pos_int, 9);
+        let colliders = self.chunk_manager.world().around_voxel(cam_pos_int, 9, |pos, voxel| {
+            if !voxel.has_transparency() {
+                Some(Aabb3::new(
+                    ::util::to_point(pos.cast().unwrap()),
+                    ::util::to_point(pos.cast().unwrap() + Vector3::new(1.0, 1.0, 1.0)),
+                ))
+            } else { None }
+        });
+
         let mut colliders: Vec<_> = colliders.iter()
             .filter(|aabb| ray.intersects(&aabb)).collect();
         
@@ -287,7 +374,7 @@ impl Application {
         })
     }
 
-    fn draw(&mut self) {
+    fn draw(&mut self, _dt: f64) {
         // Draw frame around the block we're looking at
         if let Some(look) = self.get_look_pos() {
             self.frame_at_voxel(Vector3::new(look.x as f32, look.y as f32, look.z as f32), Vector3::new(0.2, 0.2, 0.2), 0.02);
@@ -316,6 +403,8 @@ impl Application {
     }
 }
 
+use glfw::SwapInterval;
+
 fn main() {
     let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
     println!("GLFW init");
@@ -329,6 +418,7 @@ fn main() {
 
     window.set_all_polling(true);
     window.make_current();
+    glfw.set_swap_interval(SwapInterval::Adaptive);
 
     // Load OpenGL function pointers.
     // good *god* this function takes a long time fo compile
@@ -353,6 +443,8 @@ fn main() {
 
     application.set_viewport(600, 600);
 
+    let mut prev_time = glfw.get_time();
+
     while !window.should_close() {
         misc::clear(misc::ClearMode::Color(0.529411765, 0.807843137, 0.921568627, 1.0));
         misc::clear(misc::ClearMode::Depth(1.0));
@@ -371,9 +463,13 @@ fn main() {
             }
         }
 
-        application.handle_inputs(&inputs);
-        application.update();
-        application.draw();
+        let now = glfw.get_time();
+        let dt = now - prev_time;
+        prev_time = now;
+
+        application.handle_inputs(&inputs, dt);
+        application.update(dt);
+        application.draw(dt);
 
         window.swap_buffers();
     }
