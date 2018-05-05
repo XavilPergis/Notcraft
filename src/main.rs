@@ -3,7 +3,7 @@
 extern crate gl;
 extern crate glfw;
 extern crate image;
-#[macro_use] extern crate cgmath;
+extern crate cgmath;
 extern crate noise;
 extern crate smallvec;
 extern crate collision;
@@ -23,7 +23,7 @@ use cgmath::{MetricSpace, Matrix4};
 use gl_api::shader::program::LinkedProgram;
 use std::collections::HashSet;
 use glfw::{Action, Context, Key, Window, MouseButton, WindowEvent, WindowHint};
-use cgmath::{Deg, InnerSpace, Vector3};
+use cgmath::{Deg, Vector3};
 use engine::chunk_manager::ChunkManager;
 use engine::camera::Rotation;
 use gl_api::shader::*;
@@ -76,24 +76,31 @@ impl Inputs {
     }
 }
 
+#[derive(Debug)]
+struct Config {
+    acceleration: f32,
+    fast_acceleration: f32,
+    max_fall_speed: f32,
+    jump_velocity: f32,
+    gravity: f32,
+}
+
 struct Application {
-    time: f32,
     wireframe: bool,
     mouse_capture: bool,
     debug_frames: bool,
     noclip: bool,
-    camera: Camera,
+    jumping: bool,
+
     player_pos: Vector3<f32>,
-    // prev_camera: Camera,
+    velocity: Vector3<f32>,
+    time: f32,
+    frames: i32,
     previous_cursor_x: f32,
     previous_cursor_y: f32,
-    frames: i32,
 
-    jumping: bool,
-    velocity: Vector3<f32>,
-    max_speed: f32,
-    cam_acceleration: f32,
-
+    cfg: Config,
+    camera: Camera,
     pipeline: LinkedProgram,
     debug_pipeline: LinkedProgram,
     chunk_manager: ChunkManager<Block>,
@@ -135,21 +142,25 @@ impl Application {
         ));
 
         Application {
-            velocity: Vector3::new(0.0, 0.0, 0.0),
-            max_speed: 24.0,
-            cam_acceleration: 0.1,
-            frames: 0,
-            player_pos: Vector3::new(0.0, 0.0, 0.0),
-            time: 0.0,
+            cfg: Config {
+                acceleration: 0.15,
+                fast_acceleration: 0.2,
+                max_fall_speed: 2.0,
+                jump_velocity: 6.5,
+                gravity: 16.0,
+            },
             wireframe: false,
             debug_frames: false,
             mouse_capture: false,
             noclip: false,
             jumping: false,
-            camera: Camera::default(),
-            // prev_camera: Camera::default(),
+            velocity: Vector3::new(0.0, 0.0, 0.0),
+            player_pos: Vector3::new(0.0, 0.0, 0.0),
             previous_cursor_x: 0.0,
             previous_cursor_y: 0.0,
+            frames: 0,
+            time: 0.0,
+            camera: Camera::default(),
             pipeline,
             debug_pipeline,
             chunk_manager,
@@ -206,14 +217,18 @@ impl Application {
         false
     }
 
-    fn handle_inputs(&mut self, inputs: &Inputs, dt: f64) {
-        // println!("camera={:?}", self.camera);
+    fn handle_inputs(&mut self, inputs: &Inputs, _dt: f64) {
         if inputs.is_down(Key::Right) { self.camera.rotate(Rotation::AboutY(Deg(1.0))); }
         if inputs.is_down(Key::Left) { self.camera.rotate(Rotation::AboutY(-Deg(1.0))); }
         if inputs.is_down(Key::Up) { self.camera.rotate(Rotation::AboutX(-Deg(1.0))); }
         if inputs.is_down(Key::Down) { self.camera.rotate(Rotation::AboutX(Deg(1.0))); }
         
-        let accel = self.cam_acceleration;
+        let accel = if inputs.is_down(Key::LeftControl) {
+            self.cfg.fast_acceleration
+        } else {
+            self.cfg.acceleration
+        };
+
         if inputs.is_down(Key::W) {
             let look_vec = accel * self.camera.get_spin_vecs().0;
             self.velocity.x = self.velocity.x - look_vec.x;
@@ -221,45 +236,38 @@ impl Application {
         }
 
         if inputs.is_down(Key::S) {
-            let look_vec = self.camera.get_spin_vecs().0;
-            self.velocity.x = self.velocity.x + accel * look_vec.x;
-            self.velocity.z = self.velocity.z + accel * look_vec.z;
+            let look_vec = accel * self.camera.get_spin_vecs().0;
+            self.velocity.x = self.velocity.x + look_vec.x;
+            self.velocity.z = self.velocity.z + look_vec.z;
         }
 
         if inputs.is_down(Key::A) {
-            let look_vec = self.camera.get_spin_vecs().1;
-            self.velocity.x = self.velocity.x - accel * look_vec.x;
-            self.velocity.z = self.velocity.z - accel * look_vec.z;
+            let look_vec = accel * self.camera.get_spin_vecs().1;
+            self.velocity.x = self.velocity.x - look_vec.x;
+            self.velocity.z = self.velocity.z - look_vec.z;
         }
 
         if inputs.is_down(Key::D) {
-            let look_vec = self.camera.get_spin_vecs().1;
-            self.velocity.x = self.velocity.x + accel * look_vec.x;
-            self.velocity.z = self.velocity.z + accel * look_vec.z;
+            let look_vec = accel * self.camera.get_spin_vecs().1;
+            self.velocity.x = self.velocity.x + look_vec.x;
+            self.velocity.z = self.velocity.z + look_vec.z;
         }
 
         if inputs.is_down(Key::Space) {
-            if !self.jumping {
+            if !self.jumping && !self.noclip {
                 self.jumping = true;
-                self.velocity.y = 6.5;
+                self.velocity.y = self.cfg.jump_velocity;
             }
-            // No need to multiply the cam accel by anything because we only ever travel
-            // straight up and down the Y axis.
-            // self.velocity.y = self.velocity.y + accel;
-            // if !self.jumping {
-                // self.velocity.y = 0.5;
-                // self.jumping = true;
-            // }
+
+            if self.noclip {
+                self.velocity.y += accel;
+            }
         }
 
         if inputs.is_down(Key::LeftShift) {
-            // self.velocity.y = self.velocity.y - accel;
-        }
-
-        if inputs.is_down(Key::LeftControl) {
-            self.cam_acceleration = 2.0;
-        } else {
-            self.cam_acceleration = 0.1;
+            if self.noclip {
+                self.velocity.y -= accel;
+            }
         }
     }
 
@@ -273,13 +281,16 @@ impl Application {
         let substeps = 3;
         let timestep = dt as f32 / (substeps as f32);
         for _ in 0..substeps {
-            self.player_pos += self.velocity * timestep;
-
             let world = self.chunk_manager.world();
             let feet = Vector3::new(
                 self.player_pos.x.floor() as i32,
                 self.player_pos.y.floor() as i32,
                 self.player_pos.z.floor() as i32);
+            
+            // Don't apply any motion if the player is unloaded chunks.
+            if world.get_voxel(feet).is_none() { return; }
+
+            self.player_pos += self.velocity * timestep;
             let gjk = GJK3::new();
             let around = world.around_voxel(feet, 3, |pos, voxel| if voxel.has_transparency() { None } else { Some(pos) });
 
@@ -327,15 +338,15 @@ impl Application {
         self.debug_pipeline.set_uniform("view", &view);
 
         const FRICTION: f32 = 0.02;
-
-        self.velocity.x *= FRICTION.powf(dt as f32);
-        self.velocity.z *= FRICTION.powf(dt as f32);
+        const GLIDE_FRICTION: f32 = 0.1;
 
         if self.noclip {
-            self.velocity.y *= FRICTION.powf(dt as f32);
-            self.player_pos += self.velocity * dt as f32;
+            self.velocity *= GLIDE_FRICTION.powf(dt as f32);
+            self.player_pos += self.velocity * 2.0 * dt as f32;
         } else {
-            self.velocity.y -= 14.0 * dt as f32;
+            self.velocity.x *= FRICTION.powf(dt as f32);
+            self.velocity.z *= FRICTION.powf(dt as f32);
+            self.velocity.y -= ::util::clamp(self.cfg.gravity * dt as f32, -self.cfg.max_fall_speed, ::std::f32::INFINITY);
             self.apply_motion(dt);
         }
         self.camera.position = ::util::to_point(self.player_pos + Vector3::new(0.0, 1.8 - 0.45, 0.0));
