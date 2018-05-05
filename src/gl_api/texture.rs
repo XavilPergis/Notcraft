@@ -8,6 +8,7 @@ use gl;
 use gl_api::uniform::{Uniform, UniformLocation};
 
 pub type TextureResult<T> = Result<T, TextureError>;
+#[derive(Debug)]
 pub enum TextureError {
     Image(ImageError),
     TextureTooLarge(u32, u32),
@@ -25,7 +26,6 @@ pub struct Texture {
 impl Texture {
     pub fn new<P: AsRef<Path>>(path: P) -> TextureResult<Self> {
         unsafe {
-            // TODO: unwrap
             let image = image::open(path)?;
 
             let mut id = 0;
@@ -33,8 +33,8 @@ impl Texture {
 
             gl::ActiveTexture(gl::TEXTURE0);
             gl::BindTexture(gl::TEXTURE_2D, id);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as GLint);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as GLint);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as GLint);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as GLint);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as GLint);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as GLint);
 
@@ -45,7 +45,6 @@ impl Texture {
                   C: Deref<Target=[P::Subpixel]> {
                 let (width, height) = buffer.dimensions();
 
-                // TODO: return error
                 if width > gl::MAX_TEXTURE_SIZE || height > gl::MAX_TEXTURE_SIZE {
                     return Err(TextureError::TextureTooLarge(width, height));
                 }
@@ -90,7 +89,7 @@ impl Drop for Texture {
     }
 }
 
-impl<'a> Uniform for &'a Texture {
+impl Uniform for Texture {
     #[inline(always)]
     fn set_uniform(&self, location: UniformLocation) {
         unsafe { gl_call!(Uniform1i(location, self.texture_slot.get() as i32)).unwrap(); }

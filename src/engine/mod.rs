@@ -5,6 +5,7 @@ pub mod mesh;
 pub mod terrain;
 
 /// Six sides of a cube.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Side {
     /// Positive Y.
     Top,

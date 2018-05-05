@@ -14,6 +14,9 @@ extern crate rayon;
 pub mod engine;
 pub mod util;
 
+use collision::Union;
+use gl_api::texture::Texture;
+use cgmath::Vector2;
 use collision::algorithm::minkowski::GJK3;
 use collision::primitive::Cuboid;
 use collision::Discrete;
@@ -38,15 +41,39 @@ enum Block {
     Water,
 }
 
+use engine::chunk::Precomputed;
+use engine::Side;
+
+vertex! {
+    vertex BlockFace {
+        pos: Vector3<f32>,
+        norm: Vector3<f32>,
+        face_offset: Vector2<f32>,
+        face: i32,
+        uv: Vector2<f32>,
+    }
+}
+
 impl engine::chunk::Voxel for Block {
+    type PerVertex = BlockFace;
     fn has_transparency(&self) -> bool { *self == Block::Air }
-    fn color(&self) -> Vector3<f32> {
-        match *self {
-            Block::Air => Vector3::new(0.0, 0.0, 0.0),
-            Block::Stone => Vector3::new(0.545098039, 0.552941176, 0.478431373),
-            Block::Dirt => Vector3::new(0.250980392, 0.160784314, 0.0196078431),
-            Block::Grass => Vector3::new(0.376, 0.502, 0.220),
-            Block::Water => Vector3::new(0.1, 0.2, 0.9),
+    fn vertex_data(&self, pre: Precomputed) -> BlockFace {
+        BlockFace {
+            pos: pre.pos,
+            norm: pre.norm,
+            face_offset: pre.face_offset,
+            face: pre.face,
+            uv: (match *self {
+                Block::Air => Vector2::new(0.0, 0.0),
+                Block::Stone => Vector2::new(1.0, 0.0),
+                Block::Dirt => Vector2::new(2.0, 0.0),
+                Block::Grass => match pre.side {
+                    Side::Top => Vector2::new(0.0, 0.0),
+                    Side::Bottom => Vector2::new(2.0, 0.0),
+                    _ => Vector2::new(0.0, 1.0),
+                },
+                Block::Water => Vector2::new(1.0, 0.0),
+            } + pre.face_offset) / 4.0
         }
     }
 }
@@ -98,7 +125,9 @@ struct Application {
     frames: i32,
     previous_cursor_x: f32,
     previous_cursor_y: f32,
+    selection_start: Option<Vector3<i32>>,
 
+    textures: Texture,
     cfg: Config,
     camera: Camera,
     pipeline: LinkedProgram,
@@ -141,6 +170,9 @@ impl Application {
             }
         ));
 
+        let textures = Texture::new("resources/textures.png").unwrap();
+        pipeline.set_uniform("u_TextureMap", &&textures);
+
         Application {
             cfg: Config {
                 acceleration: 0.15,
@@ -156,10 +188,12 @@ impl Application {
             jumping: false,
             velocity: Vector3::new(0.0, 0.0, 0.0),
             player_pos: Vector3::new(0.0, 0.0, 0.0),
+            selection_start: None,
             previous_cursor_x: 0.0,
             previous_cursor_y: 0.0,
             frames: 0,
             time: 0.0,
+            textures,
             camera: Camera::default(),
             pipeline,
             debug_pipeline,
@@ -202,7 +236,8 @@ impl Application {
     fn handle_event(&mut self, window: &mut Window, event: WindowEvent) -> bool {
         match event {
             WindowEvent::CursorPos(x, y) => self.update_camera_rotation(x as f32, y as f32),
-            WindowEvent::MouseButton(MouseButton::Button1, Action::Press, _) => self.destroy_looking_at(),
+            WindowEvent::MouseButton(MouseButton::Button1, Action::Press, _) => self.start_selection(),
+            WindowEvent::MouseButton(MouseButton::Button1, Action::Release, _) => self.end_selection(),
             // WindowEvent::MouseButton(MouseButton::Button2, Action::Press, _) => self.place_looking_at(),
 
             WindowEvent::Key(Key::Escape, _, Action::Press, _) => return true,
@@ -215,6 +250,29 @@ impl Application {
             _ => {}
         }
         false
+    }
+
+    fn selection_bounds(&self) -> Option<Aabb3<i32>> {
+        self.get_look_pos().and_then(|look| self.selection_start.map(|start| {
+            Aabb3::new(::util::to_point(start), ::util::to_point(look))
+            .union(&Aabb3::new(::util::to_point(look), ::util::to_point(look + Vector3::new(1, 1, 1))))
+        }))
+    }
+
+    fn start_selection(&mut self) {
+        self.selection_start = self.get_look_pos();
+    }
+
+    fn end_selection(&mut self) {
+        let end = self.get_look_pos();
+        if let (Some(start), Some(end)) = (self.selection_start, end) {
+            if start == end {
+                self.chunk_manager.set_voxel(start, Block::Air);
+            } else {
+                self.chunk_manager.set_voxel_range(self.selection_bounds().unwrap(), Block::Air);
+            }
+        }
+        self.selection_start = None;
     }
 
     fn handle_inputs(&mut self, inputs: &Inputs, _dt: f64) {
@@ -271,12 +329,6 @@ impl Application {
         }
     }
 
-    fn destroy_looking_at(&mut self) {
-        if let Some(pos) = self.get_look_pos() {
-            self.chunk_manager.set_voxel(pos, Block::Air);
-        }
-    }
-
     fn apply_motion(&mut self, dt: f64) {
         let substeps = 3;
         let timestep = dt as f32 / (substeps as f32);
@@ -298,7 +350,7 @@ impl Application {
             const PLAYER_HEIGHT: f32 = 1.8;
 
             for block_pos in around {
-                self.frame_at_voxel(block_pos.cast().unwrap(), Vector3::new(0.0, 1.0, 1.0), 0.003);
+                self.frame_at_voxel(block_pos.cast().unwrap(), Vector3::new(0.0, 1.0, 1.0), 0.003, false);
                 let block_tfm = Matrix4::from_translation(
                     block_pos.cast().unwrap() + Vector3::new(0.5, 0.5, 0.5),
                 );
@@ -386,35 +438,41 @@ impl Application {
     }
 
     fn draw(&mut self, _dt: f64) {
+        let look_pos = self.get_look_pos();
         // Draw frame around the block we're looking at
-        if let Some(look) = self.get_look_pos() {
-            self.frame_at_voxel(Vector3::new(look.x as f32, look.y as f32, look.z as f32), Vector3::new(0.2, 0.2, 0.2), 0.02);
+        if let Some(look) = look_pos {
+            self.frame_at_voxel(Vector3::new(look.x as f32, look.y as f32, look.z as f32), Vector3::new(0.2, 0.2, 0.2), 0.01, true);
+        }
+
+        if let Some(aabb) = self.selection_bounds() {
+            self.draw_frame(Aabb3::new(aabb.min.cast().unwrap(), aabb.max.cast().unwrap()), Vector3::new(1.0, 0.5, 0.0), 0.02, true);
         }
 
         self.draw_frame(Aabb3::new(
             ::util::to_point(::util::to_vector(self.camera.position) - Vector3::new(9.0, 9.0, 9.0)),
             ::util::to_point(::util::to_vector(self.camera.position) + Vector3::new(9.0, 9.0, 9.0)),
-        ), Vector3::new(0.0, 1.0, 0.0), 0.02);
+        ), Vector3::new(0.0, 1.0, 0.0), 0.02, false);
 
         self.chunk_manager.draw(&mut self.pipeline).expect("Drawing chunks failed");
         self.frames += 1;
     }
 
-    fn draw_frame(&mut self, aabb: Aabb3<f32>, color: Vector3<f32>, thickness: f32) {
-        if self.debug_frames {
+    fn draw_frame(&mut self, aabb: Aabb3<f32>, color: Vector3<f32>, thickness: f32, force: bool) {
+        if self.debug_frames || force {
             ::util::draw_frame(&mut self.debug_pipeline, aabb, color, thickness);
         }
     }
 
-    fn frame_at_voxel(&mut self, pos: Vector3<f32>, color: Vector3<f32>, thickness: f32) {
+    fn frame_at_voxel(&mut self, pos: Vector3<f32>, color: Vector3<f32>, thickness: f32, force: bool) {
         self.draw_frame(Aabb3::new(
             ::util::to_point(pos),
             ::util::to_point(pos + Vector3::new(1.0, 1.0, 1.0)),
-        ), color, thickness);
+        ), color, thickness, force);
     }
 }
 
 use glfw::SwapInterval;
+use gl_api::shader::shader::ShaderError;
 
 fn main() {
     let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
@@ -422,6 +480,7 @@ fn main() {
     
     glfw.window_hint(WindowHint::ContextVersion(4, 5));
     glfw.window_hint(WindowHint::DepthBits(Some(24)));
+    glfw.window_hint(WindowHint::Samples(Some(4)));
 
     let (mut window, events) = glfw.create_window(600, 600, "Not Minecraft", glfw::WindowMode::Windowed)
         .expect("Failed to create GLFW window.");
@@ -435,18 +494,29 @@ fn main() {
     // good *god* this function takes a long time fo compile
     gl::load_with(|symbol| window.get_proc_address(symbol) as *const _);
 
-    let program = simple_pipeline("resources/terrain.vs", "resources/terrain.fs")
-        .expect("Pipeline creation failure");
-    let debug_program = simple_pipeline("resources/debug.vs", "resources/debug.fs")
-        .expect("Pipeline creation failure");
+    let program = match simple_pipeline("resources/terrain.vs", "resources/terrain.fs") {
+        Ok(prog) => prog,
+        Err(msg) => match msg {
+            PipelineError::Shader(ShaderError::Shader(msg)) => { println!("{}", msg); panic!() },
+            _ => panic!("Other error")
+        }
+    };
+    let debug_program = match simple_pipeline("resources/debug.vs", "resources/debug.fs") {
+        Ok(prog) => prog,
+        Err(msg) => match msg {
+            PipelineError::Shader(ShaderError::Shader(msg)) => { println!("{}", msg); panic!() },
+            _ => panic!("Other error")
+        }
+    };
 
     let mut application = Application::new(program, debug_program);
     let mut inputs = Inputs::new();
 
     unsafe {
+        gl_call!(Enable(gl::MULTISAMPLE)).expect("glEnable failed");
         gl_call!(Enable(gl::DEPTH_TEST)).expect("glEnable failed");
-        gl_call!(DepthFunc(gl::LESS)).expect("glDepthFunc failed");
         gl_call!(Enable(gl::CULL_FACE)).expect("glEnable failed");
+        gl_call!(DepthFunc(gl::LESS)).expect("glDepthFunc failed");
         gl_call!(FrontFace(gl::CW)).expect("glFrontFace failed");
         gl_call!(CullFace(gl::BACK)).expect("glCullFace failed");
         gl_call!(Viewport(0, 0, 600, 600)).expect("glViewport failed");

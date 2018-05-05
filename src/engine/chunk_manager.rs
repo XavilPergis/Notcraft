@@ -1,5 +1,5 @@
-use smallvec::SmallVec;
 use collision::Aabb3;
+use smallvec::SmallVec;
 use std::collections::HashSet;
 use gl_api::error::GlResult;
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ use std::sync::mpsc;
 use super::terrain::ChunkGenerator;
 
 /// Get a chunk position from a world position
-pub fn get_chunk_pos(pos: Vector3<i32>) -> (Vector3<i32>, Vector3<i32>) {
+pub fn get_chunk_pos(pos: WorldPos) -> (ChunkPos, WorldPos) {
     const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
     let cx = ::util::floor_div(pos.x, SIZE);
     let cy = ::util::floor_div(pos.y, SIZE);
@@ -123,9 +123,9 @@ impl<T> World<T> {
     }
 }
 
-pub struct ChunkManager<T> {
+pub struct ChunkManager<T: Voxel> {
     world: World<T>,
-    meshes: HashMap<ChunkPos, Mesh<ChunkVertex, u32>>,
+    meshes: HashMap<ChunkPos, Mesh<T::PerVertex, u32>>,
     dirty: HashSet<ChunkPos>,
     queue: HashSet<ChunkPos>,
     center: ChunkPos,
@@ -152,6 +152,89 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     /// Be careful with this! It is *your* responsibility to not clear voxels without
     /// remeshing, because this will **NOT** cause a remesh of any chunks!
     pub fn world_mut(&mut self) -> &mut World<T> { &mut self.world }
+
+    /// Set many voxels at once
+    pub fn set_voxel_range(&mut self, aabb: Aabb3<i32>, voxel: T) where T: PartialEq + Clone {
+        const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
+        println!("aabb: {:?}", aabb);
+        let start = ::util::to_vector(aabb.min);
+        let end = ::util::to_vector(aabb.max);
+        println!("start: {:?}, end: {:?}", start, end);
+        
+        let (chunk_start, block_start) = get_chunk_pos(start);
+        let (chunk_end, block_end) = get_chunk_pos(end);
+        println!("chunk_start: {:?}, block_start: {:?}", chunk_start, block_start);
+        println!("chunk_end: {:?}, block_end: {:?}", chunk_end, block_end);
+
+        for x in start.x..end.x {
+            for y in start.y..end.y {
+                for z in start.z..end.z {
+                    let pos = Vector3::new(x, y, z);
+                    if let Some(world_voxel) = self.world.get_voxel_mut(pos) {
+                        if *world_voxel != voxel {
+                            *world_voxel = voxel.clone();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mark all the chunks directly affected by the block updates as dirty
+        for x in chunk_start.x..chunk_end.x+1 {
+            for y in chunk_start.y..chunk_end.y+1 {
+                for z in chunk_start.z..chunk_end.z+1 {
+                    self.dirty.insert(Vector3::new(x, y, z));
+                }
+            }
+        }
+
+        // Mark chunks on chunk borders as dirty if they were affected.
+        if block_start.x == 0 {
+            for y in chunk_start.y..chunk_end.y {
+                for z in chunk_start.z..chunk_end.z {
+                    self.dirty.insert(Vector3::new(chunk_start.x-1, y, z));
+                }
+            }
+        }
+        if block_start.y == 0 {
+            for x in chunk_start.x..chunk_end.x {
+                for z in chunk_start.z..chunk_end.z {
+                    self.dirty.insert(Vector3::new(x, chunk_start.y-1, z));
+                }
+            }
+        }
+        if block_start.z == 0 {
+            for x in chunk_start.x..chunk_end.x {
+                for y in chunk_start.y..chunk_end.y {
+                    self.dirty.insert(Vector3::new(x, y, chunk_start.z-1));
+                }
+            }
+
+        }
+        if block_end.x == SIZE-1 {
+            for y in chunk_start.y..chunk_end.y {
+                for z in chunk_start.z..chunk_end.z {
+                    self.dirty.insert(Vector3::new(chunk_end.x+1, y, z));
+                }
+            }
+        }
+        if block_end.y == SIZE-1 {
+            for x in chunk_start.x..chunk_end.x {
+                for z in chunk_start.z..chunk_end.z {
+                    self.dirty.insert(Vector3::new(x, chunk_end.y+1, z));
+                }
+            }
+        }
+        if block_end.z == SIZE-1 {
+            for x in chunk_start.x..chunk_end.x {
+                for y in chunk_start.y..chunk_end.y {
+                    self.dirty.insert(Vector3::new(x, y, chunk_end.z+1));
+                }
+            }
+        }
+
+        println!("Dirty queue: {:?}", self.dirty);
+    }
 
     /// Set a voxel, causing remeshes as needed.
     pub fn set_voxel(&mut self, pos: WorldPos, voxel: T) where T: PartialEq {
@@ -242,7 +325,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         self.unload();
     }
 
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self) where T::PerVertex: Send {
         use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
         self.world.tick();

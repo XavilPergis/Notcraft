@@ -8,11 +8,12 @@ uniform vec3 u_LightAmbient;
 uniform vec3 u_Light[MAX_LIGHTS];
 uniform vec3 u_LightColor[MAX_LIGHTS];
 uniform float u_LightAttenuation[MAX_LIGHTS];
+uniform sampler2D u_TextureMap;
 
 in vec3 v_Pos;
 in vec3 v_Normal;
-in vec3 v_Color;
 in float v_FaceScalar;
+in vec2 v_Uv;
 
 out vec4 color;
 
@@ -36,12 +37,11 @@ void main()
         total += attenuation * (diffuse + specular);
     }
 
-    // float fog = min(length(u_CameraPosition - v_Pos) / 30.0, 1.0);
-
     float density = 0.007;
     float gradient = 2.3;
     float fog = exp(-pow(length(u_CameraPosition - v_Pos) * density, gradient));
+    vec4 tex_color = texture(u_TextureMap, v_Uv);
+    vec4 col = v_FaceScalar * tex_color * vec4(u_LightAmbient + total, 1.0);
 
-    vec3 cube_color = mix(vec3(0.529411765, 0.807843137, 0.921568627), v_Color * v_FaceScalar * (u_LightAmbient + total), fog);
-    color = vec4(cube_color, 1.0);
+    color = mix(vec4(0.529411765, 0.807843137, 0.921568627, 1.0), col, fog);
 }

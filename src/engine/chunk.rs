@@ -1,3 +1,4 @@
+use cgmath::Vector2;
 use gl_api::error::GlResult;
 use cgmath::Vector3;
 use gl_api::buffer::UsageType;
@@ -7,15 +8,6 @@ use gl_api::layout::InternalLayout;
 pub const CHUNK_SIZE: usize = 32;
 const CHUNK_VOLUME: usize = CHUNK_SIZE*CHUNK_SIZE*CHUNK_SIZE;
 
-vertex! {
-    vertex ChunkVertex {
-        pos: Vector3<f32>,
-        norm: Vector3<f32>,
-        color: Vector3<f32>,
-        face: i32,
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Chunk<T> {
     pub(crate) x: i32, pub(crate) y: i32, pub(crate) z: i32,
@@ -23,9 +15,29 @@ pub struct Chunk<T> {
     pub(crate) data: Box<[T]>,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
+pub struct CubeFaces<T> {
+    pub top: T,
+    pub bottom: T,
+    pub left: T,
+    pub right: T,
+    pub front: T,
+    pub back: T,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Precomputed {
+    pub side: Side,
+    pub pos: Vector3<f32>,
+    pub norm: Vector3<f32>,
+    pub face_offset: Vector2<f32>,
+    pub face: i32,
+}
+
 pub trait Voxel {
+    type PerVertex: InternalLayout;
     fn has_transparency(&self) -> bool;
-    fn color(&self) -> Vector3<f32>;
+    fn vertex_data(&self, precomputed: Precomputed) -> Self::PerVertex;
 }
 
 impl<T: Voxel> Chunk<T> {
@@ -91,7 +103,7 @@ pub struct CullMesher<'c, T: Voxel + 'c> {
     right: &'c Chunk<T>,
     front: &'c Chunk<T>,
     back: &'c Chunk<T>,
-    vertices: Vec<ChunkVertex>,
+    vertices: Vec<T::PerVertex>,
     indices: Vec<u32>,
 }
 
@@ -118,7 +130,7 @@ impl<'c, T: Voxel + 'c> CullMesher<'c, T> {
         }
     }
 
-    fn add_face(&mut self, side: Side, pos: Vector3<isize>, color: Vector3<f32>) {
+    fn add_face(&mut self, side: Side, pos: Vector3<isize>, voxel: &T) {
         let index_len = self.vertices.len() as u32;
         let cx = CHUNK_SIZE as f32 * self.chunk.x as f32;
         let cy = CHUNK_SIZE as f32 * self.chunk.y as f32;
@@ -131,27 +143,31 @@ impl<'c, T: Voxel + 'c> CullMesher<'c, T> {
             ($offset:expr, [$($item:expr),*]) => {[$($offset + $item),*]}
         }
 
-        macro_rules! face {
-            (ind [$($index:expr),*],
+        macro_rules! face { 
+            (side $side:ident,
+             ind [$($index:expr),*],
              vert [$($vx:expr, $vy:expr, $vz:expr);*],
+             off [$($ou:expr, $ov:expr);*],
              norm $nx:expr,$ny:expr,$nz:expr;,
              face $face:expr) => {{
                 self.indices.extend(&offset_arr!(index_len, [$($index),*]));
-                self.vertices.extend(&[$(ChunkVertex {
+                $(self.vertices.push(voxel.vertex_data(Precomputed {
+                    side: Side::$side,
+                    face_offset: Vector2::new($ou as f32, $ov as f32),
                     pos: Vector3::new(cx+x+$vx as f32, cy+y+$vy as f32, cz+z+$vz as f32),
                     norm: Vector3::new($nx as f32, $ny as f32, $nz as f32),
-                    color, face: $face
-                },)*]);
+                    face: $face
+                }));)*
             }}
         }
 
         match side {
-            Side::Front  => face! { ind [0,1,2,3,2,1], vert [0,1,1; 1,1,1; 0,0,1; 1,0,1], norm 0,0, 1;, face 0 },
-            Side::Back   => face! { ind [0,2,1,3,1,2], vert [0,1,0; 1,1,0; 0,0,0; 1,0,0], norm 0,0,-1;, face 0 },
-            Side::Top    => face! { ind [0,1,2,3,2,1], vert [0,1,0; 1,1,0; 0,1,1; 1,1,1], norm 0, 1,0;, face 1 },
-            Side::Bottom => face! { ind [0,2,1,3,1,2], vert [0,0,0; 1,0,0; 0,0,1; 1,0,1], norm 0,-1,0;, face 1 },
-            Side::Left   => face! { ind [0,1,2,3,2,1], vert [0,1,0; 0,1,1; 0,0,0; 0,0,1], norm -1,0,0;, face 2 },
-            Side::Right  => face! { ind [0,2,1,3,1,2], vert [1,1,0; 1,1,1; 1,0,0; 1,0,1], norm 1, 0,0;, face 2 },
+            Side::Top    => face! { side Top,    ind [0,1,2,3,2,1], vert [0,1,0; 1,1,0; 0,1,1; 1,1,1], off [0,1; 1,1; 0,0; 1,0], norm 0, 1,0;, face 1 },
+            Side::Bottom => face! { side Bottom, ind [0,2,1,3,1,2], vert [0,0,0; 1,0,0; 0,0,1; 1,0,1], off [0,1; 1,1; 0,0; 1,0], norm 0,-1,0;, face 1 },
+            Side::Front  => face! { side Front,  ind [0,1,2,3,2,1], vert [0,1,1; 1,1,1; 0,0,1; 1,0,1], off [0,0; 1,0; 0,1; 1,1], norm 0,0, 1;, face 0 },
+            Side::Back   => face! { side Back,   ind [0,2,1,3,1,2], vert [0,1,0; 1,1,0; 0,0,0; 1,0,0], off [0,0; 1,0; 0,1; 1,1], norm 0,0,-1;, face 0 },
+            Side::Left   => face! { side Left,   ind [0,1,2,3,2,1], vert [0,1,0; 0,1,1; 0,0,0; 0,0,1], off [0,0; 1,0; 0,1; 1,1], norm -1,0,0;, face 2 },
+            Side::Right  => face! { side Right,  ind [0,2,1,3,1,2], vert [1,1,0; 1,1,1; 1,0,0; 1,0,1], off [0,0; 1,0; 0,1; 1,1], norm 1, 0,0;, face 2 },
         }
     }
 
@@ -172,8 +188,8 @@ impl<'c, T: Voxel + 'c> CullMesher<'c, T> {
     }
 }
 
-impl<'c, T: Voxel + 'c> Mesher<ChunkVertex, u32> for CullMesher<'c, T> {
-    fn gen_vertex_data(mut self) -> (Vec<ChunkVertex>, Vec<u32>) {
+impl<'c, T: Voxel + 'c> Mesher<T::PerVertex, u32> for CullMesher<'c, T> {
+    fn gen_vertex_data(mut self) -> (Vec<T::PerVertex>, Vec<u32>) {
         for i in 0..(CHUNK_SIZE as isize) {
             for j in 0..(CHUNK_SIZE as isize) {
                 for k in 0..(CHUNK_SIZE as isize) {
@@ -181,12 +197,12 @@ impl<'c, T: Voxel + 'c> Mesher<ChunkVertex, u32> for CullMesher<'c, T> {
                     if block.has_transparency() { continue; }
                     let pos = Vector3::new(i, j, k);
 
-                    if self.needs_face(i, j, k+1) { self.add_face(Side::Front, pos, block.color()) }
-                    if self.needs_face(i, j, k-1) { self.add_face(Side::Back, pos, block.color()) }
-                    if self.needs_face(i, j+1, k) { self.add_face(Side::Top, pos, block.color()) }
-                    if self.needs_face(i, j-1, k) { self.add_face(Side::Bottom, pos, block.color()) }
-                    if self.needs_face(i+1, j, k) { self.add_face(Side::Right, pos, block.color()) }
-                    if self.needs_face(i-1, j, k) { self.add_face(Side::Left, pos, block.color()) }
+                    if self.needs_face(i, j, k+1) { self.add_face(Side::Front, pos, &block) }
+                    if self.needs_face(i, j, k-1) { self.add_face(Side::Back, pos, &block) }
+                    if self.needs_face(i, j+1, k) { self.add_face(Side::Top, pos, &block) }
+                    if self.needs_face(i, j-1, k) { self.add_face(Side::Bottom, pos, &block) }
+                    if self.needs_face(i+1, j, k) { self.add_face(Side::Right, pos, &block) }
+                    if self.needs_face(i-1, j, k) { self.add_face(Side::Left, pos, &block) }
                 }
             }
         }
