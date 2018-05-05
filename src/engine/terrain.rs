@@ -1,4 +1,4 @@
-use engine::chunk::Voxel;
+use engine::Voxel;
 use noise::NoiseFn;
 use cgmath::Vector3;
 use engine::chunk::Chunk;

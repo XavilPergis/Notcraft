@@ -1,16 +1,17 @@
+use std::collections::HashSet;
+use std::collections::HashMap;
+use std::sync::mpsc;
 use collision::Aabb3;
 use smallvec::SmallVec;
-use std::collections::HashSet;
-use gl_api::error::GlResult;
-use std::collections::HashMap;
 use cgmath::Vector3;
 use cgmath::{SquareMatrix, Matrix4};
 use engine::chunk::*;
+use engine::Voxel;
 use engine::mesh::Mesh;
+use engine::terrain::ChunkGenerator;
+use gl_api::error::GlResult;
 use gl_api::shader::program::LinkedProgram;
 use gl_api::buffer::UsageType;
-use std::sync::mpsc;
-use super::terrain::ChunkGenerator;
 
 /// Get a chunk position from a world position
 pub fn get_chunk_pos(pos: WorldPos) -> (ChunkPos, WorldPos) {

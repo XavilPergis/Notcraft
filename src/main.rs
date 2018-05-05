@@ -21,7 +21,7 @@ use collision::algorithm::minkowski::GJK3;
 use collision::primitive::Cuboid;
 use collision::Discrete;
 use collision::{Aabb3, Ray3, CollisionStrategy};
-use engine::chunk::Voxel;
+use engine::Voxel;
 use cgmath::{MetricSpace, Matrix4};
 use gl_api::shader::program::LinkedProgram;
 use std::collections::HashSet;
@@ -41,7 +41,7 @@ enum Block {
     Water,
 }
 
-use engine::chunk::Precomputed;
+use engine::Precomputed;
 use engine::Side;
 
 vertex! {
@@ -54,7 +54,7 @@ vertex! {
     }
 }
 
-impl engine::chunk::Voxel for Block {
+impl Voxel for Block {
     type PerVertex = BlockFace;
     fn has_transparency(&self) -> bool { *self == Block::Air }
     fn vertex_data(&self, pre: Precomputed) -> BlockFace {

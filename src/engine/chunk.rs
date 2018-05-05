@@ -1,3 +1,5 @@
+use engine::Precomputed;
+use engine::Voxel;
 use cgmath::Vector2;
 use gl_api::error::GlResult;
 use cgmath::Vector3;
@@ -13,31 +15,6 @@ pub struct Chunk<T> {
     pub(crate) x: i32, pub(crate) y: i32, pub(crate) z: i32,
     solid_count: usize,
     pub(crate) data: Box<[T]>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
-pub struct CubeFaces<T> {
-    pub top: T,
-    pub bottom: T,
-    pub left: T,
-    pub right: T,
-    pub front: T,
-    pub back: T,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Precomputed {
-    pub side: Side,
-    pub pos: Vector3<f32>,
-    pub norm: Vector3<f32>,
-    pub face_offset: Vector2<f32>,
-    pub face: i32,
-}
-
-pub trait Voxel {
-    type PerVertex: InternalLayout;
-    fn has_transparency(&self) -> bool;
-    fn vertex_data(&self, precomputed: Precomputed) -> Self::PerVertex;
 }
 
 impl<T: Voxel> Chunk<T> {
