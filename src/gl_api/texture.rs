@@ -18,50 +18,123 @@ impl From<ImageError> for TextureError {
     fn from(err: ImageError) -> Self { TextureError::Image(err) }
 }
 
+//         gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR_MIPMAP_LINEAR as GLint)).unwrap();
+//         gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as GLint)).unwrap();
+//         gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as GLint)).unwrap();
+//         gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as GLint)).unwrap();
+
+#[repr(u32)]
+pub enum MinificationFilter {
+    Nearest = gl::NEAREST,
+    Linear = gl::LINEAR,
+    NearestMipmapNearest = gl::NEAREST_MIPMAP_NEAREST,
+    LinearMipmapNearest = gl::LINEAR_MIPMAP_NEAREST,
+    NearestMipmapLinear = gl::NEAREST_MIPMAP_LINEAR,
+    LinearMipmapLinear = gl::LINEAR_MIPMAP_LINEAR,
+}
+
+#[repr(u32)]
+pub enum MagnificationFilter {
+    Nearest = gl::NEAREST,
+    Linear = gl::LINEAR,
+}
+
+#[repr(u32)]
+pub enum WrapMode {
+    ClampToEdge = gl::CLAMP_TO_EDGE,
+    ClampToBorder = gl::CLAMP_TO_BORDER,
+    MirroredRepeat = gl::MIRRORED_REPEAT,
+    Repeat = gl::REPEAT,
+    MirrorClampToEdge = gl::MIRROR_CLAMP_TO_EDGE,
+}
+
+pub enum TextureAxis {
+    S, T, R
+}
+
 pub struct Texture {
     id: GLuint,
     texture_slot: Cell<GLenum>,
 }
 
 impl Texture {
-    pub fn new<P: AsRef<Path>>(path: P) -> TextureResult<Self> {
-        unsafe {
-            let image = image::open(path)?;
+    pub fn new() -> Self {
+        let mut id = 0;
+        unsafe { gl_call!(GenTextures(1, &mut id)).unwrap(); }
+        Texture { id, texture_slot: Cell::new(0) }
+    }
 
-            let mut id = 0;
-            gl_call!(GenTextures(1, &mut id)).unwrap();
+    pub fn source_from_image<P: AsRef<Path>>(&self, path: P) -> TextureResult<()> {
+        self.bind();
+        let image = image::open(path)?;
 
-            gl::ActiveTexture(gl::TEXTURE0);
-            gl::BindTexture(gl::TEXTURE_2D, id);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as GLint);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as GLint);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as GLint);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as GLint);
+        #[allow(dead_code)]
+        fn tex_image<P, C>(format: GLenum, buffer: &ImageBuffer<P, C>) -> TextureResult<()>
+        where P: Pixel + 'static,
+                P::Subpixel: 'static,
+                C: Deref<Target=[P::Subpixel]> {
+            let (width, height) = buffer.dimensions();
 
-            #[allow(dead_code)]
-            fn tex_image<P, C>(format: GLenum, buffer: &ImageBuffer<P, C>) -> TextureResult<()>
-            where P: Pixel + 'static,
-                  P::Subpixel: 'static,
-                  C: Deref<Target=[P::Subpixel]> {
-                let (width, height) = buffer.dimensions();
-
-                if width > gl::MAX_TEXTURE_SIZE || height > gl::MAX_TEXTURE_SIZE {
-                    return Err(TextureError::TextureTooLarge(width, height));
-                }
-                unsafe {
-                    Ok(gl_call!(TexImage2D(gl::TEXTURE_2D, 0, gl::RGBA8 as GLint,
-                                   width as i32, height as i32, 0, format,
-                                   gl::UNSIGNED_BYTE, buffer.as_ptr() as *const _)).unwrap())
-                }
-            };
-
-            match image {
-                DynamicImage::ImageRgb8(image) => tex_image(gl::RGB, &image)?,
-                DynamicImage::ImageRgba8(image) => tex_image(gl::RGBA, &image)?,
-                _ => unimplemented!("luma images are not supported."),
+            if width > gl::MAX_TEXTURE_SIZE || height > gl::MAX_TEXTURE_SIZE {
+                return Err(TextureError::TextureTooLarge(width, height));
             }
+            unsafe {
+                Ok(gl_call!(TexImage2D(gl::TEXTURE_2D, 0, gl::RGBA8 as GLint,
+                                width as i32, height as i32, 0, format,
+                                gl::UNSIGNED_BYTE, buffer.as_ptr() as *const _)).unwrap())
+            }
+        };
 
-            Ok(Texture { id, texture_slot: Cell::new(0) })
+        match image {
+            DynamicImage::ImageRgb8(image) => tex_image(gl::RGB, &image)?,
+            DynamicImage::ImageRgba8(image) => tex_image(gl::RGBA, &image)?,
+            _ => unimplemented!("luma images are not supported."),
+        }
+
+        Ok(())
+    }
+
+    pub fn texture_wrap_behavior(&self, axis: TextureAxis, mode: WrapMode) {
+        self.bind();
+        let axis = match axis {
+            TextureAxis::S => gl::TEXTURE_WRAP_S,
+            TextureAxis::T => gl::TEXTURE_WRAP_T,
+            TextureAxis::R => gl::TEXTURE_WRAP_R,
+        };
+
+        unsafe {
+            gl_call!(TexParameteri(gl::TEXTURE_2D, axis, mode as i32)).unwrap();
+        }
+    }
+
+    pub fn min_filter(&self, mode: MinificationFilter) {
+        self.bind();
+
+        // Generate mipmaps if the minification filter uses mipmaps
+        match mode {
+            MinificationFilter::LinearMipmapLinear |
+            MinificationFilter::LinearMipmapNearest |
+            MinificationFilter::NearestMipmapLinear |
+            MinificationFilter::NearestMipmapNearest => self.generate_mipmap(),
+            _ => (),
+        }
+
+        unsafe {
+            gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, mode as i32)).unwrap();
+        }
+    }
+
+    pub fn mag_filter(&self, mode: MagnificationFilter) {
+        self.bind();
+        unsafe {
+            gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, mode as i32)).unwrap();
+        }
+    }
+
+    fn generate_mipmap(&self) {
+        self.bind();
+        unsafe {
+            gl_call!(GenerateMipmap(gl::TEXTURE_2D)).unwrap();
         }
     }
 

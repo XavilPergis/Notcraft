@@ -205,44 +205,50 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
 
         // Mark chunks on chunk borders as dirty if they were affected.
         if block_start.x == 0 {
-            for y in chunk_start.y..chunk_end.y {
-                for z in chunk_start.z..chunk_end.z {
+            for y in chunk_start.y..chunk_end.y+1 {
+                for z in chunk_start.z..chunk_end.z+1 {
+                    println!("BOTTOM y={} z={}", y, z);
                     self.dirty.insert(Vector3::new(chunk_start.x-1, y, z));
                 }
             }
         }
         if block_start.y == 0 {
-            for x in chunk_start.x..chunk_end.x {
-                for z in chunk_start.z..chunk_end.z {
+            for x in chunk_start.x..chunk_end.x+1 {
+                for z in chunk_start.z..chunk_end.z+1 {
+                    println!("BOTTOM x={} z={}", x, z);
                     self.dirty.insert(Vector3::new(x, chunk_start.y-1, z));
                 }
             }
         }
         if block_start.z == 0 {
-            for x in chunk_start.x..chunk_end.x {
-                for y in chunk_start.y..chunk_end.y {
+            for x in chunk_start.x..chunk_end.x+1 {
+                for y in chunk_start.y..chunk_end.y+1 {
+                    println!("BOTTOM x={} y={}", x, y);
                     self.dirty.insert(Vector3::new(x, y, chunk_start.z-1));
                 }
             }
 
         }
         if block_end.x == SIZE-1 {
-            for y in chunk_start.y..chunk_end.y {
-                for z in chunk_start.z..chunk_end.z {
+            for y in chunk_start.y..chunk_end.y+1 {
+                for z in chunk_start.z..chunk_end.z+1 {
+                    println!("TOP y={} z={}", y, z);
                     self.dirty.insert(Vector3::new(chunk_end.x+1, y, z));
                 }
             }
         }
         if block_end.y == SIZE-1 {
-            for x in chunk_start.x..chunk_end.x {
-                for z in chunk_start.z..chunk_end.z {
+            for x in chunk_start.x..chunk_end.x+1 {
+                for z in chunk_start.z..chunk_end.z+1 {
+                    println!("TOP x={} z={}", x, z);
                     self.dirty.insert(Vector3::new(x, chunk_end.y+1, z));
                 }
             }
         }
         if block_end.z == SIZE-1 {
-            for x in chunk_start.x..chunk_end.x {
-                for y in chunk_start.y..chunk_end.y {
+            for x in chunk_start.x..chunk_end.x+1 {
+                for y in chunk_start.y..chunk_end.y+1 {
+                    println!("TOP x={} y={}", x, y);
                     self.dirty.insert(Vector3::new(x, y, chunk_end.z+1));
                 }
             }
@@ -392,10 +398,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     pub fn draw(&mut self, pipeline: &mut LinkedProgram) -> GlResult<()> {
         pipeline.set_uniform("u_Transform", &Matrix4::<f32>::identity());
         for mesh in self.meshes.values() {
-            // Don't draw empty meshes
-            if mesh.vertex_count() > 0 {
-                mesh.draw_with(&pipeline)?;
-            }
+            mesh.draw_with(&pipeline)?;
         }
         Ok(())
     }

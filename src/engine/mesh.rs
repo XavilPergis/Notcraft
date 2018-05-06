@@ -43,11 +43,12 @@ impl<V: InternalLayout, I: IndexingType> Mesh<V, I> {
     }
 
     pub fn draw_with(&self, pipeline: &LinkedProgram) -> GlResult<()> {
-        self.vao.bind();
-        self.indices.bind();
-        pipeline.bind();
-        unsafe { gl_call!(DrawElements(gl::TRIANGLES, self.indices.len() as i32, I::INDEX_TYPE, 0 as *const _)) }
+        // Ondy issude a draw call if there's something to render!
+        if self.vertices.len() > 0 {
+            self.vao.bind();
+            self.indices.bind();
+            pipeline.bind();
+            unsafe { gl_call!(DrawElements(gl::TRIANGLES, self.indices.len() as i32, I::INDEX_TYPE, 0 as *const _)) }
+        } else { Ok(()) }
     }
-
-    pub fn vertex_count(&self) -> usize { self.vertices.len() }
 }

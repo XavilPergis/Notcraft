@@ -126,6 +126,7 @@ struct Application {
     previous_cursor_x: f32,
     previous_cursor_y: f32,
     selection_start: Option<Vector3<i32>>,
+    selected_block: Block,
 
     textures: Texture,
     cfg: Config,
@@ -155,7 +156,7 @@ impl Application {
         pipeline.set_uniform("u_Light", &poses.as_slice());
         pipeline.set_uniform("u_LightColor", &colors.as_slice());
         pipeline.set_uniform("u_LightAttenuation", &attenuations.as_slice());
-        pipeline.set_uniform("u_LightAmbient", &Vector3::<f32>::new(0.2, 0.25, 0.3));
+        pipeline.set_uniform("u_LightAmbient", &Vector3::<f32>::new(0.4, 0.5, 0.6));
 
         use engine::terrain::NoiseGenerator;
 
@@ -170,8 +171,15 @@ impl Application {
             }
         ));
 
-        let textures = Texture::new("resources/textures.png").unwrap();
-        pipeline.set_uniform("u_TextureMap", &&textures);
+        use gl_api::texture::*;
+
+        let textures = Texture::new();
+        textures.source_from_image("resources/textures.png").unwrap();
+        textures.mag_filter(MagnificationFilter::Nearest);
+        textures.min_filter(MinificationFilter::NearestMipmapNearest);
+        textures.texture_wrap_behavior(TextureAxis::S, WrapMode::Repeat);
+        textures.texture_wrap_behavior(TextureAxis::T, WrapMode::Repeat);
+        pipeline.set_uniform("u_TextureMap", &textures);
 
         Application {
             cfg: Config {
@@ -191,6 +199,7 @@ impl Application {
             selection_start: None,
             previous_cursor_x: 0.0,
             previous_cursor_y: 0.0,
+            selected_block: Block::Stone,
             frames: 0,
             time: 0.0,
             textures,
@@ -238,7 +247,7 @@ impl Application {
             WindowEvent::CursorPos(x, y) => self.update_camera_rotation(x as f32, y as f32),
             WindowEvent::MouseButton(MouseButton::Button1, Action::Press, _) => self.start_selection(),
             WindowEvent::MouseButton(MouseButton::Button1, Action::Release, _) => self.end_selection(),
-            // WindowEvent::MouseButton(MouseButton::Button2, Action::Press, _) => self.place_looking_at(),
+            // WindowEvent::MouseButton(MouseButton::Button2, Action::Press, _) => self.place_block(),
 
             WindowEvent::Key(Key::Escape, _, Action::Press, _) => return true,
             WindowEvent::Key(Key::F1, _, Action::Press, _) => self.toggle_debug_frames(),
@@ -267,9 +276,9 @@ impl Application {
         let end = self.get_look_pos();
         if let (Some(start), Some(end)) = (self.selection_start, end) {
             if start == end {
-                self.chunk_manager.set_voxel(start, Block::Air);
+                self.chunk_manager.set_voxel(start, self.selected_block);
             } else {
-                self.chunk_manager.set_voxel_range(self.selection_bounds().unwrap(), Block::Air);
+                self.chunk_manager.set_voxel_range(self.selection_bounds().unwrap(), self.selected_block);
             }
         }
         self.selection_start = None;
@@ -431,9 +440,8 @@ impl Application {
             .partial_cmp(&b.min.distance2(cam_pos))
             .unwrap_or(Ordering::Equal));
         
-        colliders.get(0).map(|aabb| {
-            let fv = ::util::to_vector(aabb.min);
-            Vector3::new(fv.x as i32, fv.y as i32, fv.z as i32)
+        colliders.get(0).map(|&aabb| {
+            Vector3::new(aabb.min.x as i32, aabb.min.y as i32, aabb.min.z as i32)
         })
     }
 
