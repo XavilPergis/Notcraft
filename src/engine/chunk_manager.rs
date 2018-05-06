@@ -1,8 +1,8 @@
-use std::collections::HashSet;
-use std::collections::HashMap;
+use std::sync::RwLock;
+use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use collision::Aabb3;
-use smallvec::SmallVec;
 use cgmath::Vector3;
 use cgmath::{SquareMatrix, Matrix4};
 use engine::chunk::*;
@@ -26,6 +26,13 @@ pub fn get_chunk_pos(pos: WorldPos) -> (ChunkPos, WorldPos) {
     (cpos, bpos)
 }
 
+/// Tests if `pos` is within `r` units from `center`
+fn in_range(pos: WorldPos, center: WorldPos, r: i32) -> bool {
+    pos.x <= center.x + r && pos.x >= center.x - r &&
+    pos.y <= center.y + r && pos.y >= center.y - r &&
+    pos.z <= center.z + r && pos.z >= center.z - r
+}
+
 pub type WorldPos = Vector3<i32>;
 pub type ChunkPos = Vector3<i32>;
 
@@ -37,12 +44,17 @@ pub struct World<T> {
 }
 
 impl<T> World<T> {
-    pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G) -> Self where T: Send + 'static {
+    pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G, chunk_pos: Arc<RwLock<ChunkPos>>) -> Self where T: Send + 'static {
         use std::thread;
         let (req_tx, req_rx) = mpsc::channel();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             while let Ok(request) = req_rx.recv() {
+                // Deref and drop the guard so we don't hold up the lock while we generate
+                // the chunk
+                let pos = *chunk_pos.read().unwrap();
+                // Skip if not in range
+                if !in_range(request, pos, 4) { continue; }
                 // Err means the rx has hung up, so we can just shut down this thread
                 // if that happens
                 match tx.send((request, generator.generate(request))) {
@@ -77,17 +89,18 @@ impl<T> World<T> {
         }
     }
 
-    pub fn unload<I: IntoIterator<Item=ChunkPos>>(&mut self, iter: I) {
-        for location in iter {
-            self.chunks.remove(&location);
-        }
+    pub fn unload(&mut self, center: WorldPos, radius: i32) {
+        // Try removing any chunks from the queue that are out of range (player moved
+        // really fast or teleported)
+        self.queue.retain(|&pos| in_range(pos, center, radius));
+        self.chunks.retain(|&pos, _| in_range(pos, center, radius));
     }
 
     fn tick(&mut self) {
         for (pos, chunk) in self.gen_rx.try_iter() {
             println!("Generated chunk at ({:?}) => queue.len() = {}", pos, self.queue.len());
-            self.queue.remove(&pos);
             self.chunks.insert(pos, chunk);
+            self.queue.remove(&pos);
         }
     }
 
@@ -129,18 +142,19 @@ pub struct ChunkManager<T: Voxel> {
     meshes: HashMap<ChunkPos, Mesh<T::PerVertex, u32>>,
     dirty: HashSet<ChunkPos>,
     queue: HashSet<ChunkPos>,
-    center: ChunkPos,
+    center: Arc<RwLock<ChunkPos>>,
     radius: i32,
 }
 
 impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G) -> Self {
+        let center = Arc::new(RwLock::new(Vector3::new(0, 0, 0)));
         let mut manager = ChunkManager {
-            world: World::new(generator),
+            world: World::new(generator, center.clone()),
             meshes: HashMap::new(),
             dirty: HashSet::new(),
             queue: HashSet::new(),
-            center: Vector3::new(0, 0, 0),
+            center: center,
             radius: 3,
         };
 
@@ -272,22 +286,27 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         Some(CullMesher::new(chunk, top, bottom, left, right, front, back))
     }
 
+    fn center(&self) -> ChunkPos {
+        *self.center.read().unwrap()
+    }
+
     /// Add chunks to generator queue that are not already generated
     fn queue_in_range(&mut self) {
+        let center = self.center();
         // Generate chunks one outside the radius so the mesher can properly
         // mesh all the chunks in the radius
         println!("self.center = {:?}, self.radius = {:?}", self.center, self.radius);
-        for x in self.center.x - self.radius - 1..self.center.x + self.radius + 1 {
-            for y in self.center.y - self.radius - 1..self.center.y + self.radius + 1 {
-                for z in self.center.z - self.radius - 1..self.center.z + self.radius + 1 {
+        for x in center.x - self.radius - 1..center.x + self.radius + 1 {
+            for y in center.y - self.radius - 1..center.y + self.radius + 1 {
+                for z in center.z - self.radius - 1..center.z + self.radius + 1 {
                     self.world.queue(Vector3::new(x, y, z));
                 }
             }
         }
 
-        for x in self.center.x - self.radius..self.center.x + self.radius {
-            for y in self.center.y - self.radius..self.center.y + self.radius {
-                for z in self.center.z - self.radius..self.center.z + self.radius {
+        for x in center.x - self.radius..center.x + self.radius {
+            for y in center.y - self.radius..center.y + self.radius {
+                for z in center.z - self.radius..center.z + self.radius {
                     let pos = Vector3::new(x, y, z);
                     if !self.meshes.contains_key(&pos) {
                         self.queue.insert(Vector3::new(x, y, z));
@@ -298,20 +317,10 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     }
 
     fn unload(&mut self) {
-        let to_unload: SmallVec<[ChunkPos; 32]> = self.world.chunks.keys()
-            .filter(|p| {
-                p.x > self.center.x + self.radius + 1 ||
-                p.x < self.center.x - self.radius - 1 ||
-                p.y > self.center.y + self.radius + 1 ||
-                p.y < self.center.y - self.radius - 1 ||
-                p.z > self.center.z + self.radius + 1 ||
-                p.z < self.center.z - self.radius - 1
-            })
-            .map(|p| *p).collect();
-        for pos in &to_unload {
-            self.meshes.remove(pos);
-        }
-        self.world.unload(to_unload);
+        let (center, radius) = (self.center(), self.radius);
+        self.meshes.retain(|&pos, _| in_range(pos, center, radius));
+        // make sure to unload that one-chunk buffer
+        self.world.unload(center, radius + 1);
     }
 
     pub fn update_player_position(&mut self, pos: Vector3<f32>) {
@@ -320,8 +329,8 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         let z = (pos.z / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
         let pos = Vector3::new(x, y, z);
         // Don't run the expensive stuff if we haven't moved
-        if pos == self.center { return; }
-        self.center = pos;
+        if pos == self.center() { return; }
+        *self.center.write().unwrap() = pos;
         self.queue_in_range();
         self.unload();
     }
@@ -383,6 +392,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     pub fn draw(&mut self, pipeline: &mut LinkedProgram) -> GlResult<()> {
         pipeline.set_uniform("u_Transform", &Matrix4::<f32>::identity());
         for mesh in self.meshes.values() {
+            // Don't draw empty meshes
             if mesh.vertex_count() > 0 {
                 mesh.draw_with(&pipeline)?;
             }
