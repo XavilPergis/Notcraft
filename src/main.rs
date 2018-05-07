@@ -14,21 +14,24 @@ extern crate rayon;
 pub mod engine;
 pub mod util;
 
-use collision::Union;
-use gl_api::texture::Texture;
+use std::collections::HashSet;
+use std::cmp::Ordering;
 use cgmath::Vector2;
+use cgmath::{MetricSpace, Matrix4};
+use cgmath::{Deg, Vector3};
+use collision::Union;
 use collision::algorithm::minkowski::GJK3;
 use collision::primitive::Cuboid;
 use collision::Discrete;
 use collision::{Aabb3, Ray3, CollisionStrategy};
-use engine::Voxel;
-use cgmath::{MetricSpace, Matrix4};
-use gl_api::shader::program::LinkedProgram;
-use std::collections::HashSet;
 use glfw::{Action, Context, Key, Window, MouseButton, WindowEvent, WindowHint};
-use cgmath::{Deg, Vector3};
+use glfw::CursorMode;
+use engine::Voxel;
 use engine::chunk_manager::ChunkManager;
 use engine::camera::Rotation;
+use engine::camera::Camera;
+use gl_api::shader::program::LinkedProgram;
+use gl_api::texture::Texture;
 use gl_api::shader::*;
 use gl_api::misc;
 
@@ -78,8 +81,6 @@ impl Voxel for Block {
     }
 }
 
-use glfw::CursorMode;
-use engine::camera::Camera;
 
 struct Inputs {
     active_keys: HashSet<Key>,
@@ -247,7 +248,7 @@ impl Application {
             WindowEvent::CursorPos(x, y) => self.update_camera_rotation(x as f32, y as f32),
             WindowEvent::MouseButton(MouseButton::Button1, Action::Press, _) => self.start_selection(),
             WindowEvent::MouseButton(MouseButton::Button1, Action::Release, _) => self.end_selection(),
-            // WindowEvent::MouseButton(MouseButton::Button2, Action::Press, _) => self.place_block(),
+            WindowEvent::MouseButton(MouseButton::Button2, Action::Press, _) => self.place_block(),
 
             WindowEvent::Key(Key::Escape, _, Action::Press, _) => return true,
             WindowEvent::Key(Key::F1, _, Action::Press, _) => self.toggle_debug_frames(),
@@ -276,9 +277,9 @@ impl Application {
         let end = self.get_look_pos();
         if let (Some(start), Some(end)) = (self.selection_start, end) {
             if start == end {
-                self.chunk_manager.set_voxel(start, self.selected_block);
+                self.chunk_manager.set_voxel(start, Block::Air);
             } else {
-                self.chunk_manager.set_voxel_range(self.selection_bounds().unwrap(), self.selected_block);
+                self.chunk_manager.set_voxel_range(self.selection_bounds().unwrap(), Block::Air);
             }
         }
         self.selection_start = None;
@@ -390,6 +391,15 @@ impl Application {
             }
         }
     }
+    
+    fn place_block(&mut self) {
+        let side = self.get_look_face();
+        let pos = self.get_look_pos();
+
+        if let (Some(side), Some(pos)) = (side, pos) {
+            self.chunk_manager.set_voxel(pos + side.offset(), self.selected_block);
+        }
+    }
 
     fn update(&mut self, dt: f64) {
         let view = self.camera.transform_matrix();
@@ -417,8 +427,50 @@ impl Application {
         self.time += 0.007;
     }
 
+    fn get_look_face(&self) -> Option<Side> {
+        use cgmath::Point3;
+
+        let t = 0.1;
+        let look_vec = -self.camera.get_look_vec();
+
+        self.get_look_pos().and_then(|look_pos| {
+            let ray = Ray3::new(self.camera.position, look_vec);
+            let look_pos = look_pos.cast().unwrap();
+            let cam_pos = ::util::to_vector(self.camera.position);
+            let (l, h) = (look_pos, look_pos + Vector3::new(1.0, 1.0, 1.0));
+
+            let bb_left   = Aabb3::new(Point3::new(l.x, l.y, l.z), Point3::new(l.x - t, h.y, h.z));
+            let bb_right  = Aabb3::new(Point3::new(h.x, l.y, l.z), Point3::new(h.x + t, h.y, h.z));
+            let bb_bottom = Aabb3::new(Point3::new(l.x, l.y, l.z), Point3::new(h.x, l.y - t, h.z));
+            let bb_top    = Aabb3::new(Point3::new(l.x, h.y, l.z), Point3::new(h.x, h.y + t, h.z));
+            let bb_back   = Aabb3::new(Point3::new(l.x, l.y, l.z), Point3::new(h.x, h.y, l.z - t));
+            let bb_front  = Aabb3::new(Point3::new(l.x, l.y, h.z), Point3::new(h.x, h.y, h.z + t));
+
+            let pos_left   = Vector3::new(l.x, (l.y + h.y) * 0.5, (l.z + h.z) * 0.5);
+            let pos_right  = Vector3::new(h.x, (l.y + h.y) * 0.5, (l.z + h.z) * 0.5);
+            let pos_bottom = Vector3::new((l.x + h.x) * 0.5, l.y, (l.z + h.z) * 0.5);
+            let pos_top    = Vector3::new((l.x + h.x) * 0.5, h.y, (l.z + h.z) * 0.5);
+            let pos_back   = Vector3::new((l.x + h.x) * 0.5, (l.y + h.y) * 0.5, l.z);
+            let pos_front  = Vector3::new((l.x + h.x) * 0.5, (l.y + h.y) * 0.5, h.z);
+
+            let items = &mut [
+                (Side::Left, pos_left, bb_left),
+                (Side::Right, pos_right, bb_right),
+                (Side::Bottom, pos_bottom, bb_bottom),
+                (Side::Top, pos_top, bb_top),
+                (Side::Back, pos_back, bb_back),
+                (Side::Front, pos_front, bb_front),
+            ];
+
+            items.sort_by(|&(_, a, _), &(_, b, _)| a.distance2(cam_pos)
+                .partial_cmp(&b.distance2(cam_pos))
+                .unwrap_or(Ordering::Equal));
+            
+            items.iter().filter(|&&(_, _, aabb)| ray.intersects(&aabb)).map(|&(side, _, _)| side).next()
+        })
+    }
+
     fn get_look_pos(&self) -> Option<Vector3<i32>> {
-        use std::cmp::Ordering;
         let cam_pos = self.camera.position;
         let cam_pos_int = Vector3::new(cam_pos.x as i32, cam_pos.y as i32, cam_pos.z as i32);
         let look_vec = -self.camera.get_look_vec();
@@ -447,9 +499,13 @@ impl Application {
 
     fn draw(&mut self, _dt: f64) {
         let look_pos = self.get_look_pos();
+        let side = self.get_look_face();
         // Draw frame around the block we're looking at
         if let Some(look) = look_pos {
             self.frame_at_voxel(Vector3::new(look.x as f32, look.y as f32, look.z as f32), Vector3::new(0.2, 0.2, 0.2), 0.01, true);
+            if let Some(side) = side {
+                self.frame_at_voxel(Vector3::new(look.x as f32, look.y as f32, look.z as f32) + side.offset(), Vector3::new(0.4, 0.4, 0.4), 0.008, false);
+            }
         }
 
         if let Some(aabb) = self.selection_bounds() {
