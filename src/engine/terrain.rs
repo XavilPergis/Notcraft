@@ -32,7 +32,8 @@ impl<V: Voxel, F, N> ChunkGenerator<V> for NoiseGenerator<F, N>
     where F: Fn(Vector3<f64>, f64) -> V, N: NoiseFn<[f64; 2]> {
     fn generate(&self, pos: Vector3<i32>) -> Chunk<V> {
         const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
-        let mut buffer = Vec::with_capacity(50*50*50);
+        const SIZE_USIZE: usize = super::chunk::CHUNK_SIZE;
+        let mut buffer = Vec::with_capacity(SIZE_USIZE*SIZE_USIZE*SIZE_USIZE);
         for z in 0..SIZE {
             for y in 0..SIZE {
                 for x in 0..SIZE {
