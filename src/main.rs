@@ -430,6 +430,7 @@ impl Application {
     fn get_look_face(&self) -> Option<Side> {
         use cgmath::Point3;
 
+        // Thickness of the collision boxes on each face
         let t = 0.1;
         let look_vec = -self.camera.get_look_vec();
 
@@ -439,6 +440,8 @@ impl Application {
             let cam_pos = ::util::to_vector(self.camera.position);
             let (l, h) = (look_pos, look_pos + Vector3::new(1.0, 1.0, 1.0));
 
+            // These are the bounding boxes of each face. They are each face, stretched out `t` units
+            // in their corresponding direction
             let bb_left   = Aabb3::new(Point3::new(l.x, l.y, l.z), Point3::new(l.x - t, h.y, h.z));
             let bb_right  = Aabb3::new(Point3::new(h.x, l.y, l.z), Point3::new(h.x + t, h.y, h.z));
             let bb_bottom = Aabb3::new(Point3::new(l.x, l.y, l.z), Point3::new(h.x, l.y - t, h.z));
@@ -446,6 +449,8 @@ impl Application {
             let bb_back   = Aabb3::new(Point3::new(l.x, l.y, l.z), Point3::new(h.x, h.y, l.z - t));
             let bb_front  = Aabb3::new(Point3::new(l.x, l.y, h.z), Point3::new(h.x, h.y, h.z + t));
 
+            // Center positions of each face. We use these for sorting which faces are closest to the
+            // camera so we don't accidentally select backfaces
             let pos_left   = Vector3::new(l.x, (l.y + h.y) * 0.5, (l.z + h.z) * 0.5);
             let pos_right  = Vector3::new(h.x, (l.y + h.y) * 0.5, (l.z + h.z) * 0.5);
             let pos_bottom = Vector3::new((l.x + h.x) * 0.5, l.y, (l.z + h.z) * 0.5);
@@ -462,10 +467,13 @@ impl Application {
                 (Side::Front, pos_front, bb_front),
             ];
 
+            // Sort the list by distance to the camera
             items.sort_by(|&(_, a, _), &(_, b, _)| a.distance2(cam_pos)
                 .partial_cmp(&b.distance2(cam_pos))
                 .unwrap_or(Ordering::Equal));
             
+            // Now get the side closest to the camera that intersects the ray extending from the
+            // player's eyes
             items.iter().filter(|&&(_, _, aabb)| ray.intersects(&aabb)).map(|&(side, _, _)| side).next()
         })
     }
