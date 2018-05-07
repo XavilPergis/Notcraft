@@ -18,11 +18,6 @@ impl From<ImageError> for TextureError {
     fn from(err: ImageError) -> Self { TextureError::Image(err) }
 }
 
-//         gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR_MIPMAP_LINEAR as GLint)).unwrap();
-//         gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as GLint)).unwrap();
-//         gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as GLint)).unwrap();
-//         gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as GLint)).unwrap();
-
 #[repr(u32)]
 pub enum MinificationFilter {
     Nearest = gl::NEAREST,

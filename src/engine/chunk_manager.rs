@@ -369,7 +369,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
             for (pos, mesh) in meshes.into_iter() {
                 let (vertices, indices) = mesh;
                 let mut mesh = Mesh::new().unwrap(); // TODO: unwrap
-                mesh.upload(vertices, indices, UsageType::Static).unwrap();
+                mesh.upload(vertices, indices, UsageType::StaticDraw).unwrap();
                 self.meshes.insert(pos, mesh);
                 self.queue.remove(&pos);
                 println!("Meshed chunk ({:?}), meshes: {}", pos, self.meshes.len());

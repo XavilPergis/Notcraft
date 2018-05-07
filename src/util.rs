@@ -124,7 +124,7 @@ pub fn draw_frame(program: &mut LinkedProgram, bbox: Aabb3<f32>, color: Vector3<
     {
         DEBUG_VAO.lock().unwrap().0.bind();
         let vbo = &mut DEBUG_VBO.lock().unwrap().0;
-        vbo.upload(&buf, UsageType::Static).unwrap();
+        vbo.upload(&buf, UsageType::StaticDraw).unwrap();
         vbo.bind();
         program.set_uniform("u_color", &color);
     }

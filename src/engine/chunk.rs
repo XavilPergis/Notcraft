@@ -65,7 +65,7 @@ pub trait Mesher<V, I> {
     fn gen_mesh(self) -> GlResult<Mesh<V, I>> where V: InternalLayout, I: IndexingType, Self: Sized {
         let (vertices, indices) = self.gen_vertex_data();
         let mut mesh = Mesh::new()?;
-        mesh.upload(&vertices, &indices, UsageType::Static)?;
+        mesh.upload(&vertices, &indices, UsageType::StaticDraw)?;
         Ok(mesh)
     }
 }
