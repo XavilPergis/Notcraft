@@ -3,8 +3,7 @@ use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use collision::Aabb3;
-use cgmath::Vector3;
-use cgmath::{SquareMatrix, Matrix4};
+use cgmath::{Vector3, Point3, SquareMatrix, Matrix4};
 use engine::chunk::*;
 use engine::Voxel;
 use engine::mesh::Mesh;
@@ -14,13 +13,13 @@ use gl_api::shader::program::LinkedProgram;
 use gl_api::buffer::UsageType;
 
 /// Get a chunk position from a world position
-pub fn get_chunk_pos(pos: WorldPos) -> (ChunkPos, WorldPos) {
+pub fn get_chunk_pos(pos: WorldPos) -> (ChunkPos, Vector3<i32>) {
     const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
     let cx = ::util::floor_div(pos.x, SIZE);
     let cy = ::util::floor_div(pos.y, SIZE);
     let cz = ::util::floor_div(pos.z, SIZE);
 
-    let cpos = Vector3::new(cx, cy, cz);
+    let cpos = Point3::new(cx, cy, cz);
     let bpos = pos - (SIZE*cpos);
 
     (cpos, bpos)
@@ -33,8 +32,8 @@ fn in_range(pos: WorldPos, center: WorldPos, r: i32) -> bool {
     pos.z <= center.z + r && pos.z >= center.z - r
 }
 
-pub type WorldPos = Vector3<i32>;
-pub type ChunkPos = Vector3<i32>;
+pub type WorldPos = Point3<i32>;
+pub type ChunkPos = Point3<i32>;
 
 pub struct World<T> {
     chunks: HashMap<ChunkPos, Chunk<T>>,
@@ -124,7 +123,7 @@ impl<T> World<T> {
         for x in pos.x - radius..pos.x + radius {
             for y in pos.y - radius..pos.y + radius {
                 for z in pos.z - radius..pos.z + radius {
-                    let pos = Vector3::new(x, y, z);
+                    let pos = Point3::new(x, y, z);
                     if let Some(voxel) = self.get_voxel(pos) {
                         if let Some(item) = func(pos, voxel) {
                             buf.push(item);
@@ -148,7 +147,7 @@ pub struct ChunkManager<T: Voxel> {
 
 impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G) -> Self {
-        let center = Arc::new(RwLock::new(Vector3::new(0, 0, 0)));
+        let center = Arc::new(RwLock::new(Point3::new(0, 0, 0)));
         let mut manager = ChunkManager {
             world: World::new(generator, center.clone()),
             meshes: HashMap::new(),
@@ -172,8 +171,8 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     pub fn set_voxel_range(&mut self, aabb: Aabb3<i32>, voxel: T) where T: PartialEq + Clone {
         const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
         println!("aabb: {:?}", aabb);
-        let start = ::util::to_vector(aabb.min);
-        let end = ::util::to_vector(aabb.max);
+        let start = aabb.min;
+        let end = aabb.max;
         println!("start: {:?}, end: {:?}", start, end);
         
         let (chunk_start, block_start) = get_chunk_pos(start);
@@ -184,7 +183,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         for x in start.x..end.x {
             for y in start.y..end.y {
                 for z in start.z..end.z {
-                    let pos = Vector3::new(x, y, z);
+                    let pos = Point3::new(x, y, z);
                     if let Some(world_voxel) = self.world.get_voxel_mut(pos) {
                         if *world_voxel != voxel {
                             *world_voxel = voxel.clone();
@@ -198,7 +197,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         for x in chunk_start.x..chunk_end.x+1 {
             for y in chunk_start.y..chunk_end.y+1 {
                 for z in chunk_start.z..chunk_end.z+1 {
-                    self.dirty.insert(Vector3::new(x, y, z));
+                    self.dirty.insert(Point3::new(x, y, z));
                 }
             }
         }
@@ -208,7 +207,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
             for y in chunk_start.y..chunk_end.y+1 {
                 for z in chunk_start.z..chunk_end.z+1 {
                     println!("BOTTOM y={} z={}", y, z);
-                    self.dirty.insert(Vector3::new(chunk_start.x-1, y, z));
+                    self.dirty.insert(Point3::new(chunk_start.x-1, y, z));
                 }
             }
         }
@@ -216,7 +215,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
             for x in chunk_start.x..chunk_end.x+1 {
                 for z in chunk_start.z..chunk_end.z+1 {
                     println!("BOTTOM x={} z={}", x, z);
-                    self.dirty.insert(Vector3::new(x, chunk_start.y-1, z));
+                    self.dirty.insert(Point3::new(x, chunk_start.y-1, z));
                 }
             }
         }
@@ -224,7 +223,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
             for x in chunk_start.x..chunk_end.x+1 {
                 for y in chunk_start.y..chunk_end.y+1 {
                     println!("BOTTOM x={} y={}", x, y);
-                    self.dirty.insert(Vector3::new(x, y, chunk_start.z-1));
+                    self.dirty.insert(Point3::new(x, y, chunk_start.z-1));
                 }
             }
 
@@ -233,7 +232,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
             for y in chunk_start.y..chunk_end.y+1 {
                 for z in chunk_start.z..chunk_end.z+1 {
                     println!("TOP y={} z={}", y, z);
-                    self.dirty.insert(Vector3::new(chunk_end.x+1, y, z));
+                    self.dirty.insert(Point3::new(chunk_end.x+1, y, z));
                 }
             }
         }
@@ -241,7 +240,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
             for x in chunk_start.x..chunk_end.x+1 {
                 for z in chunk_start.z..chunk_end.z+1 {
                     println!("TOP x={} z={}", x, z);
-                    self.dirty.insert(Vector3::new(x, chunk_end.y+1, z));
+                    self.dirty.insert(Point3::new(x, chunk_end.y+1, z));
                 }
             }
         }
@@ -249,7 +248,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
             for x in chunk_start.x..chunk_end.x+1 {
                 for y in chunk_start.y..chunk_end.y+1 {
                     println!("TOP x={} y={}", x, y);
-                    self.dirty.insert(Vector3::new(x, y, chunk_end.z+1));
+                    self.dirty.insert(Point3::new(x, y, chunk_end.z+1));
                 }
             }
         }
@@ -305,7 +304,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         for x in center.x - self.radius - 1..center.x + self.radius + 1 {
             for y in center.y - self.radius - 1..center.y + self.radius + 1 {
                 for z in center.z - self.radius - 1..center.z + self.radius + 1 {
-                    self.world.queue(Vector3::new(x, y, z));
+                    self.world.queue(Point3::new(x, y, z));
                 }
             }
         }
@@ -313,9 +312,9 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         for x in center.x - self.radius..center.x + self.radius {
             for y in center.y - self.radius..center.y + self.radius {
                 for z in center.z - self.radius..center.z + self.radius {
-                    let pos = Vector3::new(x, y, z);
+                    let pos = Point3::new(x, y, z);
                     if !self.meshes.contains_key(&pos) {
-                        self.queue.insert(Vector3::new(x, y, z));
+                        self.queue.insert(Point3::new(x, y, z));
                     }
                 }
             }
@@ -329,11 +328,11 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         self.world.unload(center, radius + 1);
     }
 
-    pub fn update_player_position(&mut self, pos: Vector3<f32>) {
+    pub fn update_player_position(&mut self, pos: Point3<f32>) {
         let x = (pos.x / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
         let y = (pos.y / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
         let z = (pos.z / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
-        let pos = Vector3::new(x, y, z);
+        let pos = Point3::new(x, y, z);
         // Don't run the expensive stuff if we haven't moved
         if pos == self.center() { return; }
         *self.center.write().unwrap() = pos;

@@ -1,10 +1,10 @@
 use engine::Voxel;
 use noise::NoiseFn;
-use cgmath::Vector3;
+use cgmath::{Point3, Vector3};
 use engine::chunk::Chunk;
 
 pub trait ChunkGenerator<T> {
-    fn generate(&self, pos: Vector3<i32>) -> Chunk<T>;
+    fn generate(&self, pos: Point3<i32>) -> Chunk<T>;
 }
 
 pub struct NoiseGenerator<F, N> {
@@ -29,8 +29,8 @@ impl<F, N> NoiseGenerator<F, N> {
 }
 
 impl<V: Voxel, F, N> ChunkGenerator<V> for NoiseGenerator<F, N>
-    where F: Fn(Vector3<f64>, f64) -> V, N: NoiseFn<[f64; 2]> {
-    fn generate(&self, pos: Vector3<i32>) -> Chunk<V> {
+    where F: Fn(Point3<f64>, f64) -> V, N: NoiseFn<[f64; 2]> {
+    fn generate(&self, pos: Point3<i32>) -> Chunk<V> {
         const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
         const SIZE_USIZE: usize = super::chunk::CHUNK_SIZE;
         let mut buffer = Vec::with_capacity(SIZE_USIZE*SIZE_USIZE*SIZE_USIZE);
@@ -48,7 +48,7 @@ impl<V: Voxel, F, N> ChunkGenerator<V> for NoiseGenerator<F, N>
                         total += self.height * self.persistance.powf(octave as f64) * self.noise.get([x, z]);
                     }
 
-                    let bpos = Vector3::new(x, y, z);
+                    let bpos = Point3::new(x, y, z);
 
                     buffer.push((self.gen_func)(bpos, total));
                 }

@@ -14,11 +14,10 @@ extern crate rayon;
 pub mod engine;
 pub mod util;
 
+use cgmath::Rotation;
 use std::collections::HashSet;
 use std::cmp::Ordering;
-use cgmath::Vector2;
-use cgmath::{MetricSpace, Matrix4};
-use cgmath::{Deg, Vector3};
+use cgmath::{MetricSpace, Matrix4, Deg, Vector3, Vector2, Point3, Quaternion};
 use collision::Union;
 use collision::algorithm::minkowski::GJK3;
 use collision::primitive::Cuboid;
@@ -28,7 +27,7 @@ use glfw::{Action, Context, Key, Window, MouseButton, WindowEvent, WindowHint};
 use glfw::CursorMode;
 use engine::Voxel;
 use engine::chunk_manager::ChunkManager;
-use engine::camera::Rotation;
+use engine::camera::Rotation as CamRotation;
 use engine::camera::Camera;
 use gl_api::shader::program::LinkedProgram;
 use gl_api::texture::Texture;
@@ -120,13 +119,13 @@ struct Application {
     noclip: bool,
     jumping: bool,
 
-    player_pos: Vector3<f32>,
+    player_pos: Point3<f32>,
     velocity: Vector3<f32>,
     time: f32,
     frames: i32,
     previous_cursor_x: f32,
     previous_cursor_y: f32,
-    selection_start: Option<Vector3<i32>>,
+    selection_start: Option<Point3<i32>>,
     selected_block: Block,
 
     textures: Texture,
@@ -163,7 +162,7 @@ impl Application {
 
         let chunk_manager = ChunkManager::new(NoiseGenerator::new_default(
             noise::OpenSimplex::default(),
-            |pos: Vector3<f64>, n| {
+            |pos: Point3<f64>, n| {
                 if n-3.0 >= pos.y { Block::Stone }
                 else if n-1.0 >= pos.y { Block::Dirt }
                 else if n >= pos.y { Block::Grass }
@@ -196,7 +195,7 @@ impl Application {
             noclip: false,
             jumping: false,
             velocity: Vector3::new(0.0, 0.0, 0.0),
-            player_pos: Vector3::new(0.0, 0.0, 0.0),
+            player_pos: Point3::new(0.0, 0.0, 0.0),
             selection_start: None,
             previous_cursor_x: 0.0,
             previous_cursor_y: 0.0,
@@ -231,8 +230,8 @@ impl Application {
         self.previous_cursor_x = x;
         self.previous_cursor_y = y;
 
-        self.camera.rotate(Rotation::AboutY(Deg(-dx as f32/3.0)));
-        self.camera.rotate(Rotation::AboutX(Deg(-dy as f32/3.0)));
+        self.camera.rotate(CamRotation::AboutY(Deg(-dx as f32/3.0)));
+        self.camera.rotate(CamRotation::AboutX(Deg(-dy as f32/3.0)));
     }
 
     fn set_viewport(&mut self, width: i32, height: i32) {
@@ -264,8 +263,9 @@ impl Application {
 
     fn selection_bounds(&self) -> Option<Aabb3<i32>> {
         self.get_look_pos().and_then(|look| self.selection_start.map(|start| {
-            Aabb3::new(::util::to_point(start), ::util::to_point(look))
-            .union(&Aabb3::new(::util::to_point(look), ::util::to_point(look + Vector3::new(1, 1, 1))))
+            Aabb3::new(start, look)
+                .union(&Aabb3::new(start, start + Vector3::new(1, 1, 1)))
+                .union(&Aabb3::new(look, look + Vector3::new(1, 1, 1)))
         }))
     }
 
@@ -286,10 +286,10 @@ impl Application {
     }
 
     fn handle_inputs(&mut self, inputs: &Inputs, _dt: f64) {
-        if inputs.is_down(Key::Right) { self.camera.rotate(Rotation::AboutY(Deg(1.0))); }
-        if inputs.is_down(Key::Left) { self.camera.rotate(Rotation::AboutY(-Deg(1.0))); }
-        if inputs.is_down(Key::Up) { self.camera.rotate(Rotation::AboutX(-Deg(1.0))); }
-        if inputs.is_down(Key::Down) { self.camera.rotate(Rotation::AboutX(Deg(1.0))); }
+        if inputs.is_down(Key::Right) { self.camera.rotate(CamRotation::AboutY(Deg(1.0))); }
+        if inputs.is_down(Key::Left) { self.camera.rotate(CamRotation::AboutY(-Deg(1.0))); }
+        if inputs.is_down(Key::Up) { self.camera.rotate(CamRotation::AboutX(-Deg(1.0))); }
+        if inputs.is_down(Key::Down) { self.camera.rotate(CamRotation::AboutX(Deg(1.0))); }
         
         let accel = if inputs.is_down(Key::LeftControl) {
             self.cfg.fast_acceleration
@@ -344,7 +344,7 @@ impl Application {
         let timestep = dt as f32 / (substeps as f32);
         for _ in 0..substeps {
             let world = self.chunk_manager.world();
-            let feet = Vector3::new(
+            let feet = Point3::new(
                 self.player_pos.x.floor() as i32,
                 self.player_pos.y.floor() as i32,
                 self.player_pos.z.floor() as i32);
@@ -362,11 +362,11 @@ impl Application {
             for block_pos in around {
                 self.frame_at_voxel(block_pos.cast().unwrap(), Vector3::new(0.0, 1.0, 1.0), 0.003, false);
                 let block_tfm = Matrix4::from_translation(
-                    block_pos.cast().unwrap() + Vector3::new(0.5, 0.5, 0.5),
+                    ::util::to_vector(block_pos.cast().unwrap() + Vector3::new(0.5, 0.5, 0.5)),
                 );
 
                 let player_tfm = Matrix4::from_translation(
-                    self.player_pos + Vector3::new(0.0, PLAYER_HEIGHT / 2.0, 0.0),
+                    ::util::to_vector(self.player_pos + Vector3::new(0.0, PLAYER_HEIGHT / 2.0, 0.0)),
                 );
 
                 // NOTE: non-transparent blocks were filtered out
@@ -420,7 +420,7 @@ impl Application {
             self.velocity.y -= ::util::clamp(self.cfg.gravity * dt as f32, -self.cfg.max_fall_speed, ::std::f32::INFINITY);
             self.apply_motion(dt);
         }
-        self.camera.position = ::util::to_point(self.player_pos + Vector3::new(0.0, 1.8 - 0.45, 0.0));
+        self.camera.position = self.player_pos + Vector3::new(0.0, 1.8 - 0.45, 0.0);
 
         self.chunk_manager.update_player_position(self.player_pos);
         self.chunk_manager.tick();
@@ -478,31 +478,59 @@ impl Application {
         })
     }
 
-    fn get_look_pos(&self) -> Option<Vector3<i32>> {
-        let cam_pos = self.camera.position;
-        let cam_pos_int = Vector3::new(cam_pos.x as i32, cam_pos.y as i32, cam_pos.z as i32);
+    fn get_look_pos(&self) -> Option<Point3<i32>> {
+        use cgmath::Rotation3;
+        const LOOK_REACH: usize = 50;
+
+        fn check_collision(ray: Ray3<f32>, pos: Point3<f32>) -> bool {
+            // convert the floating position to a voxel-aligned position
+            let voxel_pos = Point3::new(pos.x.floor(), pos.y.floor(), pos.z.floor());
+            // Get the bounding box of the entire cube
+            let bbox = Aabb3::new(voxel_pos, voxel_pos + Vector3::new(1.0, 1.0, 1.0));
+            ray.intersects(&bbox)
+        }
+
+        fn point_floor(point: Point3<f32>) -> Point3<f32> {
+            Point3::new(point.x.floor(), point.y.floor(), point.z.floor())
+        }
+
         let look_vec = -self.camera.get_look_vec();
+        // Ray extending from the player's eye in their look direction forever.
         let ray = Ray3::new(self.camera.position, look_vec);
 
-        let colliders = self.chunk_manager.world().around_voxel(cam_pos_int, 9, |pos, voxel| {
-            if !voxel.has_transparency() {
-                Some(Aabb3::new(
-                    ::util::to_point(pos.cast().unwrap()),
-                    ::util::to_point(pos.cast().unwrap() + Vector3::new(1.0, 1.0, 1.0)),
-                ))
-            } else { None }
-        });
+        let samples = 2 * LOOK_REACH;
+        let rotate_samples = 8;
+        let rotate_sample_len = 0.5f32;
+        let up = rotate_sample_len * Vector3::unit_y();
 
-        let mut colliders: Vec<_> = colliders.iter()
-            .filter(|aabb| ray.intersects(&aabb)).collect();
-        
-        colliders.sort_by(|a, b| a.min.distance2(cam_pos)
-            .partial_cmp(&b.min.distance2(cam_pos))
-            .unwrap_or(Ordering::Equal));
-        
-        colliders.get(0).map(|&aabb| {
-            Vector3::new(aabb.min.x as i32, aabb.min.y as i32, aabb.min.z as i32)
-        })
+        let is_solid = |pos: Point3<f32>| 
+            self.chunk_manager.world()
+                .get_voxel(point_floor(pos).cast().unwrap())
+                .map(|voxel| !voxel.has_transparency())
+                .unwrap_or(false);
+
+        for k in 0..samples {
+            // the length of the current reach vector. `k/samples` ranges from 0 to 1, so `length`
+            // ranges from 0 to LOOK_REACH
+            let length = LOOK_REACH as f32 * k as f32 / samples as f32;
+            // the coordinates of the current space we're checking. it's the player's eye position,
+            // offset by the current portion of the reach vector
+            let pos = self.camera.position + look_vec * length;
+            if is_solid(pos) && check_collision(ray, pos) {
+                return Some(point_floor(pos).cast().unwrap());
+            }
+
+            for l in 0..rotate_samples {
+                let rot_frac = l as f32 / rotate_samples as f32;
+                let rotation = Quaternion::from_axis_angle(look_vec, Deg(rot_frac * 360.0));
+                let pos = pos + rotation.rotate_vector(up);
+                if is_solid(pos) && check_collision(ray, pos) {
+                    return Some(point_floor(pos).cast().unwrap());
+                }
+            }
+        }
+
+        None
     }
 
     fn draw(&mut self, _dt: f64) {
@@ -510,9 +538,9 @@ impl Application {
         let side = self.get_look_face();
         // Draw frame around the block we're looking at
         if let Some(look) = look_pos {
-            self.frame_at_voxel(Vector3::new(look.x as f32, look.y as f32, look.z as f32), Vector3::new(0.2, 0.2, 0.2), 0.01, true);
+            self.frame_at_voxel(Point3::new(look.x as f32, look.y as f32, look.z as f32), Vector3::new(0.0, 0.6, 0.8), 0.01, true);
             if let Some(side) = side {
-                self.frame_at_voxel(Vector3::new(look.x as f32, look.y as f32, look.z as f32) + side.offset(), Vector3::new(0.4, 0.4, 0.4), 0.008, false);
+                self.frame_at_voxel(Point3::new(look.x as f32, look.y as f32, look.z as f32) + side.offset(), Vector3::new(0.0, 0.8, 0.6), 0.008, false);
             }
         }
 
@@ -535,10 +563,9 @@ impl Application {
         }
     }
 
-    fn frame_at_voxel(&mut self, pos: Vector3<f32>, color: Vector3<f32>, thickness: f32, force: bool) {
+    fn frame_at_voxel(&mut self, pos: Point3<f32>, color: Vector3<f32>, thickness: f32, force: bool) {
         self.draw_frame(Aabb3::new(
-            ::util::to_point(pos),
-            ::util::to_point(pos + Vector3::new(1.0, 1.0, 1.0)),
+            pos, pos + Vector3::new(1.0, 1.0, 1.0),
         ), color, thickness, force);
     }
 }
