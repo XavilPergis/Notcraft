@@ -13,5 +13,9 @@ noise = "0.5.1"
 collision = "0.15.1"
 rayon = "1.0.1"
 
-[dependencies.glfw]
+[target.'cfg(windows)'.dependencies.glfw]
+git = "https://github.com/bjz/glfw-rs.git"
+default-features = false
+
+[target.'cfg(not(windows))'.dependencies.glfw]
 git = "https://github.com/bjz/glfw-rs.git"
