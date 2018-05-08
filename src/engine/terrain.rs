@@ -1,6 +1,6 @@
-use engine::Voxel;
+use cgmath::Point3;
 use noise::NoiseFn;
-use cgmath::{Point3, Vector3};
+use engine::Voxel;
 use engine::chunk::Chunk;
 
 pub trait ChunkGenerator<T> {

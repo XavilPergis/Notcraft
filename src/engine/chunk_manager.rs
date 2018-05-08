@@ -1,9 +1,9 @@
+use engine::world::WorldGenerator;
 use engine::world::World;
 use engine::{ChunkPos, WorldPos};
 use std::sync::RwLock;
 use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc;
 use collision::Aabb3;
 use cgmath::{Vector3, Point3, SquareMatrix, Matrix4};
 use engine::chunk::*;
@@ -16,6 +16,7 @@ use gl_api::buffer::UsageType;
 
 pub struct ChunkManager<T: Voxel> {
     world: World<T>,
+    world_generator: WorldGenerator<T>,
     meshes: HashMap<ChunkPos, Mesh<T::PerVertex, u32>>,
     dirty: HashSet<ChunkPos>,
     queue: HashSet<ChunkPos>,
@@ -27,7 +28,8 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G) -> Self {
         let center = Arc::new(RwLock::new(Point3::new(0, 0, 0)));
         let mut manager = ChunkManager {
-            world: World::new(generator, center.clone()),
+            world: World::new(),
+            world_generator: WorldGenerator::new(generator, center.clone()),
             meshes: HashMap::new(),
             dirty: HashSet::new(),
             queue: HashSet::new(),
@@ -182,7 +184,11 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         for x in center.x - self.radius - 1..center.x + self.radius + 1 {
             for y in center.y - self.radius - 1..center.y + self.radius + 1 {
                 for z in center.z - self.radius - 1..center.z + self.radius + 1 {
-                    self.world.queue(Point3::new(x, y, z));
+                    let pos = Point3::new(x, y, z);
+                    // Don't queue chunks that are already loaded
+                    if !self.world.chunk_exists(pos) {
+                        self.world_generator.queue(pos);
+                    }
                 }
             }
         }
@@ -221,7 +227,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     pub fn tick(&mut self) where T::PerVertex: Send {
         use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-        self.world.tick();
+        self.world_generator.update_world(&mut self.world);
         if self.queue.len() > 0 {
             // This sets up all the meshers, filtering out any mesher that doesn't
             // have all the neighbor chunks generated yet. All the mess with passing
