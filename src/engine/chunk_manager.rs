@@ -1,3 +1,5 @@
+use engine::world::World;
+use engine::{ChunkPos, WorldPos};
 use std::sync::RwLock;
 use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
@@ -11,130 +13,6 @@ use engine::terrain::ChunkGenerator;
 use gl_api::error::GlResult;
 use gl_api::shader::program::LinkedProgram;
 use gl_api::buffer::UsageType;
-
-/// Get a chunk position from a world position
-pub fn get_chunk_pos(pos: WorldPos) -> (ChunkPos, Vector3<i32>) {
-    const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
-    let cx = ::util::floor_div(pos.x, SIZE);
-    let cy = ::util::floor_div(pos.y, SIZE);
-    let cz = ::util::floor_div(pos.z, SIZE);
-
-    let cpos = Point3::new(cx, cy, cz);
-    let bpos = pos - (SIZE*cpos);
-
-    (cpos, bpos)
-}
-
-/// Tests if `pos` is within `r` units from `center`
-fn in_range(pos: WorldPos, center: WorldPos, r: i32) -> bool {
-    pos.x <= center.x + r && pos.x >= center.x - r &&
-    pos.y <= center.y + r && pos.y >= center.y - r &&
-    pos.z <= center.z + r && pos.z >= center.z - r
-}
-
-pub type WorldPos = Point3<i32>;
-pub type ChunkPos = Point3<i32>;
-
-pub struct World<T> {
-    chunks: HashMap<ChunkPos, Chunk<T>>,
-    queue: HashSet<ChunkPos>,
-    gen_tx: mpsc::Sender<ChunkPos>,
-    gen_rx: mpsc::Receiver<(ChunkPos, Chunk<T>)>,
-}
-
-impl<T> World<T> {
-    pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G, chunk_pos: Arc<RwLock<ChunkPos>>) -> Self where T: Send + 'static {
-        use std::thread;
-        let (req_tx, req_rx) = mpsc::channel();
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            while let Ok(request) = req_rx.recv() {
-                // Deref and drop the guard so we don't hold up the lock while we generate
-                // the chunk
-                let pos = *chunk_pos.read().unwrap();
-                // Skip if not in range
-                if !in_range(request, pos, 4) { continue; }
-                // Err means the rx has hung up, so we can just shut down this thread
-                // if that happens
-                match tx.send((request, generator.generate(request))) {
-                    Ok(_) => (),
-                    Err(_) => break,
-                }
-            }    
-        });
-
-        World {
-            chunks: HashMap::new(),
-            queue: HashSet::new(),
-            gen_tx: req_tx,
-            gen_rx: rx,
-        }
-    }
-
-    pub fn set_voxel(&mut self, pos: WorldPos, voxel: T) where T: PartialEq {
-        let (cpos, bpos) = get_chunk_pos(pos);
-        // get the chunk the voxel is in, if it is loaded
-        if let Some(chunk) = self.chunks.get_mut(&cpos) {
-            let pos = (bpos.x as usize, bpos.y as usize, bpos.z as usize);
-            chunk[pos] = voxel;
-        }
-    }
-
-    #[inline]
-    pub fn queue(&mut self, pos: ChunkPos) {
-        if !self.chunks.contains_key(&pos) {
-            self.queue.insert(pos);
-            self.gen_tx.send(pos).unwrap();
-        }
-    }
-
-    pub fn unload(&mut self, center: WorldPos, radius: i32) {
-        // Try removing any chunks from the queue that are out of range (player moved
-        // really fast or teleported)
-        self.queue.retain(|&pos| in_range(pos, center, radius));
-        self.chunks.retain(|&pos, _| in_range(pos, center, radius));
-    }
-
-    fn tick(&mut self) {
-        for (pos, chunk) in self.gen_rx.try_iter() {
-            println!("Generated chunk at ({:?}) => queue.len() = {}", pos, self.queue.len());
-            self.chunks.insert(pos, chunk);
-            self.queue.remove(&pos);
-        }
-    }
-
-    pub fn get_voxel(&self, pos: WorldPos) -> Option<&T> {
-        let (cpos, bpos) = get_chunk_pos(pos);
-        let pos = (bpos.x as usize, bpos.y as usize, bpos.z as usize);
-        self.chunks.get(&cpos).map(|chunk| &chunk[pos])
-    }
-
-    pub fn get_voxel_mut(&mut self, pos: WorldPos) -> Option<&mut T> {
-        let (cpos, bpos) = get_chunk_pos(pos);
-        let pos = (bpos.x as usize, bpos.y as usize, bpos.z as usize);
-        self.chunks.get_mut(&cpos).map(|chunk| &mut chunk[pos])
-    }
-
-    pub fn around_voxel<U, F: Fn(WorldPos, &T) -> Option<U>>(&self, pos: WorldPos, radius: u32, func: F) -> Vec<U> {
-        let radius = radius as i32;
-        // TODO: We allocate here, but likely don't need to. It would be better if this
-        // function returned an iterator...
-        let mut buf = Vec::with_capacity((radius*radius*radius) as usize);
-        for x in pos.x - radius..pos.x + radius {
-            for y in pos.y - radius..pos.y + radius {
-                for z in pos.z - radius..pos.z + radius {
-                    let pos = Point3::new(x, y, z);
-                    if let Some(voxel) = self.get_voxel(pos) {
-                        if let Some(item) = func(pos, voxel) {
-                            buf.push(item);
-                        }
-                    }
-                }
-            }
-        }
-        buf
-    }
-}
 
 pub struct ChunkManager<T: Voxel> {
     world: World<T>,
@@ -175,8 +53,8 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         let end = aabb.max;
         println!("start: {:?}, end: {:?}", start, end);
         
-        let (chunk_start, block_start) = get_chunk_pos(start);
-        let (chunk_end, block_end) = get_chunk_pos(end);
+        let (chunk_start, block_start) = ::util::get_chunk_pos(start);
+        let (chunk_end, block_end) = ::util::get_chunk_pos(end);
         println!("chunk_start: {:?}, block_start: {:?}", chunk_start, block_start);
         println!("chunk_end: {:?}, block_end: {:?}", chunk_end, block_end);
 
@@ -259,7 +137,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     /// Set a voxel, causing remeshes as needed.
     pub fn set_voxel(&mut self, pos: WorldPos, voxel: T) where T: PartialEq {
         const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
-        let (cpos, bpos) = get_chunk_pos(pos);
+        let (cpos, bpos) = ::util::get_chunk_pos(pos);
         if let Some(world_voxel) = self.world.get_voxel_mut(pos) {
             if *world_voxel != voxel {
                 *world_voxel = voxel;
@@ -323,7 +201,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
 
     fn unload(&mut self) {
         let (center, radius) = (self.center(), self.radius);
-        self.meshes.retain(|&pos, _| in_range(pos, center, radius));
+        self.meshes.retain(|&pos, _| ::util::in_range(pos, center, radius));
         // make sure to unload that one-chunk buffer
         self.world.unload(center, radius + 1);
     }

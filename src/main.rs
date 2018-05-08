@@ -1,4 +1,4 @@
-#![feature(const_fn, trace_macros, nll, match_beginning_vert, optin_builtin_traits)]
+#![feature(const_fn, trace_macros, nll, match_beginning_vert, optin_builtin_traits, crate_visibility_modifier)]
 
 extern crate gl;
 extern crate glfw;
@@ -13,6 +13,7 @@ extern crate rayon;
 #[macro_use] mod gl_api;
 pub mod engine;
 pub mod util;
+pub mod debug;
 
 use cgmath::Rotation;
 use std::collections::HashSet;
@@ -559,7 +560,7 @@ impl Application {
 
     fn draw_frame(&mut self, aabb: Aabb3<f32>, color: Vector3<f32>, thickness: f32, force: bool) {
         if self.debug_frames || force {
-            ::util::draw_frame(&mut self.debug_pipeline, aabb, color, thickness);
+            ::debug::draw_frame(&mut self.debug_pipeline, aabb, color, thickness);
         }
     }
 

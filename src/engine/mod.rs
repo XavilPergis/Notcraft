@@ -1,6 +1,5 @@
 use std::ops::Neg;
-use cgmath::Zero;
-use cgmath::One;
+use cgmath::{Zero, One, Point3};
 use gl_api::layout::InternalLayout;
 use cgmath::{Vector2, Vector3};
 
@@ -9,6 +8,10 @@ pub mod chunk_manager;
 pub mod chunk;
 pub mod mesh;
 pub mod terrain;
+pub mod world;
+
+pub type WorldPos = Point3<i32>;
+pub type ChunkPos = Point3<i32>;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Precomputed {
