@@ -15,6 +15,12 @@ pub mod engine;
 pub mod util;
 pub mod debug;
 
+use engine::ChunkPos;
+use engine::WorldPos;
+use engine::chunk::Chunk;
+use noise::NoiseFn;
+use engine::terrain::ChunkGenerator;
+use engine::terrain::OctaveNoise;
 use cgmath::Rotation;
 use std::collections::HashSet;
 use std::cmp::Ordering;
@@ -51,7 +57,6 @@ vertex! {
     vertex BlockFace {
         pos: Vector3<f32>,
         norm: Vector3<f32>,
-        face_offset: Vector2<f32>,
         face: i32,
         uv: Vector2<f32>,
     }
@@ -64,7 +69,6 @@ impl Voxel for Block {
         BlockFace {
             pos: pre.pos,
             norm: pre.norm,
-            face_offset: pre.face_offset,
             face: pre.face,
             uv: (match *self {
                 Block::Air => Vector2::new(0.0, 0.0),
@@ -101,6 +105,71 @@ impl Inputs {
 
     fn is_down(&self, key: Key) -> bool {
         self.active_keys.contains(&key)
+    }
+}
+
+pub struct NoiseGenerator<N> {
+    noise: OctaveNoise<N>,
+}
+
+impl<N> NoiseGenerator<N> {
+    pub fn new_default(noise: N) -> Self {
+        NoiseGenerator {
+            noise: OctaveNoise {
+                lacunarity: 2.0,
+                persistance: 0.4,
+                height: 60.0,
+                octaves: 4,
+                noise,
+            },
+        }
+    }
+
+    fn block_at(&self, pos: Point3<f64>) -> bool where N: NoiseFn<[f64; 3]> {
+        self.noise.get([pos.x, pos.y, pos.z]) - pos.y >= pos.y
+    }
+
+    fn pos_at_block(pos: ChunkPos, offset: Vector3<i32>) -> Point3<f64> {
+        const SIZE: i32 = engine::chunk::CHUNK_SIZE as i32;
+        let x = ((SIZE*pos.x) as f64 + offset.x as f64) / SIZE as f64;
+        let y = (SIZE*pos.y) as f64 + offset.y as f64;
+        let z = ((SIZE*pos.z) as f64 + offset.z as f64) / SIZE as f64;
+        Point3::new(x, y, z)
+    }
+}
+
+impl<N> ChunkGenerator<Block> for NoiseGenerator<N> where N: NoiseFn<[f64; 3]> {
+    fn generate(&self, pos: Point3<i32>) -> Chunk<Block> {
+        const SIZE: i32 = engine::chunk::CHUNK_SIZE as i32;
+        const SIZE_USIZE: usize = engine::chunk::CHUNK_SIZE;
+        let mut buffer = Vec::with_capacity(SIZE_USIZE*SIZE_USIZE*SIZE_USIZE);
+        for by in 0..SIZE {
+            for bz in 0..SIZE {
+                for bx in 0..SIZE {
+                    let mut pos = Self::pos_at_block(pos, Vector3::new(bx, by, bz));
+                    pos.y /= SIZE as f64;
+                    buffer.push(if self.block_at(pos) { Block::Stone } else { Block::Air });
+                }
+            }
+        }
+
+        let mut chunk = Chunk::new(buffer);
+        for by in 0..SIZE_USIZE {
+            for bz in 0..SIZE_USIZE {
+                for bx in 0..SIZE_USIZE {
+                    if Block::Air == chunk[(bx, by, bz)] {
+                        for oy in 0..4 {
+                            if oy <= by {
+                                if chunk[(bx, by - oy, bz)] != Block::Air {
+                                    chunk[(bx, by - oy, bz)] = Block::Dirt;
+                                } 
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        chunk
     }
 }
 
@@ -159,17 +228,10 @@ impl Application {
         pipeline.set_uniform("u_LightAttenuation", &attenuations.as_slice());
         pipeline.set_uniform("u_LightAmbient", &Vector3::<f32>::new(0.4, 0.5, 0.6));
 
-        use engine::terrain::NoiseGenerator;
+        // use engine::terrain::NoiseGenerator;
 
         let chunk_manager = ChunkManager::new(NoiseGenerator::new_default(
             noise::OpenSimplex::default(),
-            |pos: Point3<f64>, n| {
-                if n-3.0 >= pos.y { Block::Stone }
-                else if n-1.0 >= pos.y { Block::Dirt }
-                else if n >= pos.y { Block::Grass }
-                else if pos.y <= -35.0 { Block::Water }
-                else { Block::Air }
-            }
         ));
 
         use gl_api::texture::*;
@@ -177,7 +239,7 @@ impl Application {
         let textures = Texture::new();
         textures.source_from_image("resources/textures.png").unwrap();
         textures.mag_filter(MagnificationFilter::Nearest);
-        textures.min_filter(MinificationFilter::NearestMipmapNearest);
+        textures.min_filter(MinificationFilter::Nearest);
         textures.texture_wrap_behavior(TextureAxis::S, WrapMode::Repeat);
         textures.texture_wrap_behavior(TextureAxis::T, WrapMode::Repeat);
         pipeline.set_uniform("u_TextureMap", &textures);
@@ -613,7 +675,7 @@ fn main() {
     let mut inputs = Inputs::new();
 
     unsafe {
-        gl_call!(Enable(gl::MULTISAMPLE)).expect("glEnable failed");
+        gl_call!(Disable(gl::MULTISAMPLE)).expect("glEnable failed");
         gl_call!(Enable(gl::DEPTH_TEST)).expect("glEnable failed");
         gl_call!(Enable(gl::CULL_FACE)).expect("glEnable failed");
         gl_call!(DepthFunc(gl::LESS)).expect("glDepthFunc failed");

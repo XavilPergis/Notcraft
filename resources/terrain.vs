@@ -2,9 +2,8 @@
 
 layout (location = 0) in vec3 Pos;
 layout (location = 1) in vec3 Normal;
-layout (location = 2) in vec2 FaceOffset;
-layout (location = 3) in int Face;
-layout (location = 4) in vec2 Uv;
+layout (location = 2) in int Face;
+layout (location = 3) in vec2 Uv;
 
 uniform float u_Time;
 uniform mat4 u_Transform;

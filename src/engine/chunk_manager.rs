@@ -34,7 +34,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
             dirty: HashSet::new(),
             queue: HashSet::new(),
             center: center,
-            radius: 3,
+            radius: 2,
         };
 
         manager.queue_in_range();
@@ -168,7 +168,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         let front = self.world.chunks.get(&(pos + Vector3::unit_z()))?;
         let back = self.world.chunks.get(&(pos - Vector3::unit_z()))?;
 
-        Some(CullMesher::new(chunk, top, bottom, left, right, front, back))
+        Some(CullMesher::new(pos, chunk, top, bottom, left, right, front, back))
     }
 
     fn center(&self) -> ChunkPos {
