@@ -25,8 +25,17 @@ impl<T: Voxel> Chunk<T> {
 impl<T> Chunk<T> {
     pub fn get(&self, pos: Point3<i32>) -> Option<&T> {
         if in_chunk_bounds(pos) {
-            let Point3 { x, y, z }: Point3<usize> = pos.cast().unwrap();
-            Some(&self.data[CHUNK_SIZE * CHUNK_SIZE * y + CHUNK_SIZE * z + x])
+            let pos: Point3<usize> = pos.cast().unwrap();
+            Some(&self[pos])
+        } else {
+            None
+        }
+    }
+
+    pub fn get_mut(&mut self, pos: Point3<i32>) -> Option<&mut T> {
+        if in_chunk_bounds(pos) {
+            let pos: Point3<usize> = pos.cast().unwrap();
+            Some(&mut self[pos])
         } else {
             None
         }
@@ -34,15 +43,6 @@ impl<T> Chunk<T> {
 
     pub fn size(&self) -> usize {
         self.data.len()
-    }
-
-    pub fn get_mut(&mut self, pos: Point3<i32>) -> Option<&mut T> {
-        if in_chunk_bounds(pos) {
-            let Point3 { x, y, z }: Point3<usize> = pos.cast().unwrap();
-            Some(&mut self.data[CHUNK_SIZE * CHUNK_SIZE * y + CHUNK_SIZE * z + x])
-        } else {
-            None
-        }
     }
 }
 

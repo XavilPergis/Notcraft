@@ -16,6 +16,7 @@ pub mod engine;
 pub mod util;
 pub mod debug;
 
+use engine::mesher::CullMesher;
 use engine::ChunkPos;
 use engine::WorldPos;
 use engine::chunk::Chunk;
@@ -59,6 +60,7 @@ vertex! {
         pos: Vector3<f32>,
         norm: Vector3<f32>,
         face: i32,
+        tile: Vector2<f32>,
         uv: Vector2<f32>,
     }
 }
@@ -71,7 +73,8 @@ impl Voxel for Block {
             pos: pre.pos,
             norm: pre.norm,
             face: pre.face,
-            uv: (match *self {
+            uv: pre.face_offset,
+            tile: match *self {
                 Block::Air => Vector2::new(0.0, 0.0),
                 Block::Stone => Vector2::new(1.0, 0.0),
                 Block::Dirt => Vector2::new(2.0, 0.0),
@@ -81,7 +84,7 @@ impl Voxel for Block {
                     _ => Vector2::new(0.0, 1.0),
                 },
                 Block::Water => Vector2::new(1.0, 0.0),
-            } + pre.face_offset) / 4.0
+            }
         }
     }
 }
@@ -650,7 +653,7 @@ fn main() {
 
     window.set_all_polling(true);
     window.make_current();
-    glfw.set_swap_interval(SwapInterval::Adaptive);
+    glfw.set_swap_interval(SwapInterval::Sync(1));
 
     // Load OpenGL function pointers.
     // good *god* this function takes a long time fo compile

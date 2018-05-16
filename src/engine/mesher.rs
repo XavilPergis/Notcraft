@@ -18,6 +18,7 @@ pub trait Mesher<V, I> {
 }
 
 pub struct Neighborhood<T> {
+    pub center: T,
     pub top: T,
     pub bottom: T,
     pub left: T,
@@ -26,11 +27,34 @@ pub struct Neighborhood<T> {
     pub back: T,
 }
 
+impl<'c, T: 'c> Neighborhood<&'c Chunk<T>> {
+    pub fn get(&self, pos: Point3<i32>) -> Option<&T> {
+        const SIZE: i32 = CHUNK_SIZE as i32;
+        let wrapped = ::util::get_chunk_pos(pos).1;
+        if in_chunk_bounds(pos) {
+            Some(&self.center[pos])
+        } else if pos.x >= SIZE {
+            self.right.get(::util::to_point(wrapped))
+        } else if pos.x < 0 {
+            self.left.get(::util::to_point(wrapped))
+        } else if pos.y >= SIZE {
+            self.top.get(::util::to_point(wrapped))
+        } else if pos.y < 0 {
+            self.bottom.get(::util::to_point(wrapped))
+        } else if pos.z >= SIZE {
+            self.front.get(::util::to_point(wrapped))
+        } else if pos.z < 0 {
+            self.back.get(::util::to_point(wrapped))
+        } else {
+            unreachable!()
+        }
+    }
+}
+
 // NOTE: You probably should never debug print this, unless CHUNK_SIZE is pretty small.
 // Otherwise, your terminal will be spitting out text for a solid 3 minutes straight.
 pub struct CullMesher<'c, T: Voxel + 'c> {
     pos: ChunkPos,
-    chunk: &'c Chunk<T>,
     neighbors: Neighborhood<&'c Chunk<T>>,
     vertices: Vec<T::PerVertex>,
     indices: Vec<u32>,
@@ -44,8 +68,6 @@ use engine::{ChunkPos, Precomputed, Side, Voxel};
 use gl_api::buffer::UsageType;
 use gl_api::error::GlResult;
 use gl_api::layout::InternalLayout;
-use smallbitvec::SmallBitVec;
-use std::cmp::Ordering;
 
 impl<'c, T: Voxel + 'c> CullMesher<'c, T> {
     pub fn new(
@@ -60,8 +82,8 @@ impl<'c, T: Voxel + 'c> CullMesher<'c, T> {
     ) -> Self {
         CullMesher {
             pos,
-            chunk,
             neighbors: Neighborhood {
+                center: chunk,
                 top,
                 bottom,
                 left,
@@ -112,60 +134,17 @@ impl<'c, T: Voxel + 'c> CullMesher<'c, T> {
     }
 
     fn needs_face(&self, pos: Point3<i32>) -> bool {
-        let in_bounds = in_chunk_bounds(pos);
-        if in_bounds {
-            self.chunk.get(pos).unwrap().has_transparency()
-        } else {
-            if pos.x >= CHUNK_SIZE as i32 {
-                self.neighbors
-                    .right
-                    .get(Point3::new(0, pos.y, pos.z))
-                    .unwrap()
-                    .has_transparency()
-            } else if pos.x < 0 {
-                self.neighbors
-                    .left
-                    .get(Point3::new(CHUNK_SIZE as i32 - 1, pos.y, pos.z))
-                    .unwrap()
-                    .has_transparency()
-            } else if pos.y >= CHUNK_SIZE as i32 {
-                self.neighbors
-                    .top
-                    .get(Point3::new(pos.x, 0, pos.z))
-                    .unwrap()
-                    .has_transparency()
-            } else if pos.y < 0 {
-                self.neighbors
-                    .bottom
-                    .get(Point3::new(pos.x, CHUNK_SIZE as i32 - 1, pos.z))
-                    .unwrap()
-                    .has_transparency()
-            } else if pos.z >= CHUNK_SIZE as i32 {
-                self.neighbors
-                    .front
-                    .get(Point3::new(pos.x, pos.y, 0))
-                    .unwrap()
-                    .has_transparency()
-            } else if pos.z < 0 {
-                self.neighbors
-                    .back
-                    .get(Point3::new(pos.x, pos.y, CHUNK_SIZE as i32 - 1))
-                    .unwrap()
-                    .has_transparency()
-            } else {
-                false
-            }
-        }
+        self.neighbors.get(pos).map(|voxel| voxel.has_transparency()).unwrap_or(false)
     }
 }
 
-impl<'c, T: Voxel + 'c> Mesher<T::PerVertex, u32> for CullMesher<'c, T> {
+impl<'c, T: Voxel + Copy + 'c> Mesher<T::PerVertex, u32> for CullMesher<'c, T> {
     fn gen_vertex_data(mut self) -> (Vec<T::PerVertex>, Vec<u32>) {
         for i in 0..(CHUNK_SIZE as i32) {
             for j in 0..(CHUNK_SIZE as i32) {
                 for k in 0..(CHUNK_SIZE as i32) {
                     let pos = Point3::new(i, j, k);
-                    let block = self.chunk.get(pos).unwrap();
+                    let block = *self.neighbors.get(pos).unwrap();
                     if block.has_transparency() {
                         continue;
                     }
@@ -195,35 +174,9 @@ impl<'c, T: Voxel + 'c> Mesher<T::PerVertex, u32> for CullMesher<'c, T> {
     }
 }
 
-// struct Adjacent<T> {
-//     pub center: T,
-//     pub top: T,
-//     pub bottom: T,
-//     pub left: T,
-//     pub right: T,
-//     pub front: T,
-//     pub back: T,
-// }
-
-// struct Layer<T> {
-//     data: Box<[T]>,
-//     mask: Box<[bool]>,
-// }
-
-// impl<T> Layer<T> {
-//     fn mask_from_world(world: Adjacent<&Chunk<T>>) -> Box<[bool]> {
-
-//     }
-
-//     fn new_from_world(world: Adjacent<&Chunk<T>>) -> Self {
-
-//     }
-// }
-
 type Quad = Aabb2<i32>;
 
 pub struct GreedyMesher<'c, T: Voxel + 'c> {
-    chunk: &'c Chunk<T>,
     pos: Point3<i32>,
     neighbors: Neighborhood<&'c Chunk<T>>,
     mask: Box<[bool]>,
@@ -244,12 +197,9 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
         front: &'c Chunk<T>,
         back: &'c Chunk<T>,
     ) -> Self {
-        // let mut current_layer = Vec::with_capacity(CHUNK_SIZE*CHUNK_SIZE);
-        // let mut next_layer = Vec::with_capacity(CHUNK_SIZE*CHUNK_SIZE);
-        // for
         GreedyMesher {
-            chunk,
             neighbors: Neighborhood {
+                center: chunk,
                 top,
                 bottom,
                 left,
@@ -264,37 +214,6 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
         }
     }
 
-    fn get(&self, pos: Point3<i32>) -> &T {
-        const SIZE: i32 = CHUNK_SIZE as i32;
-        let wrapped = ::util::get_chunk_pos(pos).1;
-        if in_chunk_bounds(pos) {
-            &self.chunk[pos]
-        } else if pos.x >= SIZE {
-            &self.neighbors.right[wrapped]
-        } else if pos.x < 0 {
-            &self.neighbors.left[wrapped]
-        } else if pos.y >= SIZE {
-            &self.neighbors.top[wrapped]
-        } else if pos.y < 0 {
-            &self.neighbors.bottom[wrapped]
-        } else if pos.z >= SIZE {
-            &self.neighbors.front[wrapped]
-        } else if pos.z < 0 {
-            &self.neighbors.back[wrapped]
-        } else {
-            unreachable!()
-        }
-    }
-
-    fn is_occluded(&self, pos: Point3<i32>) -> bool {
-        !(self.get(pos + Vector3::unit_x()).has_transparency()
-            || self.get(pos - Vector3::unit_x()).has_transparency()
-            || self.get(pos + Vector3::unit_y()).has_transparency()
-            || self.get(pos - Vector3::unit_y()).has_transparency()
-            || self.get(pos + Vector3::unit_z()).has_transparency()
-            || self.get(pos - Vector3::unit_z()).has_transparency())
-    }
-
     fn set_mask(&mut self, x: i32, z: i32, value: bool) {
         self.mask[(SIZE * x + z) as usize] = value;
     }
@@ -304,35 +223,15 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
         else { self.mask[(SIZE * x + z) as usize] }
     }
 
-    // fn can_merge(&self, a: Point3<i32>, b: Point3<i32>) -> bool
-    // where
-    //     T: PartialEq,
-    // {
-    //     // NOTE: `a` must have the same y component as the mask is for, and the same y component as `b`
-    //     // `a` must additionally be a face that is a visible component of the mask
-    //     debug_assert_eq!(a.y, b.y);
-    //     // println!("a.x = {}, a.z = {}", a.x, a.z);
-    //     debug_assert!(self.get_mask(a.x, a.z));
-    //     let a_voxel = &self.chunk[a];
-    //     debug_assert!(!a_voxel.has_transparency());
-    //     if let Some(b_voxel) = self.chunk.get(b) {
-    //         // Can merge if the two faces are the same and are both inside the mask
-    //         b_voxel == a_voxel && self.get_mask(b.x, b.z)
-    //     } else {
-    //         // Cannot merge if the second position lays outside of the chunk boundary
-    //         false
-    //     }
-    // }
-
     fn expand_right(&self, pos: Point3<i32>) -> Quad
     where
         T: PartialEq + ::std::fmt::Debug,
     {
-        let start = self.chunk.get(pos).unwrap();
+        let start = &self.neighbors.center[pos];
         // println!("START {:?}", start);
         for xn in pos.x..SIZE {
             let cur_point = Point3::new(xn + 1, pos.y, pos.z);
-            let cur = self.chunk.get(cur_point);
+            let cur = self.neighbors.center.get(cur_point);
             // println!("{} -> CUR {:?}", xn, cur);
             if Some(start) != cur || !self.get_mask(xn + 1, pos.z) {
                 return Aabb2::new(
@@ -343,63 +242,16 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
         }
         unreachable!()
     }
-    // fn expand_right(&self, pos: Point3<i32>) -> Quad
-    // where
-    //     T: PartialEq,
-    // {
-    //     // println!("RIGHT: {:?}", pos);
-    //     // debug_assert!(in_chunk_bounds(pos));
-    //     // debug_assert!(!self.chunk[pos].has_transparency());
-    //     for offset in 1..=SIZE {
-    //         let offset = Vector3::new(offset, 0, 0);
-    //         let new_pos = pos + offset;
-    //         if !self.can_merge(pos, new_pos) {
-    //             // We've hit a place where the new face cannot be merged
-    //             return Aabb2::new(
-    //                 Point2::new(pos.x, pos.z),
-    //                 Point2::new(new_pos.x - 1, new_pos.z),
-    //             );
-    //         }
-    //     }
-    //     unreachable!()
-    // }
 
-    // fn expand_down(&self, quad: Quad, layer: i32) -> Quad
-    // where
-    //     T: PartialEq + ::std::fmt::Debug,
-    // {
-    //     // let min_voxel = &self.chunk[Point3::new(quad.min.x, layer, quad.min.y)];
-    //     // let max_voxel = &self.chunk[Point3::new(quad.max.x, layer, quad.max.y)];
-    //     // println!("MIN/MAX: {:?}, {:?} {}", min_voxel, max_voxel, layer);
-    //     // debug_assert!(in_chunk_bounds(Point3::new(quad.min.x, layer, quad.min.y)));
-    //     // debug_assert!(in_chunk_bounds(Point3::new(quad.max.x, layer, quad.max.y)));
-    //     // debug_assert!(!min_voxel.has_transparency());
-    //     // debug_assert!(!max_voxel.has_transparency());
-    //     let pos = Point3::new(quad.min.x, layer, quad.min.y);
-    //     for offset_x in 0..=quad.max.x - quad.min.x {
-    //         for offset_z in 1..=SIZE {
-    //             let offset = Vector3::new(offset_x, 0, offset_z);
-    //             let new_pos = pos + offset;
-    //             if !self.can_merge(pos, new_pos) {
-    //                 // We've hit a place where the new face cannot be merged
-    //                 return Aabb2::new(
-    //                     Point2::new(pos.x, pos.z),
-    //                     Point2::new(quad.max.x, new_pos.z - 1),
-    //                 );
-    //             }
-    //         }
-    //     }
-    //     unreachable!()
-    // }
     fn expand_down(&self, quad: Quad, layer: i32) -> Quad
     where
         T: PartialEq + ::std::fmt::Debug,
     {
-        let start = &self.chunk[Point3::new(quad.min.x, layer, quad.min.y)];
+        let start = &self.neighbors.center[Point3::new(quad.min.x, layer, quad.min.y)];
         for zn in quad.min.y..SIZE {
             for xn in quad.min.x..=quad.max.x {
                 let cur_point = Point3::new(xn, layer, zn + 1);
-                let cur = self.chunk.get(cur_point);
+                let cur = self.neighbors.center.get(cur_point);
                 if Some(start) != cur || !self.get_mask(xn, zn + 1) {
                     return Aabb2::new(
                         Point2::new(quad.min.x, quad.min.y),
@@ -419,10 +271,10 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
         for x in 0..SIZE {
             for z in 0..SIZE {
                 let pos = Point3::new(x, layer, z);
-                let current = &self.chunk[pos];
-                // println!("MASK: {:?} -> {:?}", pos, current);
-                let above = self.get(pos + Vector3::new(0, 1, 0));
-                // let below = self.get(pos - Vector3::new(0, 1, 0));
+                let current = &self.neighbors.center[pos];
+                // UNWRAP: unwrap is ok because there will always be a block one outside
+                // of the center chunk
+                let above = self.neighbors.get(pos + Vector3::new(0, 1, 0)).unwrap();
                 // We need to set the mask for any visible face. A face is visible if the voxel
                 // above it is transparent, and the current voxel is not transparent.
                 let val = !current.has_transparency() && above.has_transparency();
@@ -431,58 +283,8 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
         }
     }
 
-    fn print_solid(&self, layer: i32, text: &str) {
-        println!("--- SOLID {} ---", text);
-        for z in 0..SIZE {
-            for x in 0..SIZE {
-                let pos = Point3::new(x, layer, z);
-                if self.chunk[pos].has_transparency() {
-                    print!(". ");
-                } else {
-                    print!("x ");
-                }
-            }
-            println!();
-        }
-    }
-
-    fn print_mask(&self, text: &str) {
-        println!("--- MASK {} ---", text);
-        for z in 0..SIZE {
-            for x in 0..SIZE {
-                if self.get_mask(x, z) {
-                    print!("x ");
-                } else {
-                    print!(". ");
-                }
-            }
-            println!();
-        }
-    }
-
-    fn print_quad(&self, mut quad: Quad, text: &str) {
-        use collision::Contains;
-        println!("--- QUAD {} ---", text);
-        println!("{:?}", quad);
-        quad.max.x += 1;
-        quad.max.y += 1;
-        for z in 0..SIZE {
-            for x in 0..SIZE {
-                if quad.contains(&Point2::new(x, z)) {
-                    print!("# ");
-                } else {
-                    if self.get_mask(x, z) {
-                        print!("x ");
-                    } else {
-                        print!(". ");
-                    }
-                }
-            }
-            println!();
-        }
-    }
-
     fn pick_pos(&self, layer: i32) -> Option<Point3<i32>> {
+        // TODO: could this be made faster?
         for x in 0..SIZE {
             for z in 0..SIZE {
                 if self.get_mask(x, z) {
@@ -509,7 +311,7 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
             side: Side::Top,
             norm: Vector3::new(1.0, 1.0, 0.0),
             face: 1,
-            face_offset: Vector2::new(0.0, 1.0),
+            face_offset: Vector2::new(0.0, fq.max.y - fq.min.y),
             pos: Vector3::new(cx + fq.min.x, cy + layer as f32 + 1.0, cz + fq.min.y),
         }));
         // vert [0,1,0; 1,1,0; 0,1,1; 1,1,1], off [0,1; 1,1; 0,0; 1,0], norm 0, 1,0;, face 1
@@ -517,7 +319,7 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
             side: Side::Top,
             norm: Vector3::new(1.0, 1.0, 0.0),
             face: 1,
-            face_offset: Vector2::new(1.0, 1.0),
+            face_offset: Vector2::new(fq.max.x - fq.min.x, fq.max.y - fq.min.y),
             pos: Vector3::new(cx + fq.max.x, cy + layer as f32 + 1.0, cz + fq.min.y),
         }));
         self.vertices.push(voxel.vertex_data(Precomputed {
@@ -531,7 +333,7 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
             side: Side::Top,
             norm: Vector3::new(1.0, 1.0, 0.0),
             face: 1,
-            face_offset: Vector2::new(1.0, 0.0),
+            face_offset: Vector2::new(fq.max.x - fq.min.x, 0.0),
             pos: Vector3::new(cx + fq.max.x, cy + layer as f32 + 1.0, cz + fq.max.y),
         }));
     }
@@ -553,7 +355,7 @@ impl<'c, T: Voxel + PartialEq + ::std::fmt::Debug + 'c> Mesher<T::PerVertex, u32
             self.fill_mask(layer);
             // While unvisited faces remain, pick a position from the remaining
             while let Some(pos) = self.pick_pos(layer) {
-                let voxel = &self.chunk[pos];
+                let voxel = &self.neighbors.center[pos];
                 // Construct a quad that reaches as far right as possible
                 let quad = self.expand_right(pos);
                 // Expand that quad as far down as possible
