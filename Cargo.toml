@@ -12,6 +12,7 @@ smallvec = "0.6.0"
 noise = "0.5.1"
 collision = "0.15.1"
 rayon = "1.0.1"
+smallbitvec = "2.1.0"
 
 [target.'cfg(windows)'.dependencies.glfw]
 git = "https://github.com/bjz/glfw-rs.git"

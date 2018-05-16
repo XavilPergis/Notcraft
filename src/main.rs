@@ -1,4 +1,4 @@
-#![feature(const_fn, trace_macros, nll, match_beginning_vert, optin_builtin_traits, crate_visibility_modifier)]
+#![feature(const_fn, trace_macros, nll, optin_builtin_traits, crate_visibility_modifier)]
 
 extern crate gl;
 extern crate glfw;
@@ -8,6 +8,7 @@ extern crate noise;
 extern crate smallvec;
 extern crate collision;
 extern crate rayon;
+#[macro_use] extern crate smallbitvec;
 #[macro_use] extern crate lazy_static;
 
 #[macro_use] mod gl_api;
@@ -85,7 +86,6 @@ impl Voxel for Block {
     }
 }
 
-
 struct Inputs {
     active_keys: HashSet<Key>,
 }
@@ -148,27 +148,27 @@ impl<N> ChunkGenerator<Block> for NoiseGenerator<N> where N: NoiseFn<[f64; 3]> {
                 for bx in 0..SIZE {
                     let mut pos = Self::pos_at_block(pos, Vector3::new(bx, by, bz));
                     pos.y /= SIZE as f64;
-                    buffer.push(if self.block_at(pos) { Block::Stone } else { Block::Air });
+                    buffer.push(if pos.y <= 0.0 { Block::Stone } else { Block::Air });
                 }
             }
         }
 
         let mut chunk = Chunk::new(buffer);
-        for by in 0..SIZE_USIZE {
-            for bz in 0..SIZE_USIZE {
-                for bx in 0..SIZE_USIZE {
-                    if Block::Air == chunk[(bx, by, bz)] {
-                        for oy in 0..4 {
-                            if oy <= by {
-                                if chunk[(bx, by - oy, bz)] != Block::Air {
-                                    chunk[(bx, by - oy, bz)] = Block::Dirt;
-                                } 
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // for by in 0..SIZE_USIZE {
+        //     for bz in 0..SIZE_USIZE {
+        //         for bx in 0..SIZE_USIZE {
+        //             if Block::Air == chunk[(bx, by, bz)] {
+        //                 for oy in 0..4 {
+        //                     if oy <= by {
+        //                         if chunk[(bx, by - oy, bz)] != Block::Air {
+        //                             chunk[(bx, by - oy, bz)] = Block::Dirt;
+        //                         } 
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
         chunk
     }
 }
@@ -262,7 +262,7 @@ impl Application {
             selection_start: None,
             previous_cursor_x: 0.0,
             previous_cursor_y: 0.0,
-            selected_block: Block::Stone,
+            selected_block: Block::Grass,
             frames: 0,
             time: 0.0,
             textures,

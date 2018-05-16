@@ -9,6 +9,7 @@ pub mod chunk;
 pub mod mesh;
 pub mod terrain;
 pub mod world;
+pub mod mesher;
 
 pub type WorldPos = Point3<i32>;
 pub type ChunkPos = Point3<i32>;
