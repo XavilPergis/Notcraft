@@ -23,7 +23,7 @@ pub struct Precomputed {
     pub face: i32,
 }
 
-pub trait Voxel {
+pub trait Voxel: Copy + PartialEq {
     type PerVertex: InternalLayout;
     fn has_transparency(&self) -> bool;
     fn vertex_data(&self, precomputed: Precomputed) -> Self::PerVertex;

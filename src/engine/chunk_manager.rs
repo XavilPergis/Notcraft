@@ -1,8 +1,7 @@
 use cgmath::{Matrix4, Point3, SquareMatrix, Vector3};
 use collision::Aabb3;
 use engine::mesh::Mesh;
-use engine::mesher::GreedyMesher;
-use engine::mesher::{CullMesher, Mesher};
+use engine::mesher::{CullMesher, GreedyMesher, Mesher};
 use engine::terrain::ChunkGenerator;
 use engine::world::World;
 use engine::world::WorldGenerator;
@@ -14,6 +13,8 @@ use gl_api::shader::program::LinkedProgram;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::RwLock;
+
+type ChunkMesher<'c, T> = GreedyMesher<'c, T>;
 
 pub struct ChunkManager<T: Voxel> {
     world: World<T>,
@@ -184,7 +185,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
 
     /// Get the mesher for the chunk passed in, on none if not all of the neighbor chunks
     /// are loaded yet
-    fn get_mesher<'c>(&'c self, pos: ChunkPos) -> Option<GreedyMesher<'c, T>> {
+    fn get_mesher<'c>(&'c self, pos: ChunkPos) -> Option<ChunkMesher<'c, T>> {
         let chunk = self.world.chunks.get(&pos)?;
         let top = self.world.chunks.get(&(pos + Vector3::unit_y()))?;
         let bottom = self.world.chunks.get(&(pos - Vector3::unit_y()))?;
@@ -193,7 +194,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         let front = self.world.chunks.get(&(pos + Vector3::unit_z()))?;
         let back = self.world.chunks.get(&(pos - Vector3::unit_z()))?;
 
-        Some(GreedyMesher::new(
+        Some(ChunkMesher::new(
             pos, chunk, top, bottom, left, right, front, back,
         ))
     }
@@ -260,7 +261,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     pub fn tick(&mut self)
     where
         T::PerVertex: Send,
-        T: PartialEq + ::std::fmt::Debug,
+        T: Copy + PartialEq + ::std::fmt::Debug,
     {
         use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
@@ -300,11 +301,11 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         }
 
         if self.dirty.len() > 0 {
-            // Update all dirty at once to avoid problems where unfinished meshes flash
-            // after a block is destroyed.
-            // NOTE: any dirty positions that were marked in the one-chunk gap between
-            // meshed chunks and nothing will get removed here, but this is not a problem
-            // since we haven't meshed them anyways.
+            // Update all dirty at once to avoid problems where unfinished
+            // meshes flash after a block is destroyed. NOTE: any dirty
+            // positions that were marked in the one-chunk gap between meshed
+            // chunks and nothing will get removed here, but this is not a
+            // problem since we haven't meshed them anyways.
             let meshes = self.dirty
                 .drain()
                 .collect::<Vec<_>>()

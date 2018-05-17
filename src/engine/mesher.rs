@@ -138,7 +138,7 @@ impl<'c, T: Voxel + 'c> CullMesher<'c, T> {
     }
 }
 
-impl<'c, T: Voxel + Copy + 'c> Mesher<T::PerVertex, u32> for CullMesher<'c, T> {
+impl<'c, T: Voxel + 'c> Mesher<T::PerVertex, u32> for CullMesher<'c, T> {
     fn gen_vertex_data(mut self) -> (Vec<T::PerVertex>, Vec<u32>) {
         for i in 0..(CHUNK_SIZE as i32) {
             for j in 0..(CHUNK_SIZE as i32) {
@@ -182,6 +182,7 @@ pub struct GreedyMesher<'c, T: Voxel + 'c> {
     mask: Box<[bool]>,
     vertices: Vec<T::PerVertex>,
     indices: Vec<u32>,
+    dimension: Side,
 }
 
 const SIZE: i32 = CHUNK_SIZE as i32;
@@ -211,32 +212,57 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
             mask: vec![false; CHUNK_SIZE * CHUNK_SIZE].into_boxed_slice(),
             vertices: Vec::new(),
             indices: Vec::new(),
+            dimension: Side::Top,
         }
     }
 
-    fn set_mask(&mut self, x: i32, z: i32, value: bool) {
-        self.mask[(SIZE * x + z) as usize] = value;
+    fn set_mask(&mut self, u: i32, v: i32, value: bool) {
+        self.mask[(SIZE * u + v) as usize] = value;
     }
 
-    fn get_mask(&self, x: i32, z: i32) -> bool {
-        if x >= SIZE || x < 0 || z >= SIZE || z < 0 { false }
-        else { self.mask[(SIZE * x + z) as usize] }
+    fn get_mask(&self, u: i32, v: i32) -> bool {
+        if u >= SIZE || u < 0 || v >= SIZE || v < 0 { false }
+        else { self.mask[(SIZE * u + v) as usize] }
     }
 
-    fn expand_right(&self, pos: Point3<i32>) -> Quad
+    fn to_world_space(&self, u: i32, v: i32, layer: i32) -> Point3<i32> {
+        match self.dimension {
+            Side::Top | Side::Bottom => Point3::new(u, layer, v),
+            Side::Right | Side::Left => Point3::new(layer, u, v),
+            Side::Front | Side::Back => Point3::new(u, v, layer),
+        }
+    }
+
+    fn get_offset_vec(&self) -> Vector3<i32> {
+        match self.dimension {
+            Side::Top => Vector3::new(0, 1, 0),
+            Side::Right => Vector3::new(1, 0, 0),
+            Side::Front => Vector3::new(0, 0, 1),
+            Side::Bottom => Vector3::new(0, -1, 0),
+            Side::Left => Vector3::new(-1, 0, 0),
+            Side::Back => Vector3::new(0, 0, -1),
+        }
+    }
+
+    fn get_center(&self, u: i32, v: i32, layer: i32) -> Option<&T> {
+        let pos = self.to_world_space(u, v, layer);
+        self.neighbors.center.get(pos)
+    }
+
+    fn expand_right(&self, u: i32, v: i32, layer: i32) -> Quad
     where
-        T: PartialEq + ::std::fmt::Debug,
+        T: PartialEq,
     {
-        let start = &self.neighbors.center[pos];
+        let start = self.get_center(u, v, layer).unwrap();
         // println!("START {:?}", start);
-        for xn in pos.x..SIZE {
-            let cur_point = Point3::new(xn + 1, pos.y, pos.z);
-            let cur = self.neighbors.center.get(cur_point);
-            // println!("{} -> CUR {:?}", xn, cur);
-            if Some(start) != cur || !self.get_mask(xn + 1, pos.z) {
+        for un in u..SIZE {
+            // let cur_point = Point3::new(un + 1, pos.y, pos.z);
+            let cur = self.get_center(un + 1, v, layer);
+            // println!("{} -> CUR {:?}", un, cur);
+            if Some(start) != cur || !self.get_mask(un + 1, v) {
                 return Aabb2::new(
-                    Point2::new(pos.x, pos.z),
-                    Point2::new(xn, pos.z)
+                    Point2::new(u, v),
+                    Point2::new(un, v)
                 );
             }
         }
@@ -245,17 +271,20 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
 
     fn expand_down(&self, quad: Quad, layer: i32) -> Quad
     where
-        T: PartialEq + ::std::fmt::Debug,
+        T: PartialEq,
     {
-        let start = &self.neighbors.center[Point3::new(quad.min.x, layer, quad.min.y)];
-        for zn in quad.min.y..SIZE {
-            for xn in quad.min.x..=quad.max.x {
-                let cur_point = Point3::new(xn, layer, zn + 1);
-                let cur = self.neighbors.center.get(cur_point);
-                if Some(start) != cur || !self.get_mask(xn, zn + 1) {
+        let minu = quad.min.x;
+        let minv = quad.min.y;
+        let maxu = quad.max.x;
+        let start = self.get_center(minu, minv, layer).unwrap();
+        for vn in minv..SIZE {
+            for un in minu..=maxu {
+                // let cur_point = Point3::new(un, layer, vn + 1);
+                let cur = self.get_center(un, vn + 1, layer);
+                if Some(start) != cur || !self.get_mask(un, vn + 1) {
                     return Aabb2::new(
-                        Point2::new(quad.min.x, quad.min.y),
-                        Point2::new(quad.max.x, zn),
+                        Point2::new(minu, minv),
+                        Point2::new(maxu, vn),
                     );
                 }
             }
@@ -263,39 +292,38 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
         unreachable!()
     }
 
-    fn fill_mask(&mut self, layer: i32)
-    where
-        T: ::std::fmt::Debug,
-    {
-        self.mask = vec![false; CHUNK_SIZE * CHUNK_SIZE].into_boxed_slice();
-        for x in 0..SIZE {
-            for z in 0..SIZE {
-                let pos = Point3::new(x, layer, z);
+    fn fill_mask(&mut self, layer: i32) {
+        // for item in &mut self.mask { *item = false; }
+        for u in 0..SIZE {
+            for v in 0..SIZE {
+                // let pos = Point3::new(x, layer, z);
+                let pos = self.to_world_space(u, v, layer);
                 let current = &self.neighbors.center[pos];
-                // UNWRAP: unwrap is ok because there will always be a block one outside
-                // of the center chunk
-                let above = self.neighbors.get(pos + Vector3::new(0, 1, 0)).unwrap();
-                // We need to set the mask for any visible face. A face is visible if the voxel
-                // above it is transparent, and the current voxel is not transparent.
+                // UNWRAP: unwrap is ok because there will always be a block one
+                // outside of the center chunk
+                let above = self.neighbors.get(pos + self.get_offset_vec()).unwrap();
+                // We need to set the mask for any visible face. A face is
+                // visible if the voxel above it is transparent, and the current
+                // voxel is not transparent.
                 let val = !current.has_transparency() && above.has_transparency();
-                self.set_mask(x, z, val);
+                self.set_mask(u, v, val);
             }
         }
     }
 
-    fn pick_pos(&self, layer: i32) -> Option<Point3<i32>> {
+    fn pick_pos(&self) -> Option<Point2<i32>> {
         // TODO: could this be made faster?
-        for x in 0..SIZE {
-            for z in 0..SIZE {
-                if self.get_mask(x, z) {
-                    return Some(Point3::new(x, layer, z));
+        for u in 0..SIZE {
+            for v in 0..SIZE {
+                if self.get_mask(u, v) {
+                    return Some(Point2::new(u, v));
                 }
             }
         }
         None
     }
 
-    fn add_quad(&mut self, mut quad: Quad, voxel: &T, layer: i32) {
+    fn add_quad(&mut self, mut quad: Quad, voxel: T, layer: i32) {
         quad.max.x += 1;
         quad.max.y += 1;
         let index_len = self.vertices.len() as u32;
@@ -304,38 +332,51 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
         let cz = CHUNK_SIZE as f32 * self.pos.z as f32;
         let fq: Aabb2<f32> = Aabb2::new(quad.min.cast().unwrap(), quad.max.cast().unwrap());
 
-        self.indices
-            .extend(&offset_arr!(index_len, [0, 1, 2, 3, 2, 1]));
+        macro_rules! face { 
+            (side $side:ident,
+             ind [$($index:expr),*],
+             norm $nx:expr,$ny:expr,$nz:expr;,
+             face $face:expr,
+             vert [$($vx:expr, $vy:expr, $vz:expr);*],
+             off [$($ou:expr, $ov:expr);*]
+             ) => {{
+                self.indices.extend(&offset_arr!(index_len, [$($index),*]));
+                $(self.vertices.push(voxel.vertex_data(Precomputed {
+                    side: Side::$side,
+                    face_offset: Vector2::new($ou as f32, $ov as f32),
+                    pos: Vector3::new(cx+$vx as f32, cy+$vy as f32, cz+$vz as f32),
+                    norm: Vector3::new($nx as f32, $ny as f32, $nz as f32),
+                    face: $face
+                }));)*
+            }}
+        }
 
-        self.vertices.push(voxel.vertex_data(Precomputed {
-            side: Side::Top,
-            norm: Vector3::new(1.0, 1.0, 0.0),
-            face: 1,
-            face_offset: Vector2::new(0.0, fq.max.y - fq.min.y),
-            pos: Vector3::new(cx + fq.min.x, cy + layer as f32 + 1.0, cz + fq.min.y),
-        }));
-        // vert [0,1,0; 1,1,0; 0,1,1; 1,1,1], off [0,1; 1,1; 0,0; 1,0], norm 0, 1,0;, face 1
-        self.vertices.push(voxel.vertex_data(Precomputed {
-            side: Side::Top,
-            norm: Vector3::new(1.0, 1.0, 0.0),
-            face: 1,
-            face_offset: Vector2::new(fq.max.x - fq.min.x, fq.max.y - fq.min.y),
-            pos: Vector3::new(cx + fq.max.x, cy + layer as f32 + 1.0, cz + fq.min.y),
-        }));
-        self.vertices.push(voxel.vertex_data(Precomputed {
-            side: Side::Top,
-            norm: Vector3::new(1.0, 1.0, 0.0),
-            face: 1,
-            face_offset: Vector2::new(0.0, 0.0),
-            pos: Vector3::new(cx + fq.min.x, cy + layer as f32 + 1.0, cz + fq.max.y),
-        }));
-        self.vertices.push(voxel.vertex_data(Precomputed {
-            side: Side::Top,
-            norm: Vector3::new(1.0, 1.0, 0.0),
-            face: 1,
-            face_offset: Vector2::new(fq.max.x - fq.min.x, 0.0),
-            pos: Vector3::new(cx + fq.max.x, cy + layer as f32 + 1.0, cz + fq.max.y),
-        }));
+        let (top, bot) = (layer as f32 + 1.0, layer as f32);
+        let (minx, miny, maxx, maxy) = (fq.min.x, fq.min.y, fq.max.x, fq.max.y);
+        let (lenx, leny) = (maxx - minx, maxy - miny);
+
+        match self.dimension {
+            Side::Top => face! { side Top, ind [0,1,2,3,2,1], norm 0, 1,0;, face 1,
+                vert [minx, top, miny; maxx, top, miny; minx, top, maxy; maxx, top, maxy],
+                off  [0,leny; lenx,leny; 0,0; lenx,0] },
+            Side::Bottom => face! { side Top, ind [0,2,1,3,1,2], norm 0, 1,0;, face 1,
+                vert [minx, bot, miny; maxx, bot, miny; minx, bot, maxy; maxx, bot, maxy],
+                off  [0,leny; lenx,leny; 0,0; lenx,0] },
+
+            Side::Front => face! { side Front, ind [0,1,2,3,2,1], norm 0,0, 1;, face 0,
+                vert [minx,maxy,top; maxx,maxy,top; minx,miny,top; maxx,miny,top],
+                off  [0,0; lenx,0; 0,leny; lenx,leny] },
+            Side::Back => face! { side Back, ind [0,2,1,3,1,2], norm 0,0,-1;, face 0,
+                vert [minx,maxy,bot; maxx,maxy,bot; minx,miny,bot; maxx,miny,bot],
+                off  [0,0; lenx,0; 0,leny; lenx,leny] },
+
+            Side::Left => face! { side Left, ind [0,1,2,3,2,1], norm -1,0,0;, face 2,
+                vert [bot,maxx,miny; bot,maxx,maxy; bot,minx,miny; bot,minx,maxy],
+                off  [0,0; lenx,0; 0,leny; lenx,leny] },
+            Side::Right => face! { side Right, ind [0,2,1,3,1,2], norm 1, 0,0;, face 2,
+                vert [top,maxx,miny; top,maxx,maxy; top,minx,miny; top,minx,maxy],
+                off  [0,0; lenx,0; 0,leny; lenx,leny] },
+        }
     }
 
     fn mark_visited(&mut self, quad: Quad) {
@@ -347,21 +388,28 @@ impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
     }
 }
 
-impl<'c, T: Voxel + PartialEq + ::std::fmt::Debug + 'c> Mesher<T::PerVertex, u32>
+impl<'c, T: Voxel + 'c> Mesher<T::PerVertex, u32>
     for GreedyMesher<'c, T>
 {
     fn gen_vertex_data(mut self) -> (Vec<T::PerVertex>, Vec<u32>) {
-        for layer in 0..SIZE {
-            self.fill_mask(layer);
-            // While unvisited faces remain, pick a position from the remaining
-            while let Some(pos) = self.pick_pos(layer) {
-                let voxel = &self.neighbors.center[pos];
-                // Construct a quad that reaches as far right as possible
-                let quad = self.expand_right(pos);
-                // Expand that quad as far down as possible
-                let quad = self.expand_down(quad, layer);
-                self.mark_visited(quad);
-                self.add_quad(quad, voxel, layer);
+        for &dim in &[
+            Side::Top, Side::Right, Side::Front,
+            Side::Bottom, Side::Left, Side::Back
+        ] {
+            self.dimension = dim;
+            for layer in 0..SIZE {
+                self.fill_mask(layer);
+                // While unvisited faces remain, pick a position from the remaining
+                while let Some(pos) = self.pick_pos() {
+                    let (u, v) = (pos.x, pos.y);
+                    let voxel = *self.get_center(u, v, layer).unwrap();
+                    // Construct a quad that reaches as far right as possible
+                    let quad = self.expand_right(u, v, layer);
+                    // Expand that quad as far down as possible
+                    let quad = self.expand_down(quad, layer);
+                    self.mark_visited(quad);
+                    self.add_quad(quad, voxel, layer);
+                }
             }
         }
 
