@@ -22,7 +22,6 @@ impl Program {
         }
     }
 
-    #[inline(never)]
     pub fn bind(&self) {
         // glUseProgram fails, even though program validation succeeds, and using the program
         // seems to bind it just fine... Smells like a driver bug to me.

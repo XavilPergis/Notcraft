@@ -3,8 +3,9 @@ use std::mem;
 use gl;
 use gl::types::*;
 use gl_api::buffer::VertexBuffer;
-use gl_api::layout::{AttributeLayout, InternalLayout};
+use gl_api::layout::{AttributeLayout, GlLayout};
 
+#[derive(Debug)]
 pub struct VertexArray {
     pub(crate) id: GLuint,
     index: usize,
@@ -41,7 +42,7 @@ impl VertexArray {
         gl_call!(VertexAttribPointer(index, layout.attrib_size, layout.attrib_type, normalized, size, offset))
     }
 
-    pub fn add_buffer<T: InternalLayout>(&mut self, buffer: &VertexBuffer<T>) -> GlResult<()> {
+    pub fn add_buffer<T: GlLayout>(&mut self, buffer: &VertexBuffer<T>) -> GlResult<()> {
         self.bind();
         buffer.bind();
 

@@ -1,11 +1,13 @@
+use engine::mesher::BlockVertex;
+use engine::block::Block;
 use cgmath::{Matrix4, Point3, SquareMatrix, Vector3};
 use collision::Aabb3;
 use engine::mesh::Mesh;
-use engine::mesher::{CullMesher, GreedyMesher, Mesher};
+use engine::mesher::{CullMesher, GreedyMesher};
 use engine::terrain::ChunkGenerator;
 use engine::world::World;
 use engine::world::WorldGenerator;
-use engine::Voxel;
+use engine::{Side, Voxel};
 use engine::{ChunkPos, WorldPos};
 use gl_api::buffer::UsageType;
 use gl_api::error::GlResult;
@@ -13,64 +15,57 @@ use gl_api::shader::program::LinkedProgram;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::RwLock;
+use cgmath::Vector2;
 
-type ChunkMesher<'c, T> = GreedyMesher<'c, T>;
+type ChunkMesher<'c> = GreedyMesher<'c>;
 
-pub struct ChunkManager<T: Voxel> {
-    world: World<T>,
-    world_generator: WorldGenerator<T>,
-    meshes: HashMap<ChunkPos, Mesh<T::PerVertex, u32>>,
+pub struct ChunkManager {
+    world: World<Block>,
+    world_generator: WorldGenerator<Block>,
+    meshes: HashMap<ChunkPos, Mesh<BlockVertex, u32>>,
     dirty: HashSet<ChunkPos>,
     queue: HashSet<ChunkPos>,
     center: Arc<RwLock<ChunkPos>>,
-    radius: i32,
+    radii: Arc<RwLock<Vector3<i32>>>,
 }
 
-impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
-    pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G) -> Self {
+impl ChunkManager {
+    pub fn new<G: ChunkGenerator<Block> + Send + 'static>(generator: G) -> Self {
         let center = Arc::new(RwLock::new(Point3::new(0, 0, 0)));
+        let radii = Arc::new(RwLock::new(Vector3::new(2, 2, 2)));
         let mut manager = ChunkManager {
             world: World::new(),
-            world_generator: WorldGenerator::new(generator, center.clone()),
+            world_generator: WorldGenerator::new(generator, radii.clone(), center.clone()),
             meshes: HashMap::new(),
             dirty: HashSet::new(),
             queue: HashSet::new(),
-            center: center,
-            radius: 2,
+            center,
+            radii,
         };
 
         manager.queue_in_range();
         manager
     }
 
-    pub fn world(&self) -> &World<T> {
+    pub fn world(&self) -> &World<Block> {
         &self.world
     }
 
-    /// Be careful with this! It is *your* responsibility to not clear voxels without
-    /// remeshing, because this will **NOT** cause a remesh of any chunks!
-    pub fn world_mut(&mut self) -> &mut World<T> {
+    /// Be careful with this! It is *your* responsibility to not change voxels
+    /// without remeshing, because this will **NOT** cause a remesh of any
+    /// chunks!
+    pub fn world_mut(&mut self) -> &mut World<Block> {
         &mut self.world
     }
 
     /// Set many voxels at once
-    pub fn set_voxel_range(&mut self, aabb: Aabb3<i32>, voxel: T)
-    where
-        T: PartialEq + Clone,
-    {
-        const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
-        println!("aabb: {:?}", aabb);
+    pub fn set_voxel_range(&mut self, aabb: Aabb3<i32>, voxel: Block) {
+        const SIZE: i32 = ::engine::chunk::CHUNK_SIZE as i32;
         let start = aabb.min;
         let end = aabb.max;
-        println!("start: {:?}, end: {:?}", start, end);
 
         let (chunk_start, block_start) = ::util::get_chunk_pos(start);
         let (chunk_end, block_end) = ::util::get_chunk_pos(end);
-        println!(
-            "chunk_start: {:?}, block_start: {:?}",
-            chunk_start, block_start
-        );
-        println!("chunk_end: {:?}, block_end: {:?}", chunk_end, block_end);
 
         for x in start.x..end.x {
             for y in start.y..end.y {
@@ -98,7 +93,6 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         if block_start.x == 0 {
             for y in chunk_start.y..chunk_end.y + 1 {
                 for z in chunk_start.z..chunk_end.z + 1 {
-                    println!("BOTTOM y={} z={}", y, z);
                     self.dirty.insert(Point3::new(chunk_start.x - 1, y, z));
                 }
             }
@@ -106,7 +100,6 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         if block_start.y == 0 {
             for x in chunk_start.x..chunk_end.x + 1 {
                 for z in chunk_start.z..chunk_end.z + 1 {
-                    println!("BOTTOM x={} z={}", x, z);
                     self.dirty.insert(Point3::new(x, chunk_start.y - 1, z));
                 }
             }
@@ -114,7 +107,6 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         if block_start.z == 0 {
             for x in chunk_start.x..chunk_end.x + 1 {
                 for y in chunk_start.y..chunk_end.y + 1 {
-                    println!("BOTTOM x={} y={}", x, y);
                     self.dirty.insert(Point3::new(x, y, chunk_start.z - 1));
                 }
             }
@@ -122,7 +114,6 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         if block_end.x == SIZE - 1 {
             for y in chunk_start.y..chunk_end.y + 1 {
                 for z in chunk_start.z..chunk_end.z + 1 {
-                    println!("TOP y={} z={}", y, z);
                     self.dirty.insert(Point3::new(chunk_end.x + 1, y, z));
                 }
             }
@@ -130,7 +121,6 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         if block_end.y == SIZE - 1 {
             for x in chunk_start.x..chunk_end.x + 1 {
                 for z in chunk_start.z..chunk_end.z + 1 {
-                    println!("TOP x={} z={}", x, z);
                     self.dirty.insert(Point3::new(x, chunk_end.y + 1, z));
                 }
             }
@@ -138,7 +128,6 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         if block_end.z == SIZE - 1 {
             for x in chunk_start.x..chunk_end.x + 1 {
                 for y in chunk_start.y..chunk_end.y + 1 {
-                    println!("TOP x={} y={}", x, y);
                     self.dirty.insert(Point3::new(x, y, chunk_end.z + 1));
                 }
             }
@@ -148,11 +137,8 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     }
 
     /// Set a voxel, causing remeshes as needed.
-    pub fn set_voxel(&mut self, pos: WorldPos, voxel: T)
-    where
-        T: PartialEq,
-    {
-        const SIZE: i32 = super::chunk::CHUNK_SIZE as i32;
+    pub fn set_voxel(&mut self, pos: WorldPos, voxel: Block) {
+        const SIZE: i32 = ::engine::chunk::CHUNK_SIZE as i32;
         let (cpos, bpos) = ::util::get_chunk_pos(pos);
         if let Some(world_voxel) = self.world.get_voxel_mut(pos) {
             if *world_voxel != voxel {
@@ -185,7 +171,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
 
     /// Get the mesher for the chunk passed in, on none if not all of the neighbor chunks
     /// are loaded yet
-    fn get_mesher<'c>(&'c self, pos: ChunkPos) -> Option<ChunkMesher<'c, T>> {
+    fn get_mesher<'c>(&'c self, pos: ChunkPos) -> Option<ChunkMesher<'c>> {
         let chunk = self.world.chunks.get(&pos)?;
         let top = self.world.chunks.get(&(pos + Vector3::unit_y()))?;
         let bottom = self.world.chunks.get(&(pos - Vector3::unit_y()))?;
@@ -203,19 +189,24 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         *self.center.read().unwrap()
     }
 
+    fn radii(&self) -> Vector3<i32> {
+        *self.radii.read().unwrap()
+    }
+
     /// Add chunks to generator queue that are not already generated
     fn queue_in_range(&mut self) {
+        let radii = self.radii();
         let center = self.center();
         // Generate chunks one outside the radius so the mesher can properly
         // mesh all the chunks in the radius
         println!(
-            "self.center = {:?}, self.radius = {:?}",
-            self.center, self.radius
+            "self.center = {:?}, radii = {:?}",
+            self.center, radii
         );
-        for x in center.x - self.radius - 1..center.x + self.radius + 1 {
-            for y in center.y - self.radius - 1..center.y + self.radius + 1 {
-                for z in center.z - self.radius - 1..center.z + self.radius + 1 {
-                    let pos = Point3::new(x, y, z);
+        for x in -radii.x - 1..radii.x + 1 {
+            for y in -radii.y - 1..radii.y + 1 {
+                for z in -radii.z - 1..radii.z + 1 {
+                    let pos = center + Vector3::new(x, y, z);
                     // Don't queue chunks that are already loaded
                     if !self.world.chunk_exists(pos) {
                         self.world_generator.queue(pos);
@@ -224,10 +215,10 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
             }
         }
 
-        for x in center.x - self.radius..center.x + self.radius {
-            for y in center.y - self.radius..center.y + self.radius {
-                for z in center.z - self.radius..center.z + self.radius {
-                    let pos = Point3::new(x, y, z);
+        for x in -radii.x..radii.x {
+            for y in -radii.y..radii.y {
+                for z in -radii.z..radii.z {
+                    let pos = center + Vector3::new(x, y, z);
                     if !self.meshes.contains_key(&pos) {
                         self.queue.insert(Point3::new(x, y, z));
                     }
@@ -237,17 +228,17 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
     }
 
     fn unload(&mut self) {
-        let (center, radius) = (self.center(), self.radius);
+        let (center, radii) = (self.center(), self.radii());
         self.meshes
-            .retain(|&pos, _| ::util::in_range(pos, center, radius));
+            .retain(|&pos, _| ::util::in_range(pos, center, radii));
         // make sure to unload that one-chunk buffer
-        self.world.unload(center, radius + 1);
+        self.world.unload(center, radii + Vector3::new(1, 1, 1));
     }
 
     pub fn update_player_position(&mut self, pos: Point3<f32>) {
-        let x = (pos.x / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
-        let y = (pos.y / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
-        let z = (pos.z / super::chunk::CHUNK_SIZE as f32).ceil() as i32;
+        let x = (pos.x / ::engine::chunk::CHUNK_SIZE as f32).ceil() as i32;
+        let y = (pos.y / ::engine::chunk::CHUNK_SIZE as f32).ceil() as i32;
+        let z = (pos.z / ::engine::chunk::CHUNK_SIZE as f32).ceil() as i32;
         let pos = Point3::new(x, y, z);
         // Don't run the expensive stuff if we haven't moved
         if pos == self.center() {
@@ -258,11 +249,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
         self.unload();
     }
 
-    pub fn tick(&mut self)
-    where
-        T::PerVertex: Send,
-        T: Copy + PartialEq + ::std::fmt::Debug,
-    {
+    pub fn tick(&mut self) {
         use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
         self.world_generator.update_world(&mut self.world);
@@ -282,21 +269,18 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
             // The heavy-lifting parallel iterator that iterates the meshers in parallel
             // and generates the mesh data
             let meshes = meshers
-                .into_iter()
-                .map(|(pos, mesher)| (pos, mesher.gen_vertex_data()))
+                .into_par_iter()
+                .map(|(pos, mut mesher)| (pos, { mesher.mesh(); mesher }))
                 .collect::<Vec<_>>();
 
             // Iterate the generated meshes, construct the actual mesh (the one with the
             // actual vertex and index buffer), and insert them into the mesh map.
             // NOTE: We need to construct the mesh on the main OpenGL thread.
-            for (pos, mesh) in meshes.into_iter() {
-                let (vertices, indices) = mesh;
-                let mut mesh = Mesh::new().unwrap(); // TODO: unwrap
-                mesh.upload(vertices, indices, UsageType::StaticDraw)
-                    .unwrap();
+            for (pos, mesher) in meshes.into_iter() {
+                let mesh = mesher.create_mesh().unwrap(); // TODO: unwrap
                 self.meshes.insert(pos, mesh);
                 self.queue.remove(&pos);
-                println!("Meshed chunk ({:?}), meshes: {}", pos, self.meshes.len());
+                println!("Meshed chunk ({:?}), meshes: {}, queue: {}", pos, self.meshes.len(), self.queue.len());
             }
         }
 
@@ -311,7 +295,7 @@ impl<T: Voxel + Clone + Send + Sync + 'static> ChunkManager<T> {
                 .collect::<Vec<_>>()
                 .into_iter()
                 .map(|pos| (pos, self.get_mesher(pos)))
-                .filter_map(|(pos, mesher)| mesher.map(|m| (pos, m.gen_mesh().unwrap())))
+                .filter_map(|(pos, mesher)| mesher.map(|mut mesher| (pos, { mesher.mesh(); mesher.create_mesh().unwrap() })))
                 .collect::<Vec<_>>();
 
             for (pos, mesh) in meshes {

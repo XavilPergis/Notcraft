@@ -1,3 +1,4 @@
+use cgmath::Vector3;
 use std::sync::RwLock;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -27,8 +28,8 @@ impl<T> World<T> {
     }
 
     /// Forcefully unload all the chunks in `radius` around `center`
-    pub fn unload(&mut self, center: WorldPos, radius: i32) {
-        self.chunks.retain(|&pos, _| ::util::in_range(pos, center, radius));
+    pub fn unload(&mut self, center: WorldPos, radii: Vector3<i32>) {
+        self.chunks.retain(|&pos, _| ::util::in_range(pos, center, radii));
     }
 
     pub fn get_voxel(&self, pos: WorldPos) -> Option<&T> {
@@ -43,49 +44,53 @@ impl<T> World<T> {
         self.chunks.get_mut(&cpos).map(|chunk| &mut chunk[pos])
     }
 
-    pub fn around_voxel<U, F: Fn(WorldPos, &T) -> Option<U>>(&self, pos: WorldPos, radius: u32, func: F) -> Vec<U> {
+    pub fn around_voxel<F: FnMut(WorldPos, &T)>(&self, pos: WorldPos, radius: u32, mut func: F) {
         let radius = radius as i32;
-        // TODO: We allocate here, but likely don't need to. It would be better if this
-        // function returned an iterator...
-        let mut buf = Vec::with_capacity((radius*radius*radius) as usize);
         for x in pos.x - radius..pos.x + radius {
             for y in pos.y - radius..pos.y + radius {
                 for z in pos.z - radius..pos.z + radius {
                     let pos = Point3::new(x, y, z);
                     if let Some(voxel) = self.get_voxel(pos) {
-                        if let Some(item) = func(pos, voxel) {
-                            buf.push(item);
-                        }
+                        func(pos, voxel);
                     }
                 }
             }
         }
-        buf
     }
 
     crate fn chunk_exists(&self, pos: ChunkPos) -> bool {
         self.chunks.contains_key(&pos)
     }
+
+    crate fn tick(&mut self) {
+        // for (pos, entity) in &mut self.tile_entities {
+        //     entity.update(self);
+        // }
+    }
 }
 
 pub struct WorldGenerator<T> {
     queue: HashSet<ChunkPos>,
+    chunk_pos: Arc<RwLock<ChunkPos>>,
+    radii: Arc<RwLock<Vector3<i32>>>,
     gen_tx: mpsc::Sender<ChunkPos>,
     gen_rx: mpsc::Receiver<(ChunkPos, Chunk<T>)>,
 }
 
 impl<T> WorldGenerator<T> {
-        pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G, chunk_pos: Arc<RwLock<ChunkPos>>) -> Self where T: Send + 'static {
+        pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G, radii: Arc<RwLock<Vector3<i32>>>, chunk_pos: Arc<RwLock<ChunkPos>>) -> Self where T: Send + 'static {
         use std::thread;
         let (req_tx, req_rx) = mpsc::channel();
         let (tx, rx) = mpsc::channel();
+        let thread_chunk_pos = chunk_pos.clone();
+        let thread_radii = radii.clone();
         thread::spawn(move || {
             while let Ok(request) = req_rx.recv() {
                 // Deref and drop the guard so we don't hold up the lock while we generate
                 // the chunk
-                let pos = *chunk_pos.read().unwrap();
+                let pos = *thread_chunk_pos.read().unwrap();
                 // Skip if not in range
-                if !::util::in_range(request, pos, 4) { continue; }
+                if !::util::in_range(request, pos, *thread_radii.read().unwrap()) { continue; }
                 // Err means the rx has hung up, so we can just shut down this thread
                 // if that happens
                 match tx.send((request, generator.generate(request))) {
@@ -97,6 +102,8 @@ impl<T> WorldGenerator<T> {
 
         WorldGenerator {
             queue: HashSet::new(),
+            chunk_pos,
+            radii,
             gen_tx: req_tx,
             gen_rx: rx,
         }
@@ -116,6 +123,9 @@ impl<T> WorldGenerator<T> {
             world.chunks.insert(pos, chunk);
             self.queue.remove(&pos);
         }
+        let chunk_pos = *self.chunk_pos.read().unwrap();
+        let radii = *self.radii.read().unwrap();
+        self.queue.retain(|&pos| ::util::in_range(chunk_pos, pos, radii))
     }
 
 }

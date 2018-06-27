@@ -28,7 +28,7 @@ macro_rules! buffer_target {
     )
 }
 
-// Buffer targets described in scection 6.1 of spec
+// Buffer targets described in section 6.1 of spec
 buffer_target!(Array: gl::ARRAY_BUFFER);
 buffer_target!(Element: gl::ELEMENT_ARRAY_BUFFER);
 buffer_target!(Uniform: indexed gl::UNIFORM_BUFFER);

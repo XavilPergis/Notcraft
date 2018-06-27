@@ -9,7 +9,7 @@ pub struct AttributeLayout {
 }
 pub type LayoutVec = SmallVec<[AttributeLayout; 8]>;
 
-pub unsafe trait InternalLayout {
+pub unsafe trait GlLayout {
     fn layout() -> LayoutVec;
 }
 
@@ -26,7 +26,7 @@ macro_rules! small_vec {
     })
 }
 
-unsafe impl<T: SimpleLayout> InternalLayout for T {
+unsafe impl<T: SimpleLayout> GlLayout for T {
     fn layout() -> LayoutVec {
         small_vec![AttributeLayout {
             attrib_size: T::size(),
@@ -62,7 +62,7 @@ macro_rules! vertex {
             $($attrib: $attrib_type),*
         }
 
-        unsafe impl $crate::gl_api::layout::InternalLayout for $name {
+        unsafe impl $crate::gl_api::layout::GlLayout for $name {
             fn layout() -> $crate::gl_api::layout::LayoutVec {
                 small_vec![
                     $($crate::gl_api::layout::AttributeLayout {
