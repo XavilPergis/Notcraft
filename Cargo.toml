@@ -11,9 +11,10 @@ lazy_static = "1.0.0"
 cgmath = "0.16.1"
 smallvec = "0.6.0"
 noise = "0.5.1"
-collision = "0.15.1"
+collision = "0.18.0"
 rayon = "1.0.1"
 smallbitvec = "2.1.0"
+specs = "0.11.2"
 
 [dependencies.glfw]
 git = "https://github.com/bjz/glfw-rs.git"

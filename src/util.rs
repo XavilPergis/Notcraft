@@ -54,8 +54,8 @@ pub fn get_chunk_pos(pos: WorldPos) -> (ChunkPos, Vector3<i32>) {
 }
 
 /// Tests if `pos` is within `r` units from `center`
-pub fn in_range(pos: WorldPos, center: WorldPos, r: i32) -> bool {
-    pos.x <= center.x + r && pos.x >= center.x - r &&
-    pos.y <= center.y + r && pos.y >= center.y - r &&
-    pos.z <= center.z + r && pos.z >= center.z - r
+pub fn in_range(pos: WorldPos, center: WorldPos, radii: Vector3<i32>) -> bool {
+    pos.x <= center.x + radii.x && pos.x >= center.x - radii.x &&
+    pos.y <= center.y + radii.y && pos.y >= center.y - radii.y &&
+    pos.z <= center.z + radii.z && pos.z >= center.z - radii.z
 }

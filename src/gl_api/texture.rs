@@ -19,7 +19,7 @@ impl From<ImageError> for TextureError {
 }
 
 #[repr(u32)]
-pub enum MinificationFilter {
+pub enum MinimizationFilter {
     Nearest = gl::NEAREST,
     Linear = gl::LINEAR,
     NearestMipmapNearest = gl::NEAREST_MIPMAP_NEAREST,
@@ -47,16 +47,22 @@ pub enum TextureAxis {
     S, T, R
 }
 
-pub struct Texture {
+pub trait Texture {
+    fn texture_wrap_behavior(&self, axis: TextureAxis, mode: WrapMode);
+    fn min_filter(&self, mode: MinimizationFilter);
+    fn mag_filter(&self, mode: MagnificationFilter);
+}
+
+pub struct Texture2D {
     id: GLuint,
     texture_slot: Cell<GLenum>,
 }
 
-impl Texture {
+impl Texture2D {
     pub fn new() -> Self {
         let mut id = 0;
         unsafe { gl_call!(GenTextures(1, &mut id)).unwrap(); }
-        Texture { id, texture_slot: Cell::new(0) }
+        Texture2D { id, texture_slot: Cell::new(0) }
     }
 
     pub fn source_from_image<P: AsRef<Path>>(&self, path: P) -> TextureResult<()> {
@@ -89,43 +95,6 @@ impl Texture {
         Ok(())
     }
 
-    pub fn texture_wrap_behavior(&self, axis: TextureAxis, mode: WrapMode) {
-        self.bind();
-        let axis = match axis {
-            TextureAxis::S => gl::TEXTURE_WRAP_S,
-            TextureAxis::T => gl::TEXTURE_WRAP_T,
-            TextureAxis::R => gl::TEXTURE_WRAP_R,
-        };
-
-        unsafe {
-            gl_call!(TexParameteri(gl::TEXTURE_2D, axis, mode as i32)).unwrap();
-        }
-    }
-
-    pub fn min_filter(&self, mode: MinificationFilter) {
-        self.bind();
-
-        // Generate mipmaps if the minification filter uses mipmaps
-        match mode {
-            MinificationFilter::LinearMipmapLinear |
-            MinificationFilter::LinearMipmapNearest |
-            MinificationFilter::NearestMipmapLinear |
-            MinificationFilter::NearestMipmapNearest => self.generate_mipmap(),
-            _ => (),
-        }
-
-        unsafe {
-            gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, mode as i32)).unwrap();
-        }
-    }
-
-    pub fn mag_filter(&self, mode: MagnificationFilter) {
-        self.bind();
-        unsafe {
-            gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, mode as i32)).unwrap();
-        }
-    }
-
     fn generate_mipmap(&self) {
         self.bind();
         unsafe {
@@ -149,7 +118,46 @@ impl Texture {
     }
 }
 
-impl Drop for Texture {
+impl Texture for Texture2D {
+    fn texture_wrap_behavior(&self, axis: TextureAxis, mode: WrapMode) {
+        self.bind();
+        let axis = match axis {
+            TextureAxis::S => gl::TEXTURE_WRAP_S,
+            TextureAxis::T => gl::TEXTURE_WRAP_T,
+            TextureAxis::R => gl::TEXTURE_WRAP_R,
+        };
+
+        unsafe {
+            gl_call!(TexParameteri(gl::TEXTURE_2D, axis, mode as i32)).unwrap();
+        }
+    }
+
+    fn min_filter(&self, mode: MinimizationFilter) {
+        self.bind();
+
+        // Generate mipmaps if the minimization filter uses mipmaps
+        match mode {
+            MinimizationFilter::LinearMipmapLinear |
+            MinimizationFilter::LinearMipmapNearest |
+            MinimizationFilter::NearestMipmapLinear |
+            MinimizationFilter::NearestMipmapNearest => self.generate_mipmap(),
+            _ => (),
+        }
+
+        unsafe {
+            gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, mode as i32)).unwrap();
+        }
+    }
+
+    fn mag_filter(&self, mode: MagnificationFilter) {
+        self.bind();
+        unsafe {
+            gl_call!(TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, mode as i32)).unwrap();
+        }
+    }
+}
+
+impl Drop for Texture2D {
     fn drop(&mut self) {
         unsafe {
             gl_call!(DeleteTextures(1, &self.id)).unwrap();
@@ -157,7 +165,7 @@ impl Drop for Texture {
     }
 }
 
-impl Uniform for Texture {
+impl Uniform for Texture2D {
     #[inline(always)]
     fn set_uniform(&self, location: UniformLocation) {
         unsafe { gl_call!(Uniform1i(location, self.texture_slot.get() as i32)).unwrap(); }

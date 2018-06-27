@@ -1,8 +1,9 @@
 use cgmath::{Point3, Vector3};
 use engine::Voxel;
 
-pub const CHUNK_SIZE: usize = 16;
+pub const CHUNK_SIZE: usize = 32;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
+pub type BlockChunk = Chunk<::engine::block::Block>;
 
 pub fn in_chunk_bounds(pos: Point3<i32>) -> bool {
     const SIZE: i32 = CHUNK_SIZE as i32;
@@ -14,7 +15,7 @@ pub struct Chunk<T> {
     crate data: Box<[T]>,
 }
 
-impl<T: Voxel> Chunk<T> {
+impl<T> Chunk<T> {
     pub fn new(voxels: Vec<T>) -> Self {
         Chunk {
             data: voxels.into_boxed_slice(),

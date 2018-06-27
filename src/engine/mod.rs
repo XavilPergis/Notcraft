@@ -1,15 +1,15 @@
 use std::ops::Neg;
 use cgmath::{Zero, One, Point3};
-use gl_api::layout::InternalLayout;
+use gl_api::layout::GlLayout;
 use cgmath::{Vector2, Vector3};
 
 pub mod camera;
-pub mod chunk_manager;
 pub mod chunk;
 pub mod mesh;
 pub mod terrain;
 pub mod world;
 pub mod mesher;
+pub mod block;
 
 pub type WorldPos = Point3<i32>;
 pub type ChunkPos = Point3<i32>;
@@ -23,10 +23,13 @@ pub struct Precomputed {
     pub face: i32,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
+pub struct VoxelProperties {
+    pub opaque: bool,
+}
+
 pub trait Voxel: Copy + PartialEq {
-    type PerVertex: InternalLayout;
-    fn has_transparency(&self) -> bool;
-    fn vertex_data(&self, precomputed: Precomputed) -> Self::PerVertex;
+    fn properties(&self) -> VoxelProperties;
 }
 
 /// Six sides of a cube.

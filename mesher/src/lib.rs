@@ -1,3 +1,29 @@
+macro_rules! offset_arr {
+    ($offset:expr, [$($item:expr),*]) => {[$($offset + $item),*]}
+}
+
+pub trait VertexSink {
+    fn add_vertex(&mut self, vertex: Vertex);
+}
+
+pub struct Vertex {}
+
+
+pub trait Mesher<V, I> {
+    fn gen_vertex_data(self) -> (Vec<V>, Vec<I>);
+    fn gen_mesh(self) -> GlResult<Mesh<V, I>>
+    where
+        V: GlLayout,
+        I: MeshIndex,
+        Self: Sized,
+    {
+        let (vertices, indices) = self.gen_vertex_data();
+        let mut mesh = Mesh::new()?;
+        mesh.upload(&vertices, &indices, UsageType::StaticDraw)?;
+        Ok(mesh)
+    }
+}
+
 pub struct Neighborhood<T> {
     pub center: T,
     pub top: T,
@@ -8,24 +34,24 @@ pub struct Neighborhood<T> {
     pub back: T,
 }
 
-impl<'c> Neighborhood<&'c BlockChunk> {
-    pub fn get(&self, pos: Point3<i32>) -> Option<Block> {
+impl<'c, T: 'c> Neighborhood<&'c Chunk<T>> {
+    pub fn get(&self, pos: Point3<i32>) -> Option<&T> {
         const SIZE: i32 = CHUNK_SIZE as i32;
         let wrapped = ::util::get_chunk_pos(pos).1;
         if in_chunk_bounds(pos) {
-            Some(self.center[pos])
+            Some(&self.center[pos])
         } else if pos.x >= SIZE {
-            self.right.get(::util::to_point(wrapped)).cloned()
+            self.right.get(::util::to_point(wrapped))
         } else if pos.x < 0 {
-            self.left.get(::util::to_point(wrapped)).cloned()
+            self.left.get(::util::to_point(wrapped))
         } else if pos.y >= SIZE {
-            self.top.get(::util::to_point(wrapped)).cloned()
+            self.top.get(::util::to_point(wrapped))
         } else if pos.y < 0 {
-            self.bottom.get(::util::to_point(wrapped)).cloned()
+            self.bottom.get(::util::to_point(wrapped))
         } else if pos.z >= SIZE {
-            self.front.get(::util::to_point(wrapped)).cloned()
+            self.front.get(::util::to_point(wrapped))
         } else if pos.z < 0 {
-            self.back.get(::util::to_point(wrapped)).cloned()
+            self.back.get(::util::to_point(wrapped))
         } else {
             unreachable!()
         }
@@ -34,46 +60,13 @@ impl<'c> Neighborhood<&'c BlockChunk> {
 
 // NOTE: You probably should never debug print this, unless CHUNK_SIZE is pretty small.
 // Otherwise, your terminal will be spitting out text for a solid 3 minutes straight.
-pub struct CullMesher<'c> {
+pub struct CullMesher<'c, T: Voxel + 'c> {
     pos: ChunkPos,
-    index: u32,
-    neighbors: Neighborhood<&'c BlockChunk>,
-    vertices: Vec<BlockVertex>,
+    neighbors: Neighborhood<&'c Chunk<T>>,
+    vertices: Vec<T::PerVertex>,
     indices: Vec<u32>,
 }
 
-vertex! {
-    vertex BlockVertex {
-        pos: Vector3<f32>,
-        norm: Vector3<f32>,
-        face: i32,
-        tile: Vector2<f32>,
-        uv: Vector2<f32>,
-    }
-}
-
-fn calculate_vertex_data(block: Block, pre: Precomputed) -> BlockVertex {
-    BlockVertex {
-        pos: pre.pos,
-        norm: pre.norm,
-        face: pre.face,
-        uv: pre.face_offset,
-        tile: match block {
-            Block::Air => Vector2::new(0.0, 0.0),
-            Block::Stone => Vector2::new(1.0, 0.0),
-            Block::Dirt => Vector2::new(2.0, 0.0),
-            Block::Grass => match pre.side {
-                Side::Top => Vector2::new(0.0, 0.0),
-                Side::Bottom => Vector2::new(2.0, 0.0),
-                _ => Vector2::new(0.0, 1.0),
-            },
-            Block::Water => Vector2::new(1.0, 0.0),
-        }
-    }
-}
-
-use engine::block::Block;
-use engine::chunk::BlockChunk;
 use cgmath::{Point2, Point3, Vector2, Vector3};
 use collision::Aabb2;
 use engine::chunk::{in_chunk_bounds, Chunk, CHUNK_SIZE, CHUNK_VOLUME};
@@ -83,22 +76,19 @@ use gl_api::buffer::UsageType;
 use gl_api::error::GlResult;
 use gl_api::layout::GlLayout;
 
-impl<'c> CullMesher<'c> {
+impl<'c, T: Voxel + 'c> CullMesher<'c, T> {
     pub fn new(
         pos: ChunkPos,
-        chunk: &'c BlockChunk,
-        top: &'c BlockChunk,
-        bottom: &'c BlockChunk,
-        left: &'c BlockChunk,
-        right: &'c BlockChunk,
-        front: &'c BlockChunk,
-        back: &'c BlockChunk,
+        chunk: &'c Chunk<T>,
+        top: &'c Chunk<T>,
+        bottom: &'c Chunk<T>,
+        left: &'c Chunk<T>,
+        right: &'c Chunk<T>,
+        front: &'c Chunk<T>,
+        back: &'c Chunk<T>,
     ) -> Self {
         CullMesher {
             pos,
-            index: 0,
-            vertices: Vec::new(),
-            indices: Vec::new(),
             neighbors: Neighborhood {
                 center: chunk,
                 top,
@@ -107,7 +97,9 @@ impl<'c> CullMesher<'c> {
                 right,
                 front,
                 back,
-            }
+            },
+            vertices: Vec::with_capacity(CHUNK_VOLUME),
+            indices: Vec::with_capacity(CHUNK_VOLUME),
         }
     }
 
@@ -120,8 +112,8 @@ impl<'c> CullMesher<'c> {
     //     3.0 - (as_f32(side1) + as_f32(side2) + as_f32(corner))
     // }
 
-    fn add_face(&mut self, side: Side, pos: Point3<i32>, voxel: Block) {
-        let index_len = self.index;
+    fn add_face(&mut self, side: Side, pos: Point3<i32>, voxel: &T) {
+        let index_len = self.vertices.len() as u32;
         let cx = CHUNK_SIZE as f32 * self.pos.x as f32;
         let cy = CHUNK_SIZE as f32 * self.pos.y as f32;
         let cz = CHUNK_SIZE as f32 * self.pos.z as f32;
@@ -136,15 +128,14 @@ impl<'c> CullMesher<'c> {
              off [$($ou:expr, $ov:expr);*],
              norm $nx:expr,$ny:expr,$nz:expr;,
              face $face:expr) => {{
-                $(self.indices.push(index_len + $index);)*
-                $(self.vertices.push(calculate_vertex_data(voxel, Precomputed {
+                self.indices.extend(&offset_arr!(index_len, [$($index),*]));
+                $(self.vertices.push(voxel.vertex_data(Precomputed {
                     side: Side::$side,
                     face_offset: Vector2::new($ou as f32, $ov as f32),
                     pos: Vector3::new(cx+x+$vx as f32, cy+y+$vy as f32, cz+z+$vz as f32),
                     norm: Vector3::new($nx as f32, $ny as f32, $nz as f32),
                     face: $face
                 }));)*
-                self.index += 6;
             }}
         }
 
@@ -159,67 +150,69 @@ impl<'c> CullMesher<'c> {
     }
 
     fn needs_face(&self, pos: Point3<i32>) -> bool {
-        self.neighbors.get(pos).map(|voxel| !voxel.properties().opaque).unwrap_or(false)
+        self.neighbors.get(pos).map(|voxel| voxel.has_transparency()).unwrap_or(false)
     }
+}
 
-    fn mesh(&mut self) {
+impl<'c, T: Voxel + 'c> Mesher<T::PerVertex, u32> for CullMesher<'c, T> {
+    fn gen_vertex_data(mut self) -> (Vec<T::PerVertex>, Vec<u32>) {
         for i in 0..(CHUNK_SIZE as i32) {
             for j in 0..(CHUNK_SIZE as i32) {
                 for k in 0..(CHUNK_SIZE as i32) {
                     let pos = Point3::new(i, j, k);
-                    let block = self.neighbors.get(pos).unwrap();
-                    if !block.properties().opaque {
+                    let block = *self.neighbors.get(pos).unwrap();
+                    if block.has_transparency() {
                         continue;
                     }
 
                     if self.needs_face(pos + Vector3::unit_z()) {
-                        self.add_face(Side::Front, pos, block)
+                        self.add_face(Side::Front, pos, &block)
                     }
                     if self.needs_face(pos - Vector3::unit_z()) {
-                        self.add_face(Side::Back, pos, block)
+                        self.add_face(Side::Back, pos, &block)
                     }
                     if self.needs_face(pos + Vector3::unit_y()) {
-                        self.add_face(Side::Top, pos, block)
+                        self.add_face(Side::Top, pos, &block)
                     }
                     if self.needs_face(pos - Vector3::unit_y()) {
-                        self.add_face(Side::Bottom, pos, block)
+                        self.add_face(Side::Bottom, pos, &block)
                     }
                     if self.needs_face(pos + Vector3::unit_x()) {
-                        self.add_face(Side::Right, pos, block)
+                        self.add_face(Side::Right, pos, &block)
                     }
                     if self.needs_face(pos - Vector3::unit_x()) {
-                        self.add_face(Side::Left, pos, block)
+                        self.add_face(Side::Left, pos, &block)
                     }
                 }
             }
         }
+        (self.vertices, self.indices)
     }
 }
 
 type Quad = Aabb2<i32>;
 
-pub struct GreedyMesher<'c> {
+pub struct GreedyMesher<'c, T: Voxel + 'c> {
     pos: Point3<i32>,
-    index: u32,
-    neighbors: Neighborhood<&'c BlockChunk>,
+    neighbors: Neighborhood<&'c Chunk<T>>,
     mask: Box<[bool]>,
-    dimension: Side,
-    vertices: Vec<BlockVertex>,
+    vertices: Vec<T::PerVertex>,
     indices: Vec<u32>,
+    dimension: Side,
 }
 
 const SIZE: i32 = CHUNK_SIZE as i32;
 
-impl<'c> GreedyMesher<'c> {
+impl<'c, T: Voxel + 'c> GreedyMesher<'c, T> {
     pub fn new(
         pos: Point3<i32>,
-        chunk: &'c BlockChunk,
-        top: &'c BlockChunk,
-        bottom: &'c BlockChunk,
-        left: &'c BlockChunk,
-        right: &'c BlockChunk,
-        front: &'c BlockChunk,
-        back: &'c BlockChunk,
+        chunk: &'c Chunk<T>,
+        top: &'c Chunk<T>,
+        bottom: &'c Chunk<T>,
+        left: &'c Chunk<T>,
+        right: &'c Chunk<T>,
+        front: &'c Chunk<T>,
+        back: &'c Chunk<T>,
     ) -> Self {
         GreedyMesher {
             neighbors: Neighborhood {
@@ -232,10 +225,9 @@ impl<'c> GreedyMesher<'c> {
                 back,
             },
             pos,
-            index: 0,
+            mask: vec![false; CHUNK_SIZE * CHUNK_SIZE].into_boxed_slice(),
             vertices: Vec::new(),
             indices: Vec::new(),
-            mask: vec![false; CHUNK_SIZE * CHUNK_SIZE].into_boxed_slice(),
             dimension: Side::Top,
         }
     }
@@ -268,12 +260,15 @@ impl<'c> GreedyMesher<'c> {
         }
     }
 
-    fn get_center(&self, u: i32, v: i32, layer: i32) -> Option<Block> {
+    fn get_center(&self, u: i32, v: i32, layer: i32) -> Option<&T> {
         let pos = self.to_world_space(u, v, layer);
-        self.neighbors.center.get(pos).cloned()
+        self.neighbors.center.get(pos)
     }
 
-    fn expand_right(&self, u: i32, v: i32, layer: i32) -> Quad {
+    fn expand_right(&self, u: i32, v: i32, layer: i32) -> Quad
+    where
+        T: PartialEq,
+    {
         let start = self.get_center(u, v, layer).unwrap();
         for un in u..SIZE {
             let cur = self.get_center(un + 1, v, layer);
@@ -287,7 +282,10 @@ impl<'c> GreedyMesher<'c> {
         unreachable!()
     }
 
-    fn expand_down(&self, quad: Quad, layer: i32) -> Quad {
+    fn expand_down(&self, quad: Quad, layer: i32) -> Quad
+    where
+        T: PartialEq,
+    {
         let minu = quad.min.x;
         let minv = quad.min.y;
         let maxu = quad.max.x;
@@ -318,7 +316,7 @@ impl<'c> GreedyMesher<'c> {
                 // We need to set the mask for any visible face. A face is
                 // visible if the voxel above it is transparent, and the current
                 // voxel is not transparent.
-                let val = current.properties().opaque && !above.properties().opaque;
+                let val = !current.has_transparency() && above.has_transparency();
                 self.set_mask(u, v, val);
             }
         }
@@ -336,10 +334,10 @@ impl<'c> GreedyMesher<'c> {
         None
     }
 
-    fn add_quad(&mut self, mut quad: Quad, voxel: Block, layer: i32) {
+    fn add_quad(&mut self, mut quad: Quad, voxel: T, layer: i32) {
         quad.max.x += 1;
         quad.max.y += 1;
-        let index_len = self.index;
+        let index_len = self.vertices.len() as u32;
         let cx = CHUNK_SIZE as f32 * self.pos.x as f32;
         let cy = CHUNK_SIZE as f32 * self.pos.y as f32;
         let cz = CHUNK_SIZE as f32 * self.pos.z as f32;
@@ -353,15 +351,14 @@ impl<'c> GreedyMesher<'c> {
              vert [$($vx:expr, $vy:expr, $vz:expr);*],
              off [$($ou:expr, $ov:expr);*]
              ) => {{
-                $(self.indices.push(index_len + $index);)*
-                $(self.vertices.push(calculate_vertex_data(voxel, Precomputed {
+                self.indices.extend(&offset_arr!(index_len, [$($index),*]));
+                $(self.vertices.push(voxel.vertex_data(Precomputed {
                     side: Side::$side,
                     face_offset: Vector2::new($ou as f32, $ov as f32),
                     pos: Vector3::new(cx+$vx as f32, cy+$vy as f32, cz+$vz as f32),
                     norm: Vector3::new($nx as f32, $ny as f32, $nz as f32),
                     face: $face
                 }));)*
-                self.index += 6;
             }}
         }
 
@@ -400,14 +397,12 @@ impl<'c> GreedyMesher<'c> {
             }
         }
     }
+}
 
-    pub fn create_mesh(&self) -> GlResult<Mesh<BlockVertex, u32>> {
-        let mut mesh = Mesh::new()?;
-        mesh.upload(&self.vertices, &self.indices, UsageType::StaticDraw)?;
-        Ok(mesh)
-    }
-
-    pub fn mesh(&mut self) {
+impl<'c, T: Voxel + 'c> Mesher<T::PerVertex, u32>
+    for GreedyMesher<'c, T>
+{
+    fn gen_vertex_data(mut self) -> (Vec<T::PerVertex>, Vec<u32>) {
         for &dim in &[
             Side::Top, Side::Right, Side::Front,
             Side::Bottom, Side::Left, Side::Back
@@ -418,7 +413,7 @@ impl<'c> GreedyMesher<'c> {
                 // While unvisited faces remain, pick a position from the remaining
                 while let Some(pos) = self.pick_pos() {
                     let (u, v) = (pos.x, pos.y);
-                    let voxel = self.get_center(u, v, layer).unwrap();
+                    let voxel = *self.get_center(u, v, layer).unwrap();
                     // Construct a quad that reaches as far right as possible
                     let quad = self.expand_right(u, v, layer);
                     // Expand that quad as far down as possible
@@ -428,5 +423,7 @@ impl<'c> GreedyMesher<'c> {
                 }
             }
         }
+
+        (self.vertices, self.indices)
     }
 }
