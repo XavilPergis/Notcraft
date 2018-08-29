@@ -1,13 +1,12 @@
 use cgmath::{Point3, Vector3};
-use engine::Voxel;
 
-pub const CHUNK_SIZE: usize = 32;
-pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
-pub type BlockChunk = Chunk<::engine::block::Block>;
+pub const SIZE: usize = 32;
+pub const AREA: usize = SIZE * SIZE;
+pub const VOLUME: usize = SIZE * SIZE * SIZE;
 
 pub fn in_chunk_bounds(pos: Point3<i32>) -> bool {
-    const SIZE: i32 = CHUNK_SIZE as i32;
-    pos.x < SIZE && pos.y < SIZE && pos.z < SIZE && pos.x >= 0 && pos.y >= 0 && pos.z >= 0
+    const SIZEI: i32 = SIZE as i32;
+    pos.x < SIZEI && pos.y < SIZEI && pos.z < SIZEI && pos.x >= 0 && pos.y >= 0 && pos.z >= 0
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -57,7 +56,7 @@ macro_rules! gen_index {
                 debug_assert!(in_chunk_bounds(Point3::new(
                     $x as i32, $y as i32, $z as i32
                 )));
-                &self.data[CHUNK_SIZE * CHUNK_SIZE * $y + CHUNK_SIZE * $z + $x]
+                &self.data[AREA * $y + SIZE * $z + $x]
             }
         }
 
@@ -66,7 +65,7 @@ macro_rules! gen_index {
                 debug_assert!(in_chunk_bounds(Point3::new(
                     $x as i32, $y as i32, $z as i32
                 )));
-                &mut self.data[CHUNK_SIZE * CHUNK_SIZE * $y + CHUNK_SIZE * $z + $x]
+                &mut self.data[AREA * $y + SIZE * $z + $x]
             }
         }
     };

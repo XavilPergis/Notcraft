@@ -58,6 +58,7 @@ macro_rules! vertex {
         $($attrib:ident: $attrib_type:ty,)*
     }) => {
         #[derive(Copy, Clone, Debug)]
+        #[repr(C)]
         pub struct $name {
             $($attrib: $attrib_type),*
         }

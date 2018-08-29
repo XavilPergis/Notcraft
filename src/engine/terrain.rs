@@ -1,12 +1,6 @@
-use engine::chunk::CHUNK_SIZE;
-use cgmath::Vector3;
-use smallvec::SmallVec;
-use std::collections::HashMap;
 use engine::ChunkPos;
-use cgmath::Point3;
 use noise::NoiseFn;
-use engine::Voxel;
-use engine::chunk::Chunk;
+use engine::world::Chunk;
 
 pub trait ChunkGenerator<T> {
     fn generate(&self, pos: ChunkPos) -> Chunk<T>;

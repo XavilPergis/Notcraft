@@ -70,11 +70,8 @@ pub enum UsageType {
 pub struct Buffer<T, B: BufferTarget> {
     pub(crate) id: GLuint,
     length: usize,
-    phantom: PhantomData<(T, B)>
+    phantom: PhantomData<(*mut T, B)>
 }
-
-impl<T, B: BufferTarget> !Send for Buffer<T, B> {}
-impl<T, B: BufferTarget> !Sync for Buffer<T, B> {}
 
 impl<T, B: BufferTarget> Buffer<T, B> {
     pub fn new() -> Self {

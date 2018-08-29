@@ -4,12 +4,14 @@ use gl_api::layout::GlLayout;
 use cgmath::{Vector2, Vector3};
 
 pub mod camera;
-pub mod chunk;
 pub mod mesh;
 pub mod terrain;
 pub mod world;
 pub mod mesher;
-pub mod block;
+
+pub mod components;
+pub mod systems;
+pub mod resources;
 
 pub type WorldPos = Point3<i32>;
 pub type ChunkPos = Point3<i32>;

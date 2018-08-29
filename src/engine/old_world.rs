@@ -1,3 +1,4 @@
+use std::sync::Mutex;
 use cgmath::Vector3;
 use std::sync::RwLock;
 use std::sync::Arc;
@@ -9,13 +10,23 @@ use engine::terrain::ChunkGenerator;
 use engine::chunk::Chunk;
 use engine::{WorldPos, ChunkPos};
 
+pub trait AsyncChunkLoader<T> {
+    fn request(&self, chunk: ChunkPos);
+    fn finished(&self) -> Vec<(ChunkPos, Chunk<T>)>;
+}
+
 pub struct World<T> {
     crate chunks: HashMap<ChunkPos, Chunk<T>>,
+    crate generator: Box<AsyncChunkLoader<T> + Send + Sync>,
 }
 
 impl<T> World<T> {
-    pub fn new() -> Self {
-        World { chunks: HashMap::new() }
+    pub fn new(generator: Box<AsyncChunkLoader<T> + Send + Sync>) -> Self {
+        World { chunks: HashMap::new(), generator }
+    }
+
+    pub fn flush_finished(&mut self) {
+        self.chunks.extend(self.generator.finished().into_iter());
     }
 
     pub fn set_voxel(&mut self, pos: WorldPos, voxel: T) where T: PartialEq {
@@ -58,39 +69,43 @@ impl<T> World<T> {
         }
     }
 
+    crate fn set_chunk(&mut self, pos: ChunkPos, chunk: Chunk<T>) {
+        self.chunks.insert(pos, chunk);
+    }
+
     crate fn chunk_exists(&self, pos: ChunkPos) -> bool {
         self.chunks.contains_key(&pos)
     }
+}
 
-    crate fn tick(&mut self) {
-        // for (pos, entity) in &mut self.tile_entities {
-        //     entity.update(self);
-        // }
+impl<T> AsyncChunkLoader<T> for WorldGenerator<T> {
+    fn request(&self, pos: ChunkPos) {
+        if self.queue.lock().unwrap().insert(pos) {
+            self.gen_tx.send(pos).unwrap();
+        }
+    }
+
+    fn finished(&self) -> Vec<(ChunkPos, Chunk<T>)> {
+        let finished = self.gen_rx.iter().collect();
+        let mut queue = self.queue.lock().unwrap();
+        for &(pos, _) in &finished { queue.remove(&pos); }
+        finished
     }
 }
 
 pub struct WorldGenerator<T> {
-    queue: HashSet<ChunkPos>,
-    chunk_pos: Arc<RwLock<ChunkPos>>,
-    radii: Arc<RwLock<Vector3<i32>>>,
+    queue: Mutex<HashSet<ChunkPos>>,
     gen_tx: mpsc::Sender<ChunkPos>,
     gen_rx: mpsc::Receiver<(ChunkPos, Chunk<T>)>,
 }
 
 impl<T> WorldGenerator<T> {
-        pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G, radii: Arc<RwLock<Vector3<i32>>>, chunk_pos: Arc<RwLock<ChunkPos>>) -> Self where T: Send + 'static {
+    pub fn new<G: ChunkGenerator<T> + Send + 'static>(generator: G) -> Self where T: Send + 'static {
         use std::thread;
         let (req_tx, req_rx) = mpsc::channel();
         let (tx, rx) = mpsc::channel();
-        let thread_chunk_pos = chunk_pos.clone();
-        let thread_radii = radii.clone();
         thread::spawn(move || {
             while let Ok(request) = req_rx.recv() {
-                // Deref and drop the guard so we don't hold up the lock while we generate
-                // the chunk
-                let pos = *thread_chunk_pos.read().unwrap();
-                // Skip if not in range
-                if !::util::in_range(request, pos, *thread_radii.read().unwrap()) { continue; }
                 // Err means the rx has hung up, so we can just shut down this thread
                 // if that happens
                 match tx.send((request, generator.generate(request))) {
@@ -101,31 +116,9 @@ impl<T> WorldGenerator<T> {
         });
 
         WorldGenerator {
-            queue: HashSet::new(),
-            chunk_pos,
-            radii,
+            queue: Mutex::new(HashSet::new()),
             gen_tx: req_tx,
             gen_rx: rx,
         }
     }
-
-    /// NOTE: It is your responsibility to not queue chunks that have already been generated
-    pub fn queue(&mut self, pos: ChunkPos) {
-        // Only send this request off to the generator thread if it was not previously queued
-        if self.queue.insert(pos) {
-            self.gen_tx.send(pos).unwrap();
-        }
-    }
-
-    crate fn update_world(&mut self, world: &mut World<T>) {
-        for (pos, chunk) in self.gen_rx.try_iter() {
-            println!("Generated chunk at ({:?}) => queue.len() = {}", pos, self.queue.len());
-            world.chunks.insert(pos, chunk);
-            self.queue.remove(&pos);
-        }
-        let chunk_pos = *self.chunk_pos.read().unwrap();
-        let radii = *self.radii.read().unwrap();
-        self.queue.retain(|&pos| ::util::in_range(chunk_pos, pos, radii))
-    }
-
 }

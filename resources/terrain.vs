@@ -18,7 +18,7 @@ out vec2 v_Uv;
 out vec2 v_Tile;
 
 void main()
-{   
+{
     gl_Position = u_Projection * u_View * u_Transform * vec4(Pos, 1.0);
     v_Pos = vec3(u_Transform * vec4(Pos, 1.0));
     v_Normal = Normal;

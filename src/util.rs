@@ -1,6 +1,23 @@
+use cgmath::Deg;
 use engine::{ChunkPos, WorldPos};
 use cgmath::{Point3, Vector3};
 use std::cmp::Ordering;
+
+pub fn lerp_angle(a: Deg<f64>, b: Deg<f64>, t: f64) -> Deg<f64> {
+    Deg(a.0 * (1.0 - t) + b.0 * clamp(t, 0.0, 1.0))
+}
+
+pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
+    a * (1.0 - t) + b * t
+}
+
+pub fn lerp_vec(a: Vector3<f64>, b: Vector3<f64>, t: f64) -> Vector3<f64> {
+    Vector3::new(
+        lerp(a.x, b.x, t),
+        lerp(a.y, b.y, t),
+        lerp(a.z, b.z, t)
+    )
+}
 
 /// Version of `min` that only requires `PartialOrd`
 pub fn min<S: PartialOrd + Copy>(lhs: S, rhs: S) -> S {
@@ -42,7 +59,7 @@ pub fn to_point<S>(vec: Vector3<S>) -> Point3<S> {
 
 /// Get a chunk position from a world position
 pub fn get_chunk_pos(pos: WorldPos) -> (ChunkPos, Vector3<i32>) {
-    const SIZE: i32 = ::engine::chunk::CHUNK_SIZE as i32;
+    const SIZE: i32 = ::engine::world::chunk::SIZE as i32;
     let cx = ::util::floor_div(pos.x, SIZE);
     let cy = ::util::floor_div(pos.y, SIZE);
     let cz = ::util::floor_div(pos.z, SIZE);
