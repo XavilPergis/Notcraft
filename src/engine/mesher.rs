@@ -287,7 +287,6 @@ impl<'r, 'c> GreedyMesher<'r, 'c> {
             index: 0,
             mesh: Mesh::default(),
             mask: vec![false; chunk::AREA].into_boxed_slice(),
-            // orig_mask: vec![false; chunk::AREA].into_boxed_slice(),
             dimension: Side::Top,
         }
     }
@@ -368,25 +367,23 @@ impl<'r, 'c> GreedyMesher<'r, 'c> {
         unreachable!()
     }
 
-    fn fill_mask(&mut self, layer: i32) {
-        for u in 0..SIZE {
-            for v in 0..SIZE {
-                let pos = self.to_world_space(u, v, layer);
-                let current = &self.neighbors.center[pos];
-                // UNWRAP: unwrap is ok because there will always be a block one
-                // outside of the center chunk
-                let above = self.neighbors.get(pos + self.get_offset_vec()).unwrap();
-                // We need to set the mask for any visible face. A face is
-                // visible if the voxel above it is transparent, and the current
-                // voxel is not transparent.
-                let val = self.registry[*current].is_opaque() && !self.registry[above].is_opaque();
+fn fill_mask(&mut self, layer: i32) {
+    for u in 0..SIZE {
+        for v in 0..SIZE {
+            let pos = self.to_world_space(u, v, layer);
+            let current = &self.neighbors.center[pos];
+            // UNWRAP: unwrap is ok because there will always be a block one
+            // outside of the center chunk
+            let above = self.neighbors.get(pos + self.get_offset_vec()).unwrap();
+            // We need to set the mask for any visible face. A face is
+            // visible if the voxel above it is transparent, and the current
+            // voxel is not transparent.
+            let val = self.registry[*current].opaque && !self.registry[above].opaque;
 
-                self.set_mask(u, v, val);
-                // self.set_orig_mask(u, v, val);
-            }
-            flame::end("U");
+            self.set_mask(u, v, val);
         }
     }
+}
 
     fn pick_pos(&self) -> Option<Point2<i32>> {
         // TODO: could this be made faster?
@@ -470,42 +467,67 @@ impl<'r, 'c> GreedyMesher<'r, 'c> {
         self.mesh.to_gl_mesh(UsageType::StaticDraw)
     }
 
-    pub fn mesh(&mut self) {
-        // flame::start("Mesh");
+    fn mesh_debug(&mut self) {
+        flame::start("Mesh");
         for &dim in &[
             Side::Top, Side::Right, Side::Front,
             Side::Bottom, Side::Left, Side::Back
         ] {
-            // flame::start("Mesh Direction");
+            flame::start("Mesh Direction");
             self.dimension = dim;
             for layer in 0..SIZE {
-                // flame::start("Mesh Layer");
-                // flame::start("Fill Mask");
+                flame::start("Mesh Layer");
+                flame::start("Fill Mask");
                 self.fill_mask(layer);
-                // flame::end("Fill Mask");
+                flame::end("Fill Mask");
+                flame::start("Do the Rest");
                 // While unvisited faces remain, pick a position from the remaining
                 while let Some(pos) = self.pick_pos() {
                     let (u, v) = (pos.x, pos.y);
                     let voxel = self.get_center(u, v, layer).unwrap();
-                    // flame::start("Quad Expansion");
+                    flame::start("Quad Expansion");
                     // Construct a quad that reaches as far right as possible
                     let quad = self.expand_right(u, v, layer);
                     // Expand that quad as far down as possible
                     let quad = self.expand_down(quad, layer);
-                    // flame::end("Quad Expansion");
-                    // flame::start("Mark Visited");
+                    flame::end("Quad Expansion");
+                    flame::start("Mark Visited");
                     self.mark_visited(quad);
-                    // flame::end("Mark Visited");
-                    // flame::start("Add Quad");
+                    flame::end("Mark Visited");
+                    flame::start("Add Quad");
                     self.add_quad(quad, voxel, layer);
-                    // flame::end("Add Quad");
+                    flame::end("Add Quad");
                 }
-                // flame::end("Mesh Layer");
+                flame::end("Do the Rest");
+                flame::end("Mesh Layer");
             }
-            // flame::end("Mesh Direction");
+            flame::end("Mesh Direction");
         }
-        // flame::end("Mesh");
-        // flame::dump_html(&mut ::std::fs::File::create("flame-graph.html").unwrap()).unwrap();
-        // ::std::process::abort();
+        flame::end("Mesh");
+        flame::dump_html(&mut ::std::fs::File::create("flame-graph.html").unwrap()).unwrap();
+        ::std::process::abort();
+    }
+
+    pub fn mesh(&mut self) {
+        for &dim in &[
+            Side::Top, Side::Right, Side::Front,
+            Side::Bottom, Side::Left, Side::Back
+        ] {
+            self.dimension = dim;
+            for layer in 0..SIZE {
+                self.fill_mask(layer);
+                // While unvisited faces remain, pick a position from the remaining
+                while let Some(pos) = self.pick_pos() {
+                    let (u, v) = (pos.x, pos.y);
+                    let voxel = self.get_center(u, v, layer).unwrap();
+                    // Construct a quad that reaches as far right as possible
+                    let quad = self.expand_right(u, v, layer);
+                    // Expand that quad as far down as possible
+                    let quad = self.expand_down(quad, layer);
+                    self.mark_visited(quad);
+                    self.add_quad(quad, voxel, layer);
+                }
+            }
+        }
     }
 }
