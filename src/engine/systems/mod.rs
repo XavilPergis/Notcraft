@@ -2,6 +2,7 @@ mod player_controller;
 mod input_handler;
 mod window_info;
 mod physics;
+mod mesher;
 pub mod terrain_gen;
 
 pub use self::player_controller::PlayerController;

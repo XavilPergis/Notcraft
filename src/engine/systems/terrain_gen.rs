@@ -17,14 +17,15 @@ pub struct NoiseGenerator {
 }
 
 fn smoothstep(x: f64, curve: f64, center: f64) -> f64 {
-    let c = (2.0 / (1.0 - curve)) - 1.0;
-    let f = |x: f64, n: f64| x.powf(c) - n.powf(c - 1.0);
+    // let c = (2.0 / (1.0 - curve)) - 1.0;
+    // let f = |x: f64, n: f64| x.powf(c) - n.powf(c - 1.0);
 
-    if x > center {
-        f(x, center)
-    } else {
-        1.0 - f(1.0 - x, 1.0 - center)
-    }
+    // if x > center {
+    //     f(x, center)
+    // } else {
+    //     1.0 - f(1.0 - x, 1.0 - center)
+    // }
+    x
 }
 
 use engine::world::block;
@@ -39,9 +40,9 @@ impl NoiseGenerator {
 
     fn block_at(&self, pos: Point3<f64>) -> BlockId {
         let biome_noise = smoothstep((self.biome_noise.get([pos.x / 512.0, pos.z / 512.0]) + 1.0) / 2.0, 0.7, 0.5);
-
-        let noise1 = (256.0 * self.noise.get([pos.x * 2.0, pos.z * 2.0]) + 1.0) / 2.0;
-        let noise2 = (64.0 * self.noise.get([pos.x, pos.z]) + 1.0) / 2.0;
+        // noise::Worley
+        let noise1 = (256.0 * self.noise.get([pos.x / 6.0, pos.z / 6.0]) + 1.0) / 2.0;
+        let noise2 = (64.0 * self.noise.get([pos.x / 8.0, pos.z / 8.0]) + 1.0) / 2.0;
         let min = ::util::min(noise1, noise2);
         let max = ::util::max(noise1, noise2);
 
@@ -53,7 +54,7 @@ impl NoiseGenerator {
         else { block::AIR }
     }
 
-    fn pos_at_block(pos: ChunkPos, offset: Vector3<i32>) -> Point3<f64> {
+    fn pos_at_block(pos: ChunkPos, offset: Vector3<usize>) -> Point3<f64> {
         const SIZE: i32 = chunk::SIZE as i32;
         let x = ((SIZE*pos.x) as f64 + offset.x as f64) / SIZE as f64;
         let y = (SIZE*pos.y) as f64 + offset.y as f64;
@@ -64,19 +65,28 @@ impl NoiseGenerator {
 
 impl ChunkGenerator<BlockId> for NoiseGenerator {
     fn generate_chunk(&self, pos: ChunkPos) -> Chunk<BlockId> {
-        const SIZE: i32 = chunk::SIZE as i32;
-        let mut buffer = Vec::with_capacity(chunk::VOLUME);
-        for by in 0..SIZE {
-            for bz in 0..SIZE {
-                for bx in 0..SIZE {
-                    let pos = Self::pos_at_block(pos, Vector3::new(bx, by, bz));
-                    // pos.y /= SIZE as f64;
-                    buffer.push(self.block_at(pos));
-                }
-            }
-        }
 
-        Chunk::new(buffer)
+        // pub fn from_shape_fn<Sh, F>(shape: Sh, f: F) -> Self where
+        //     Sh: ShapeBuilder<Dim = D>,
+        //     F: FnMut(D::Pattern) -> A, 
+
+
+
+        const SIZE: i32 = chunk::SIZE as i32;
+        // let mut buffer = Vec::with_capacity(chunk::VOLUME);
+        // for by in 0..SIZE {
+        //     for bz in 0..SIZE {
+        //         for bx in 0..SIZE {
+        //             let pos = Self::pos_at_block(pos, Vector3::new(bx, by, bz));
+        //             // pos.y /= SIZE as f64;
+        //             buffer.push(self.block_at(pos));
+        //         }
+        //     }
+        // }
+
+        Chunk::new(::nd::Array3::from_shape_fn((chunk::SIZE, chunk::SIZE, chunk::SIZE), |coord| {
+            self.block_at(Self::pos_at_block(pos, coord.into()))
+        }))
     }
 }
 

@@ -47,6 +47,7 @@ vertex! {
         face: i32,
         tile: Vector2<f32>,
         uv: Vector2<f32>,
+        ao: f32,
     }
 }
 
@@ -70,6 +71,7 @@ vertex! {
 //     }
 // }
 
+use engine::world::block::BlockRenderPrototype;
 use shrev::EventChannel;
 use engine::world::ChunkPos;
 use engine::world::VoxelWorld;
@@ -233,21 +235,45 @@ impl<'a> System<'a> for ChunkMesher {
     );
 
     fn run(&mut self, (mut dirty_markers, chunk_ids, world, registry, mut mesh_channel, entities): Self::SystemData) {
-        let mut cleaned = vec![];
+        // let mut cleaned = vec![];
         for (_, ChunkId(pos), entity) in (&dirty_markers, &chunk_ids, &*entities).join() {
             if let Some(neighborhood) = try_get_neighborhood(&world, *pos) {
                 println!("Chunk `{:?}` is ready for meshing", pos);
                 let mut mesher = GreedyMesher::new(*pos, &registry, neighborhood);
                 mesher.mesh();
                 mesh_channel.single_write((entity, mesher.mesh));
-                cleaned.push(entity);
+                dirty_markers.remove(entity);
+                break;
+                // cleaned.push(entity);
             }
         }
 
-        for entity in cleaned {
-            println!("Marked `{:?}` as cleaned", entity);
-            dirty_markers.remove(entity);
-        }
+        // for entity in cleaned {
+        //     println!("Marked `{:?}` as cleaned", entity);
+        //     dirty_markers.remove(entity);
+        // }
+    }
+}
+
+// ++ +- -- -+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
+struct FaceAo(u8);
+
+impl FaceAo {
+    const POS_POS: u8 = 6;
+    const POS_NEG: u8 = 4;
+    const NEG_NEG: u8 = 2;
+    const NEG_POS: u8 = 0;
+
+    fn from_corners(pos_pos: u8, pos_neg: u8, neg_neg: u8, neg_pos: u8) -> Self {
+        FaceAo(neg_pos | neg_neg << Self::NEG_NEG | pos_neg << Self::POS_NEG | pos_pos << Self::POS_POS)
+    }
+
+    fn corner(&self, bits: u8) -> u8 {
+        let val = (self.0 & (3 << bits)) >> bits;
+        // println!("self = {}, val = {}", self.0, val);
+        // assert!(val <= 3);
+        val
     }
 }
 
@@ -258,21 +284,20 @@ pub struct GreedyMesher<'r, 'c> {
     neighbors: Neighborhood<&'c Chunk<BlockId>>,
     registry: &'r BlockRegistry,
     index: u32,
-    // orig_mask: Box<[bool]>,
     mask: Box<[bool]>,
+    ao: Box<[FaceAo]>,
     dimension: Side,
     mesh: Mesh<BlockVertex, u32>,
 }
 
 const SIZE: i32 = chunk::SIZE as i32;
 
-fn ao_value(side1: bool, side2: bool, corner: bool) -> u8 {
+fn ao_value(side1: bool, corner: bool, side2: bool) -> u8 {
     if side1 && side2 { 0 } else {
         3 - (side1 as u8 + side2 as u8 + corner as u8)
     }
 }
 
-use flame;
 
 impl<'r, 'c> GreedyMesher<'r, 'c> {
     pub fn new(
@@ -287,6 +312,7 @@ impl<'r, 'c> GreedyMesher<'r, 'c> {
             index: 0,
             mesh: Mesh::default(),
             mask: vec![false; chunk::AREA].into_boxed_slice(),
+            ao: vec![FaceAo(0); chunk::AREA].into_boxed_slice(),
             dimension: Side::Top,
         }
     }
@@ -295,19 +321,19 @@ impl<'r, 'c> GreedyMesher<'r, 'c> {
         self.mask[(SIZE * u + v) as usize] = value;
     }
 
-    // fn set_orig_mask(&mut self, u: i32, v: i32, value: bool) {
-    //     self.orig_mask[(SIZE * u + v) as usize] = value;
-    // }
+    fn set_ao(&mut self, u: i32, v: i32, value: FaceAo) {
+        self.ao[(SIZE * u + v) as usize] = value;
+    }
 
     fn get_mask(&self, u: i32, v: i32) -> bool {
         if u >= SIZE || u < 0 || v >= SIZE || v < 0 { false }
         else { self.mask[(SIZE * u + v) as usize] }
     }
 
-    // fn get_orig_mask(&self, u: i32, v: i32) -> bool {
-    //     if u >= SIZE || u < 0 || v >= SIZE || v < 0 { false }
-    //     else { self.orig_mask[(SIZE * u + v) as usize] }
-    // }
+    fn get_ao(&self, u: i32, v: i32) -> FaceAo {
+        if u >= SIZE || u < 0 || v >= SIZE || v < 0 { Default::default() }
+        else { self.ao[(SIZE * u + v) as usize] }
+    }
 
     fn to_world_space(&self, u: i32, v: i32, layer: i32) -> Point3<i32> {
         match self.dimension {
@@ -335,9 +361,11 @@ impl<'r, 'c> GreedyMesher<'r, 'c> {
 
     fn expand_right(&self, u: i32, v: i32, layer: i32) -> Quad {
         let start = self.get_center(u, v, layer).unwrap();
+        let start_ao = self.get_ao(u, v);
         for un in u..SIZE {
             let cur = self.get_center(un + 1, v, layer);
-            if Some(start) != cur || !self.get_mask(un + 1, v) {
+            let cur_ao = self.get_ao(un + 1, v);
+            if Some(start) != cur || !self.get_mask(un + 1, v) || start_ao != cur_ao {
                 return Aabb2::new(
                     Point2::new(u, v),
                     Point2::new(un, v)
@@ -352,11 +380,13 @@ impl<'r, 'c> GreedyMesher<'r, 'c> {
         let minv = quad.min.y;
         let maxu = quad.max.x;
         let start = self.get_center(minu, minv, layer).unwrap();
+        let start_ao = self.get_ao(minu, minv);
         for vn in minv..SIZE {
             for un in minu..=maxu {
                 // let cur_point = Point3::new(un, layer, vn + 1);
                 let cur = self.get_center(un, vn + 1, layer);
-                if Some(start) != cur || !self.get_mask(un, vn + 1) {
+                let cur_ao = self.get_ao(un, vn + 1);
+                if Some(start) != cur || !self.get_mask(un, vn + 1) || start_ao != cur_ao {
                     return Aabb2::new(
                         Point2::new(minu, minv),
                         Point2::new(maxu, vn),
@@ -367,26 +397,56 @@ impl<'r, 'c> GreedyMesher<'r, 'c> {
         unreachable!()
     }
 
-fn fill_mask(&mut self, layer: i32) {
-    for u in 0..SIZE {
-        for v in 0..SIZE {
-            let pos = self.to_world_space(u, v, layer);
-            let current = &self.neighbors.center[pos];
-            // UNWRAP: unwrap is ok because there will always be a block one
-            // outside of the center chunk
-            let above = self.neighbors.get(pos + self.get_offset_vec()).unwrap();
-            // We need to set the mask for any visible face. A face is
-            // visible if the voxel above it is transparent, and the current
-            // voxel is not transparent.
-            let val = self.registry[*current].opaque && !self.registry[above].opaque;
+    fn is_opaque(&self, u: i32, v: i32, layer: i32) -> bool {
+        let above = self.neighbors.get(self.to_world_space(u, v, layer)).unwrap();
+        self.registry[above].opaque
+    }
 
-            self.set_mask(u, v, val);
+    fn face(&self, u: i32, v: i32, layer: i32) -> FaceAo {
+        let neg_neg = self.is_opaque(u-1, v-1, layer);
+        let neg_cen = self.is_opaque(u-1, v, layer);
+        let neg_pos = self.is_opaque(u-1, v+1, layer);
+        
+        let pos_neg = self.is_opaque(u+1, v-1, layer);
+        let pos_cen = self.is_opaque(u+1, v, layer);
+        let pos_pos = self.is_opaque(u+1, v+1, layer);
+        
+        let cen_neg = self.is_opaque(u, v-1, layer);
+        let cen_pos = self.is_opaque(u, v+1, layer);
+
+        let face_pos_pos = ao_value(cen_pos, pos_pos, pos_cen); // c+ ++ +c
+        let face_pos_neg = ao_value(pos_cen, pos_neg, cen_neg); // +c +- c-
+        let face_neg_neg = ao_value(cen_neg, neg_neg, neg_cen); // c- -- -c
+        let face_neg_pos = ao_value(neg_cen, neg_pos, cen_pos); // -c -+ c+
+
+        FaceAo::from_corners(face_pos_pos, face_pos_neg, face_neg_neg, face_neg_pos)
+    }
+
+    fn fill_mask(&mut self, layer: i32) {
+        for u in 0..SIZE {
+            for v in 0..SIZE {
+                let pos = self.to_world_space(u, v, layer);
+                // println!("dir = {:?}, uvl: ({}, {}, {}), pos: {:?}", self.dimension, u, v, layer, pos);
+                let current = &self.neighbors.center[pos];
+                // UNWRAP: unwrap is ok because there will always be a block one
+                // outside of the center chunk
+                let above = self.neighbors.get(pos + self.get_offset_vec()).unwrap();
+                // We need to set the mask for any visible face. A face is
+                // visible if the voxel above it is transparent, and the current
+                // voxel is not transparent.
+                let mask_val = self.registry[*current].opaque && !self.registry[above].opaque;
+
+                self.set_mask(u, v, mask_val);
+
+                // No use setting values that we won't use...
+                if mask_val {
+                    self.set_ao(u, v, self.face(u, v, layer + 1));
+                }
+            }
         }
     }
-}
 
     fn pick_pos(&self) -> Option<Point2<i32>> {
-        // TODO: could this be made faster?
         for u in 0..SIZE {
             for v in 0..SIZE {
                 if self.get_mask(u, v) {
@@ -413,7 +473,8 @@ fn fill_mask(&mut self, layer: i32) {
              norm $nx:expr,$ny:expr,$nz:expr;,
              face $face:expr,
              vert [$($vx:expr, $vy:expr, $vz:expr);*],
-             off [$($ou:expr, $ov:expr);*]
+             off [$($ou:expr, $ov:expr);*],
+             ao [$($ao:expr),*]
              ) => {{
                 $(self.mesh.indices.push(index_len + $index);)*
                 $(self.mesh.vertices.push(BlockVertex {
@@ -422,6 +483,7 @@ fn fill_mask(&mut self, layer: i32) {
                     face: $face,
                     uv: Vector2::new($ou as f32, $ov as f32),
                     tile: proto.texture_for_side(Side::$side),
+                    ao: $ao,
                 });)*
                 self.index += 4;
             }}
@@ -431,27 +493,40 @@ fn fill_mask(&mut self, layer: i32) {
         let (minu, minv, maxu, maxv) = (fq.min.x, fq.min.y, fq.max.x, fq.max.y);
         let (lenu, lenv) = (maxu - minu, maxv - minv);
 
+        let ao = self.get_ao(quad.min.x, quad.min.y);
+
+        let ao_pp = (ao.corner(FaceAo::POS_POS) as f32) / 3.0;
+        let ao_pn = (ao.corner(FaceAo::POS_NEG) as f32) / 3.0;
+        let ao_nn = (ao.corner(FaceAo::NEG_NEG) as f32) / 3.0;
+        let ao_np = (ao.corner(FaceAo::NEG_POS) as f32) / 3.0;
+
         match self.dimension {
             Side::Top => face! { side Top, ind [0,1,2,3,2,1], norm 0,1,0;, face 1,
                 vert [minu, top, minv; maxu, top, minv; minu, top, maxv; maxu, top, maxv],
-                off  [0,lenv; lenu,lenv; 0,0; lenu,0] },
+                off  [0,lenv; lenu,lenv; 0,0; lenu,0],
+                ao   [ao_nn, ao_pn, ao_np, ao_pp] },
             Side::Bottom => face! { side Bottom, ind [0,2,1,3,1,2], norm 0,1,0;, face 1,
                 vert [minu, bot, minv; maxu, bot, minv; minu, bot, maxv; maxu, bot, maxv],
-                off  [0,lenv; lenu,lenv; 0,0; lenu,0] },
+                off  [0,lenv; lenu,lenv; 0,0; lenu,0],
+                ao   [ao_np, ao_pp, ao_nn, ao_pn] },
 
             Side::Front => face! { side Front, ind [0,1,2,3,2,1], norm 0,0,1;, face 0,
                 vert [minu,maxv,top; maxu,maxv,top; minu,minv,top; maxu,minv,top],
-                off  [0,0; lenu,0; 0,lenv; lenu,lenv] },
+                off  [0,0; lenu,0; 0,lenv; lenu,lenv],
+                ao   [ao_np, ao_pp, ao_nn, ao_pn] },
             Side::Back => face! { side Back, ind [0,2,1,3,1,2], norm 0,0,-1;, face 0,
                 vert [minu,maxv,bot; maxu,maxv,bot; minu,minv,bot; maxu,minv,bot],
-                off  [0,0; lenu,0; 0,lenv; lenu,lenv] },
+                off  [0,0; lenu,0; 0,lenv; lenu,lenv],
+                ao   [ao_np, ao_pp, ao_nn, ao_pn] },
 
             Side::Left => face! { side Left, ind [0,1,2,3,2,1], norm -1,0,0;, face 2,
                 vert [bot,maxu,minv; bot,maxu,maxv; bot,minu,minv; bot,minu,maxv],
-                off  [0,0; lenv,0; 0,lenu; lenv,lenu] },
+                off  [0,0; lenv,0; 0,lenu; lenv,lenu],
+                ao   [ao_pn, ao_pp, ao_nn, ao_np] },
             Side::Right => face! { side Right, ind [0,2,1,3,1,2], norm 1,0,0;, face 2,
                 vert [top,maxu,minv; top,maxu,maxv; top,minu,minv; top,minu,maxv],
-                off  [0,0; lenv,0; 0,lenu; lenv,lenu] },
+                off  [0,0; lenv,0; 0,lenu; lenv,lenu],
+                ao   [ao_pn, ao_pp, ao_nn, ao_np] },
         }
     }
 
@@ -467,46 +542,46 @@ fn fill_mask(&mut self, layer: i32) {
         self.mesh.to_gl_mesh(UsageType::StaticDraw)
     }
 
-    fn mesh_debug(&mut self) {
-        flame::start("Mesh");
-        for &dim in &[
-            Side::Top, Side::Right, Side::Front,
-            Side::Bottom, Side::Left, Side::Back
-        ] {
-            flame::start("Mesh Direction");
-            self.dimension = dim;
-            for layer in 0..SIZE {
-                flame::start("Mesh Layer");
-                flame::start("Fill Mask");
-                self.fill_mask(layer);
-                flame::end("Fill Mask");
-                flame::start("Do the Rest");
-                // While unvisited faces remain, pick a position from the remaining
-                while let Some(pos) = self.pick_pos() {
-                    let (u, v) = (pos.x, pos.y);
-                    let voxel = self.get_center(u, v, layer).unwrap();
-                    flame::start("Quad Expansion");
-                    // Construct a quad that reaches as far right as possible
-                    let quad = self.expand_right(u, v, layer);
-                    // Expand that quad as far down as possible
-                    let quad = self.expand_down(quad, layer);
-                    flame::end("Quad Expansion");
-                    flame::start("Mark Visited");
-                    self.mark_visited(quad);
-                    flame::end("Mark Visited");
-                    flame::start("Add Quad");
-                    self.add_quad(quad, voxel, layer);
-                    flame::end("Add Quad");
-                }
-                flame::end("Do the Rest");
-                flame::end("Mesh Layer");
-            }
-            flame::end("Mesh Direction");
-        }
-        flame::end("Mesh");
-        flame::dump_html(&mut ::std::fs::File::create("flame-graph.html").unwrap()).unwrap();
-        ::std::process::abort();
-    }
+    // fn mesh_debug(&mut self) {
+    //     flame::start("Mesh");
+    //     for &dim in &[
+    //         Side::Top, Side::Right, Side::Front,
+    //         Side::Bottom, Side::Left, Side::Back
+    //     ] {
+    //         flame::start("Mesh Direction");
+    //         self.dimension = dim;
+    //         for layer in 0..SIZE {
+    //             flame::start("Mesh Layer");
+    //             flame::start("Fill Mask");
+    //             self.fill_mask(layer);
+    //             flame::end("Fill Mask");
+    //             flame::start("Do the Rest");
+    //             // While unvisited faces remain, pick a position from the remaining
+    //             while let Some(pos) = self.pick_pos() {
+    //                 let (u, v) = (pos.x, pos.y);
+    //                 let voxel = self.get_center(u, v, layer).unwrap();
+    //                 flame::start("Quad Expansion");
+    //                 // Construct a quad that reaches as far right as possible
+    //                 let quad = self.expand_right(u, v, layer);
+    //                 // Expand that quad as far down as possible
+    //                 let quad = self.expand_down(quad, layer);
+    //                 flame::end("Quad Expansion");
+    //                 flame::start("Mark Visited");
+    //                 self.mark_visited(quad);
+    //                 flame::end("Mark Visited");
+    //                 flame::start("Add Quad");
+    //                 self.add_quad(quad, voxel, layer);
+    //                 flame::end("Add Quad");
+    //             }
+    //             flame::end("Do the Rest");
+    //             flame::end("Mesh Layer");
+    //         }
+    //         flame::end("Mesh Direction");
+    //     }
+    //     flame::end("Mesh");
+    //     flame::dump_html(&mut ::std::fs::File::create("flame-graph.html").unwrap()).unwrap();
+    //     ::std::process::abort();
+    // }
 
     pub fn mesh(&mut self) {
         for &dim in &[

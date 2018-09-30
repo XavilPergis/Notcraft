@@ -5,6 +5,7 @@ layout (location = 1) in vec3 Normal;
 layout (location = 2) in int Face;
 layout (location = 3) in vec2 Tile;
 layout (location = 4) in vec2 Uv;
+layout (location = 5) in float Ao;
 
 uniform float u_Time;
 uniform mat4 u_Transform;
@@ -13,9 +14,10 @@ uniform mat4 u_View;
 
 out vec3 v_Normal;
 out vec3 v_Pos;
-out float v_FaceScalar;
+out vec3 v_FaceScalar;
 out vec2 v_Uv;
 out vec2 v_Tile;
+out float v_Ao;
 
 void main()
 {
@@ -24,12 +26,13 @@ void main()
     v_Normal = Normal;
     v_Uv = Uv;
     v_Tile = Tile;
+    v_Ao = Ao;
 
     switch (Face)
     {
-        case 0: v_FaceScalar = 0.7; break;
-        case 1: v_FaceScalar = 0.85; break;
-        case 2: v_FaceScalar = 1.0; break;
-        default: v_FaceScalar = 2.0;
+        case 0: v_FaceScalar = vec3(1.0, 0.0, 0.0); break;
+        case 1: v_FaceScalar = vec3(0.0, 0.0, 1.0); break;
+        case 2: v_FaceScalar = vec3(0.0, 1.0, 0.0); break;
+        default: v_FaceScalar = vec3(1.0, 1.0, 1.0);
     }
 }

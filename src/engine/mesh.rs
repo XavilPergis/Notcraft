@@ -95,6 +95,13 @@ impl<V, I: MeshIndex> Default for Mesh<V, I> {
 
 
 impl<V, I: MeshIndex> Mesh<V, I> {
+    pub fn with_capacity(verts_cap: usize, indices_cap: usize) -> Self {
+        Mesh {
+            vertices: Vec::with_capacity(verts_cap),
+            indices: Vec::with_capacity(indices_cap),
+        }
+    }
+
     pub fn triangle(&self, triangle_index: usize) -> Option<TriangleRef<'_, V, I>> {
         if triangle_in_bounds(self.indices.len(), triangle_index) {
             let base = triangle_index * 3;

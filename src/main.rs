@@ -12,6 +12,7 @@ extern crate specs;
 extern crate shrev;
 extern crate rand;
 extern crate flame;
+extern crate ndarray as nd;
 #[macro_use] extern crate smallbitvec;
 #[macro_use] extern crate lazy_static;
 
@@ -205,6 +206,7 @@ impl<'a> System<'a> for TerrainRenderSystem {
 }
 
 fn main() {
+    // let _remotery = remotery::init_remotery();
     let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
     println!("GLFW init");
     
@@ -263,7 +265,7 @@ fn main() {
 
     let projection = ::cgmath::perspective(Deg(70.0), 600.0 / 600.0, 0.1, 1000.0f32);
     program.set_uniform("u_Time", &0.0f32);
-    program.set_uniform("u_LightAmbient", &Vector3::<f32>::new(0.4, 0.5, 0.6));
+    program.set_uniform("u_LightAmbient", &Vector3::<f32>::new(0.8, 0.8, 0.8));
     program.set_uniform("u_CameraPosition", &Vector3::new(0.0f32, 10.0, 0.0));
     program.set_uniform("u_TextureMap", &texture);
 

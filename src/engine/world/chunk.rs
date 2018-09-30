@@ -1,6 +1,6 @@
 use cgmath::{Point3, Vector3};
 
-pub const SIZE: usize = 32;
+pub const SIZE: usize = 24;
 pub const AREA: usize = SIZE * SIZE;
 pub const VOLUME: usize = SIZE * SIZE * SIZE;
 
@@ -11,13 +11,13 @@ pub fn in_chunk_bounds(pos: Point3<i32>) -> bool {
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Chunk<T> {
-    crate data: Box<[T]>,
+    crate data: ::nd::Array3<T>,
 }
 
 impl<T> Chunk<T> {
-    pub fn new(voxels: Vec<T>) -> Self {
+    pub fn new(voxels: ::nd::Array3<T>) -> Self {
         Chunk {
-            data: voxels.into_boxed_slice(),
+            data: ::nd::Array3::from(voxels)
         }
     }
 }
@@ -56,7 +56,7 @@ macro_rules! gen_index {
                 debug_assert!(in_chunk_bounds(Point3::new(
                     $x as i32, $y as i32, $z as i32
                 )));
-                &self.data[AREA * $y + SIZE * $z + $x]
+                &self.data[($x, $y, $z)]
             }
         }
 
@@ -65,7 +65,7 @@ macro_rules! gen_index {
                 debug_assert!(in_chunk_bounds(Point3::new(
                     $x as i32, $y as i32, $z as i32
                 )));
-                &mut self.data[AREA * $y + SIZE * $z + $x]
+                &mut self.data[($x, $y, $z)]
             }
         }
     };
