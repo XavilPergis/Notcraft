@@ -133,9 +133,26 @@ struct MeshConstructor {
 impl MeshConstructor {
     fn add(&mut self, face: VoxelFace, proto: BlockRenderPrototype, axis: Axis, top: bool, pos: Point3<i32>, width: usize, height: usize) {
         const NORMAL_QUAD_CW: &'static [u32] = &[0,1,2,3,2,1];
+        const FLIPPED_QUAD_CW: &'static [u32] = &[3,2,0,0,1,3];
+        const NORMAL_QUAD_CCW: &'static [u32] = &[2,1,0,1,2,3];
+        const FLIPPED_QUAD_CCW: &'static [u32] = &[0,2,3,3,1,0];
         
+        let ao_pp = (face.corner_ao(VoxelFace::AO_POS_POS) as f32) / 3.0;
+        let ao_pn = (face.corner_ao(VoxelFace::AO_POS_NEG) as f32) / 3.0;
+        let ao_nn = (face.corner_ao(VoxelFace::AO_NEG_NEG) as f32) / 3.0;
+        let ao_np = (face.corner_ao(VoxelFace::AO_NEG_POS) as f32) / 3.0;
+
+        let flipped = ao_pp + ao_nn > ao_pn + ao_np;
+
+        let quad = match (flipped, top) {
+            (false, false) => NORMAL_QUAD_CCW,
+            (false, true) => NORMAL_QUAD_CW,
+            (true, true) => FLIPPED_QUAD_CW,
+            (true, false) => FLIPPED_QUAD_CCW,
+        };
+
         let index = self.index;
-        self.mesh.indices.extend(NORMAL_QUAD_CW.iter().map(|i| i + index));
+        self.mesh.indices.extend(quad.iter().map(|i| i + index));
         self.index += 4;
 
         let mut normal = Vector3::new(0.0, 0.0, 0.0);
@@ -149,10 +166,6 @@ impl MeshConstructor {
             face: axis as i32,
         });
 
-        let ao_pp = (face.corner_ao(VoxelFace::AO_POS_POS) as f32) / 3.0;
-        let ao_pn = (face.corner_ao(VoxelFace::AO_POS_NEG) as f32) / 3.0;
-        let ao_nn = (face.corner_ao(VoxelFace::AO_NEG_NEG) as f32) / 3.0;
-        let ao_np = (face.corner_ao(VoxelFace::AO_NEG_POS) as f32) / 3.0;
 
         let Point3 { x, y, z }: Point3<f32> = pos.cast().unwrap();
         let (w, h) = (width as f32, height as f32);
