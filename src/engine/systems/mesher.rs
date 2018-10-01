@@ -144,11 +144,28 @@ impl MeshConstructor {
 
         let flipped = ao_pp + ao_nn > ao_pn + ao_np;
 
-        let quad = match (flipped, top) {
-            (false, false) => NORMAL_QUAD_CCW,
-            (false, true) => NORMAL_QUAD_CW,
-            (true, true) => FLIPPED_QUAD_CW,
-            (true, false) => FLIPPED_QUAD_CCW,
+        // let quad = match (flipped, top) {
+        //     (false, false) => NORMAL_QUAD_CCW,
+        //     (false, true) => NORMAL_QUAD_CW,
+        //     (true, true) => FLIPPED_QUAD_CW,
+        //     (true, false) => FLIPPED_QUAD_CCW,
+        // };
+
+        let quad = match (flipped, top, axis) {
+            (false, false, Axis::Y) => NORMAL_QUAD_CCW,
+            (false, true, Axis::Y) => NORMAL_QUAD_CW,
+            (true, true, Axis::Y) => FLIPPED_QUAD_CW,
+            (true, false, Axis::Y) => FLIPPED_QUAD_CCW,
+
+            (false, false, Axis::Z) => NORMAL_QUAD_CCW,
+            (false, true, Axis::Z) => NORMAL_QUAD_CW,
+            (true, true, Axis::Z) => FLIPPED_QUAD_CW,
+            (true, false, Axis::Z) => FLIPPED_QUAD_CCW,
+
+            (false, false, Axis::X) => NORMAL_QUAD_CW,
+            (false, true, Axis::X) => NORMAL_QUAD_CCW,
+            (true, true, Axis::X) => FLIPPED_QUAD_CCW,
+            (true, false, Axis::X) => FLIPPED_QUAD_CW,
         };
 
         let index = self.index;
@@ -171,19 +188,26 @@ impl MeshConstructor {
         let (w, h) = (width as f32, height as f32);
         let fh = top as usize as f32;
 
-        push_vertex(Vector3::new(x,     y + fh, z    ), Vector2::new(0.0, 0.0), ao_nn);
-        push_vertex(Vector3::new(x + w, y + fh, z    ), Vector2::new(w,   0.0), ao_pn);
-        push_vertex(Vector3::new(x,     y + fh, z + h), Vector2::new(0.0, h  ), ao_np);
-        push_vertex(Vector3::new(x + w, y + fh, z + h), Vector2::new(w,   h  ), ao_pp);
+        if axis == Axis::X {
+            push_vertex(Vector3::new(x + fh, y + w, z    ), Vector2::new(0.0, 0.0), ao_pn);
+            push_vertex(Vector3::new(x + fh, y + w, z + h), Vector2::new(h,   0.0), ao_pp);
+            push_vertex(Vector3::new(x + fh, y,     z    ), Vector2::new(0.0, w ), ao_nn);
+            push_vertex(Vector3::new(x + fh, y,     z + h), Vector2::new(h,   w ), ao_np);
+        }
 
-        // BlockVertex {
-        //     pos: Vector3::new(self.pos.x + x, self.pos.y + y, self.pos.z + z),
-        //     norm: Vector3::new($nx as f32, $ny as f32, $nz as f32),
-        //     face: $face,
-        //     uv: Vector2::new($ou as f32, $ov as f32),
-        //     tile: proto.texture_for_side(Side::$side),
-        //     ao: $ao,
-        // }
+        if axis == Axis::Y {
+            push_vertex(Vector3::new(x,     y + fh, z    ), Vector2::new(0.0, 0.0), ao_nn);
+            push_vertex(Vector3::new(x + w, y + fh, z    ), Vector2::new(w,   0.0), ao_pn);
+            push_vertex(Vector3::new(x,     y + fh, z + h), Vector2::new(0.0, h  ), ao_np);
+            push_vertex(Vector3::new(x + w, y + fh, z + h), Vector2::new(w,   h  ), ao_pp);
+        }
+
+        if axis == Axis::Z {
+            push_vertex(Vector3::new(x,     y + h, z + fh), Vector2::new(0.0, 0.0), ao_np);
+            push_vertex(Vector3::new(x + w, y + h, z + fh), Vector2::new(w,   0.0), ao_pp);
+            push_vertex(Vector3::new(x,     y,     z + fh), Vector2::new(0.0, h  ), ao_nn);
+            push_vertex(Vector3::new(x + w, y,     z + fh), Vector2::new(w,   h  ), ao_pn);
+        }
     }
 }
 
@@ -322,6 +346,204 @@ impl<'w, 'r> GreedyMesher<'w, 'r> {
                             start,
                             self.registry[self.world.get_block(pos)],
                             Axis::Y,
+                            side,
+                            pos,
+                            width,
+                            height
+                        );
+                    }
+                }
+            }
+        }
+
+
+
+
+
+
+
+        for cz in 0..SIZE as i32 {
+            // compute "mask"
+            for cx in 0..SIZE as i32 {
+                for cy in 0..SIZE as i32 {
+                    let pos = SIZE as i32 * self.pos + Vector3::new(cx, cy, cz);
+                    let Point3 { x, y, z } = pos;
+                    let mut bot_top = <[VoxelFace; 2]>::default();
+                    let block = self.world.get_block(pos);
+
+                    for (idx, &dir) in (&[-1, 1]).iter().enumerate() {
+                        let side = &mut bot_top[idx];
+                        let above = self.world.get_block(pos + Vector3::new(0, 0, dir));
+                        side.visible = !self.registry[above].opaque && self.registry[block].opaque;
+                        if side.visible {
+                            let is_opaque = |x, y| self.registry[self.world.get_block(Point3::new(x, y, z + dir))].opaque;
+
+                            let neg_neg = is_opaque(x-1, y-1);
+                            let neg_cen = is_opaque(x-1, y, );
+                            let neg_pos = is_opaque(x-1, y+1);
+                            let pos_neg = is_opaque(x+1, y-1);
+                            let pos_cen = is_opaque(x+1, y, );
+                            let pos_pos = is_opaque(x+1, y+1);
+                            let cen_neg = is_opaque(x,   y-1);
+                            let cen_pos = is_opaque(x,   y+1);
+
+                            let face_pos_pos = ao_value(cen_pos, pos_pos, pos_cen); // c+ ++ +c
+                            let face_pos_neg = ao_value(pos_cen, pos_neg, cen_neg); // +c +- c-
+                            let face_neg_neg = ao_value(cen_neg, neg_neg, neg_cen); // c- -- -c
+                            let face_neg_pos = ao_value(neg_cen, neg_pos, cen_pos); // -c -+ c+
+
+                            side.ao =
+                                face_pos_pos << VoxelFace::AO_POS_POS
+                                | face_pos_neg << VoxelFace::AO_POS_NEG
+                                | face_neg_neg << VoxelFace::AO_NEG_NEG
+                                | face_neg_pos << VoxelFace::AO_NEG_POS
+                        }
+
+                    }
+
+                    let (cx, cy) = (cx as usize, cy as usize);
+
+                    self.previous_slice[(cx, cy)] = bot_top[0];
+                    self.next_slice[(cx, cy)] = bot_top[1];
+                }
+            }
+
+            // Generate mesh slice for "mask"
+            for (slice, side) in ::std::iter::once((&mut self.previous_slice, false)).chain(::std::iter::once((&mut self.next_slice, true))) {
+                for cx in 0..SIZE {
+                    for cy in 0..SIZE {
+                        let (mut width, mut height) = (1, 1);
+                        let start = slice[(cx, cy)];
+
+                        // Don't bother with faces that were already added to the mesh, or with faces that can't be added to the mesh
+                        if start.visited || !start.visible { continue; }
+
+                        // While the quad is in chunk bounds and can merge with the next face, increase the width
+                        while cx + width < SIZE && start.can_merge(slice[(cx + width, cy)]) { width += 1; }
+
+                        // While the quad is in chunk bounds and all the next faces can merge, increase the height
+                        while cy + height < SIZE {
+                            let mut all_can_merge = true;
+
+                            for xo in 0..width {
+                                all_can_merge &= start.can_merge(slice[(cx + xo, cy + height)]);
+                            }
+
+                            if all_can_merge { height += 1; } else { break; }
+                        }
+
+                        // Mark all the faces underneath the quad as visited
+                        for xo in 0..width {
+                            for zo in 0..height {
+                                slice[(cx + xo, cy + zo)].visited = true;
+                            }
+                        }
+
+                        // We expanded the quad, now add it to the mesh builder
+                        let pos = SIZE as i32 * self.pos + Vector3::new(cx as i32, cy as i32, cz);
+                        self.mesh_constructor.add(
+                            start,
+                            self.registry[self.world.get_block(pos)],
+                            Axis::Z,
+                            side,
+                            pos,
+                            width,
+                            height
+                        );
+                    }
+                }
+            }
+        }
+
+
+
+
+
+
+
+        for cx in 0..SIZE as i32 {
+            // compute "mask"
+            for cy in 0..SIZE as i32 {
+                for cz in 0..SIZE as i32 {
+                    let pos = SIZE as i32 * self.pos + Vector3::new(cx, cy, cz);
+                    let Point3 { x, y, z } = pos;
+                    let mut bot_top = <[VoxelFace; 2]>::default();
+                    let block = self.world.get_block(pos);
+
+                    for (idx, &dir) in (&[-1, 1]).iter().enumerate() {
+                        let side = &mut bot_top[idx];
+                        let above = self.world.get_block(pos + Vector3::new(dir, 0, 0));
+                        side.visible = !self.registry[above].opaque && self.registry[block].opaque;
+                        if side.visible {
+                            let is_opaque = |y, z| self.registry[self.world.get_block(Point3::new(x + dir, y, z))].opaque;
+
+                            let neg_neg = is_opaque(y-1, z-1);
+                            let neg_cen = is_opaque(y-1, z, );
+                            let neg_pos = is_opaque(y-1, z+1);
+                            let pos_neg = is_opaque(y+1, z-1);
+                            let pos_cen = is_opaque(y+1, z, );
+                            let pos_pos = is_opaque(y+1, z+1);
+                            let cen_neg = is_opaque(y,   z-1);
+                            let cen_pos = is_opaque(y,   z+1);
+
+                            let face_pos_pos = ao_value(cen_pos, pos_pos, pos_cen); // c+ ++ +c
+                            let face_pos_neg = ao_value(pos_cen, pos_neg, cen_neg); // +c +- c-
+                            let face_neg_neg = ao_value(cen_neg, neg_neg, neg_cen); // c- -- -c
+                            let face_neg_pos = ao_value(neg_cen, neg_pos, cen_pos); // -c -+ c+
+
+                            side.ao =
+                                face_pos_pos << VoxelFace::AO_POS_POS
+                                | face_pos_neg << VoxelFace::AO_POS_NEG
+                                | face_neg_neg << VoxelFace::AO_NEG_NEG
+                                | face_neg_pos << VoxelFace::AO_NEG_POS
+                        }
+
+                    }
+
+                    let (cy, cz) = (cy as usize, cz as usize);
+
+                    self.previous_slice[(cy, cz)] = bot_top[0];
+                    self.next_slice[(cy, cz)] = bot_top[1];
+                }
+            }
+
+            // Generate mesh slice for "mask"
+            for (slice, side) in ::std::iter::once((&mut self.previous_slice, false)).chain(::std::iter::once((&mut self.next_slice, true))) {
+                for cy in 0..SIZE {
+                    for cz in 0..SIZE {
+                        let (mut width, mut height) = (1, 1);
+                        let start = slice[(cy, cz)];
+
+                        // Don't bother with faces that were already added to the mesh, or with faces that can't be added to the mesh
+                        if start.visited || !start.visible { continue; }
+
+                        // While the quad is in chunk bounds and can merge with the next face, increase the width
+                        while cy + width < SIZE && start.can_merge(slice[(cy + width, cz)]) { width += 1; }
+
+                        // While the quad is in chunk bounds and all the next faces can merge, increase the height
+                        while cz + height < SIZE {
+                            let mut all_can_merge = true;
+
+                            for xo in 0..width {
+                                all_can_merge &= start.can_merge(slice[(cy + xo, cz + height)]);
+                            }
+
+                            if all_can_merge { height += 1; } else { break; }
+                        }
+
+                        // Mark all the faces underneath the quad as visited
+                        for xo in 0..width {
+                            for zo in 0..height {
+                                slice[(cy + xo, cz + zo)].visited = true;
+                            }
+                        }
+
+                        // We expanded the quad, now add it to the mesh builder
+                        let pos = SIZE as i32 * self.pos + Vector3::new(cx, cy as i32, cz as i32);
+                        self.mesh_constructor.add(
+                            start,
+                            self.registry[self.world.get_block(pos)],
+                            Axis::X,
                             side,
                             pos,
                             width,
