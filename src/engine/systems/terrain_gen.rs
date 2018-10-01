@@ -39,25 +39,26 @@ impl NoiseGenerator {
     }
 
     fn block_at(&self, pos: Point3<f64>) -> BlockId {
-        let biome_noise = smoothstep((self.biome_noise.get([pos.x / 512.0, pos.z / 512.0]) + 1.0) / 2.0, 0.7, 0.5);
-        // noise::Worley
-        let noise1 = (256.0 * self.noise.get([pos.x / 6.0, pos.z / 6.0]) + 1.0) / 2.0;
-        let noise2 = (64.0 * self.noise.get([pos.x / 8.0, pos.z / 8.0]) + 1.0) / 2.0;
-        let min = ::util::min(noise1, noise2);
-        let max = ::util::max(noise1, noise2);
+        // let biome_noise = smoothstep((self.biome_noise.get([pos.x / 512.0, pos.z / 512.0]) + 1.0) / 2.0, 0.7, 0.5);
+        // // noise::Worley
+        // let noise1 = (256.0 * self.noise.get([pos.x / 6.0, pos.z / 6.0]) + 1.0) / 2.0;
+        // let noise2 = (64.0 * self.noise.get([pos.x / 8.0, pos.z / 8.0]) + 1.0) / 2.0;
+        // let min = ::util::min(noise1, noise2);
+        // let max = ::util::max(noise1, noise2);
 
-        let noise = (min + biome_noise * (max - min)) - pos.y;
+        // let noise = (min + biome_noise * (max - min)) - pos.y;
+        let noise = self.noise.get([pos.x / 8.0, pos.y / 8.0, pos.z / 8.0]);
 
-        if noise > 4.0 { block::STONE }
-        else if noise > 1.0 { block::DIRT }
-        else if noise > 0.0 { block::GRASS }
+        if noise > 0.0 { block::GRASS }
+        // else if noise > 1.0 { block::DIRT }
+        // else if noise > 0.0 { block::GRASS }
         else { block::AIR }
     }
 
     fn pos_at_block(pos: ChunkPos, offset: Vector3<usize>) -> Point3<f64> {
         const SIZE: i32 = chunk::SIZE as i32;
         let x = ((SIZE*pos.x) as f64 + offset.x as f64) / SIZE as f64;
-        let y = (SIZE*pos.y) as f64 + offset.y as f64;
+        let y = ((SIZE*pos.y) as f64 + offset.y as f64) / SIZE as f64;
         let z = ((SIZE*pos.z) as f64 + offset.z as f64) / SIZE as f64;
         Point3::new(x, y, z)
     }
