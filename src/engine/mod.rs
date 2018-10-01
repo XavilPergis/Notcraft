@@ -1,7 +1,5 @@
 use std::ops::Neg;
-use cgmath::{Zero, One, Point3};
-use gl_api::layout::GlLayout;
-use cgmath::{Vector2, Vector3};
+use cgmath::{Zero, One, Point3, Vector2, Vector3};
 
 pub mod camera;
 pub mod mesh;

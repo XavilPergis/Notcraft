@@ -1,4 +1,3 @@
-use cgmath::Deg;
 use specs::prelude::*;
 use engine::components::*;
 use cgmath::Vector3;
@@ -16,11 +15,6 @@ impl<'a> System<'a> for PlayerController {
     );
 
     fn run(&mut self, (player, mut player_transform, mut rigidbody, move_delta, directions): Self::SystemData) {
-        // for (_, tfm, look_delta) in (&player, &mut player_transform, &look_delta).join() {
-        //     tfm.orientation.x = ::util::clamp(tfm.orientation.x + look_delta.x, Deg(-90.0), Deg(90.0));
-        //     tfm.orientation.y += look_delta.y;
-        // }
-
         for (_, tfm, move_delta) in (&player, &mut player_transform, &move_delta).join() {
             tfm.position += move_delta.0;
         }

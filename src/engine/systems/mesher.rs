@@ -1,26 +1,26 @@
 use shrev::EventChannel;
-use engine::world::block::BlockRenderPrototype;
 use engine::mesh::Mesh;
-use engine::world::block::BlockRegistry;
-use engine::world::block::BlockId;
-use engine::ChunkPos;
 use engine::world::VoxelWorld;
+use engine::world::block::{BlockRegistry, BlockRenderPrototype};
+use engine::world::chunk::SIZE;
+use engine::components as comp;
 use specs::prelude::*;
 use cgmath::{Point3, Vector2, Vector3};
-use engine::world::chunk::SIZE;
-use engine::world::Chunk;
-use engine::components as c;
 
 use nd;
 
-pub struct ChunkMesher {
-    // mesh_parts: HashMap<BlockId, Neighborhood<GlMesh<BlockVertex, u32>>>,
+pub struct ChunkMesher;
+
+impl ChunkMesher {
+    pub fn new() -> Self {
+        ChunkMesher
+    }
 }
 
 impl<'a> System<'a> for ChunkMesher {
     type SystemData = (
-        WriteStorage<'a, c::DirtyMesh>,
-        ReadStorage<'a, c::ChunkId>,
+        WriteStorage<'a, comp::DirtyMesh>,
+        ReadStorage<'a, comp::ChunkId>,
         ReadExpect<'a, VoxelWorld>,
         ReadExpect<'a, BlockRegistry>,
         Write<'a, EventChannel<(Entity, Mesh<BlockVertex, u32>)>>,
@@ -29,7 +29,7 @@ impl<'a> System<'a> for ChunkMesher {
 
     fn run(&mut self, (mut dirty_markers, chunk_ids, world, registry, mut mesh_channel, entities): Self::SystemData) {
         // let mut cleaned = vec![];
-        for (_, c::ChunkId(pos), entity) in (&dirty_markers, &chunk_ids, &*entities).join() {
+        for (_, comp::ChunkId(pos), entity) in (&dirty_markers, &chunk_ids, &*entities).join() {
             // Ensure that the surrounding volume of chunks exist before meshing this one.
             let mut surrounded = true;
             for x in -1..=1 {
@@ -63,29 +63,6 @@ impl<'a> System<'a> for ChunkMesher {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 enum Axis {
     X = 0, Y = 1, Z = 2
-}
-
-struct ChunkView<'c, T> {
-    chunk: &'c Chunk<T>,
-    axis: Axis,
-}
-
-impl<'c, T: Clone> ChunkView<'c, T> {
-    fn to_local_space(&self, chunk_space: Point3<i32>) -> Point3<i32> {
-        let (u, l, v) = chunk_space.into();
-        match self.axis {
-            Axis::X => Point3::new(v, l, u),
-            Axis::Y => Point3::new(l, u, v),
-            Axis::Z => Point3::new(u, v, l),
-        }
-
-        // Side::Up => Vector3::new(0, 1, 0),
-        // Side::Right => Vector3::new(1, 0, 0),
-        // Side::Front => Vector3::new(0, 0, 1),
-        // Side::Down => Vector3::new(0, -1, 0),
-        // Side::Left => Vector3::new(-1, 0, 0),
-        // Side::Back => Vector3::new(0, 0, -1),
-    }
 }
 
 // ++ +- -- -+
@@ -211,28 +188,6 @@ impl MeshConstructor {
     }
 }
 
-fn window<I>(a: impl Iterator<Item=I> + Clone) -> impl Iterator<Item=(I, I)> {
-    a.clone().zip(a.skip(1))
-}
-
-struct PaddedSlice<'c> {
-    center: nd::ArrayView2<'c, BlockId>,
-
-    top: nd::ArrayView1<'c, BlockId>,
-    bottom: nd::ArrayView1<'c, BlockId>,
-    right: nd::ArrayView1<'c, BlockId>,
-    left: nd::ArrayView1<'c, BlockId>,
-
-    top_right: BlockId,
-    bottom_right: BlockId,
-    bottom_left: BlockId,
-    top_left: BlockId,
-}
-
-// impl<'c> PaddedSlice<'c> {
-//     fn bottom_
-// }
-
 fn ao_value(side1: bool, corner: bool, side2: bool) -> u8 {
     if side1 && side2 { 0 } else {
         3 - (side1 as u8 + side2 as u8 + corner as u8)
@@ -243,7 +198,6 @@ pub struct GreedyMesher<'w, 'r> {
     pos: Point3<i32>,
     world: &'w VoxelWorld,
     registry: &'r BlockRegistry,
-    // chunk: &'w Chunk<BlockId>,
     next_slice: nd::Array2<VoxelFace>,
     previous_slice: nd::Array2<VoxelFace>,
     mesh_constructor: MeshConstructor,
@@ -553,20 +507,5 @@ impl<'w, 'r> GreedyMesher<'w, 'r> {
                 }
             }
         }
-
-        // for each dimension...
-        // for &axis in &[Axis::X, Axis::Y, Axis::Z] { // X=0, Y=1, Z=2
-        //     // bottom: slice for -axis + 0
-        //     // top: slice for +axis + chunk_size - 1
-        //     self.chunk.data.axis_iter(nd::Axis(axis as usize))
-        //         .map(|slice|);
-        //     // for (layer, (slice, next_slice)) in window(self.chunk.data.axis_iter(nd::Axis(axis as usize))).enumerate() {
-        //     //     for ((idx, item), next_item) in slice.indexed_iter().zip(next_slice.iter()) {
-        //     //         // let (front, back) = self.face(axis, idx.0, idx.1, layer);
-        //     //         // self.slice_forward[idx] = front;
-        //     //         // self.slice_backward[idx] = back;
-        //     //     }
-        //     // }
-        // }
     }
 }

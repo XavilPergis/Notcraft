@@ -5,15 +5,12 @@ extern crate glfw;
 extern crate image;
 extern crate cgmath;
 extern crate noise;
-extern crate smallvec;
 extern crate collision;
 extern crate rayon;
 extern crate specs;
 extern crate shrev;
 extern crate rand;
-extern crate flame;
 extern crate ndarray as nd;
-#[macro_use] extern crate smallbitvec;
 #[macro_use] extern crate lazy_static;
 
 #[macro_use] pub mod gl_api;
@@ -23,137 +20,29 @@ pub mod debug;
 pub mod chunk_manager;
 pub mod handle;
 
-use engine::components::DirtyMesh;
-use engine::components::ChunkId;
-use engine::world::block::BlockId;
-use engine::world::VoxelWorld;
-use engine::resources::Dt;
-use std::time::Duration;
-use engine::components::ActiveDirections;
-use engine::components::RigidBody;
-use specs::shred::PanicHandler;
-use engine::resources::FramebufferSize;
-use engine::resources::ViewFrustum;
-use engine::components::ClientControlled;
-use engine::components::Player;
-use shrev::EventChannel;
-use engine::resources::StopGameLoop;
-use gl_api::shader::program::LinkedProgram;
+use engine::components as comp;
+use engine::resources as res;
 use engine::systems::mesher::{BlockVertex, ChunkMesher};
+use engine::world::VoxelWorld;
 use engine::mesh::{Mesh, GlMesh};
-use std::rc::Rc;
-use handle::{LocalPool, Handle};
-use std::sync::Arc;
-use std::sync::Mutex;
-use engine::ChunkPos;
-use engine::world::{chunk, Chunk};
-use noise::NoiseFn;
-use engine::terrain::ChunkGenerator;
-use cgmath::{Matrix4, Deg, Vector3, Point3};
-use glfw::{Context, WindowEvent, WindowHint};
+
+use gl_api::shader::program::LinkedProgram;
+use gl_api::shader::shader::ShaderError;
 use gl_api::shader::*;
-use specs::prelude::*;
 use gl_api::misc;
-use engine::components::{Transform, LookTarget};
+
+use shrev::EventChannel;
+use handle::{LocalPool, Handle};
+use cgmath::{Matrix4, Deg, Vector3, Point3};
+use glfw::{SwapInterval, Context, WindowEvent, WindowHint};
 use collision::Aabb3;
 
-// type Mesh = EngineMesh<BlockVertex, u32>;
+use specs::shred::PanicHandler;
+use specs::prelude::*;
 
-
-
-// #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
-// pub struct Modes {
-//     wireframe: bool,
-//     capture_mouse: bool,
-//     show_debug_frames: bool,
-//     noclip: bool,
-// }
-
-use glfw::SwapInterval;
-use gl_api::shader::shader::ShaderError;
-
-// use std::sync::mpsc::Receiver;
-
-// pub struct MultiReciever<T: 'static> {
-//     queue: Vec<T>,
-//     recv: Mutex<Receiver<T>>,
-// }
-
-// impl<T: 'static> From<Receiver<T>> for MultiReciever<T> {
-//     fn from(recv: Receiver<T>) -> Self { MultiReciever { queue: Vec::new(), recv: Mutex::new(recv) } }
-// }
-
-// impl<T: 'static + Send> MultiReciever<T> {
-//     pub fn fill_queue(&mut self) {
-//         self.queue.extend(::glfw::flush_messages(&self.recv.lock().unwrap()));
-//     }
-
-//     pub fn items(&self) -> &[T] { &*self.queue }
-
-//     pub fn clear(&mut self) {
-//         self.queue.clear();
-//     }
-// }
-
-// #[derive(Clone)]
-// struct SharedEvents<T: 'static> {
-//     inner: Arc<Mutex<MultiReciever<T>>>,
-// }
-
-// impl<T: 'static + Send> SharedEvents<T> {
-//     pub fn new(recv: MultiReciever<T>) -> Self { SharedEvents { inner: Arc::new(Mutex::new(recv)) } }
-
-//     pub fn events(&self) -> ::std::sync::MutexGuard<'_, MultiReciever<T>> { self.inner.lock().unwrap() }
-// }
-
-// #[derive(Clone)]
-// pub struct SharedWindow {
-//     inner: Arc<Mutex<Window>>,
-// }
-
-// impl SharedWindow {
-//     pub fn new(window: Window) -> Self { SharedWindow { inner: Arc::new(Mutex::new(window)) } }
-//     pub fn window(&self) -> ::std::sync::MutexGuard<'_, Window> { self.inner.lock().unwrap() }
-// }
-
-// type SharedWindowEvents = SharedEvents<(f64, ::glfw::WindowEvent)>;
-
-// #[derive(Copy, Clone, Debug, Default)]
-// pub struct MouseDelta(f64, f64);
-
-// pub struct InputHandler {
-//     window: SharedWindow,
-//     events: SharedWindowEvents,
-//     last_x: Option<f64>,
-//     last_y: Option<f64>,
-// }
-
-// impl<'a> System<'a> for InputHandler {
-//     type SystemData = (Write<'a, MouseDelta>, Write<'a, Modes>, Write<'a, StopGameLoop>);
-
-//     fn run(&mut self, (mut mouse_delta, mut modes, mut stop_flag): Self::SystemData) {
-//         let mut window = self.window.window();
-//         for (_, event) in self.events.events().items() {
-//             match event {
-//                 WindowEvent::Close | WindowEvent::Key(Key::Escape, _, Action::Press, _) => { stop_flag.0 = true; break; },
-//                 WindowEvent::Key(Key::F1, _, Action::Press, _) => modes.show_debug_frames = !modes.show_debug_frames,
-//                 WindowEvent::Key(Key::F2, _, Action::Press, _) => { modes.wireframe = !modes.wireframe; set_wireframe(modes.wireframe); },
-//                 WindowEvent::Key(Key::F3, _, Action::Press, _) => { modes.capture_mouse = !modes.capture_mouse; set_mouse_capture(&mut *window, modes.capture_mouse) },
-//                 WindowEvent::Key(Key::F4, _, Action::Press, _) => modes.noclip = !modes.noclip,
-//                 WindowEvent::CursorPos(x, y) => match (self.last_x, self.last_y) {
-//                     (Some(lx), Some(ly)) => {
-//                         *mouse_delta = MouseDelta(lx - x, ly - y);
-//                     },
-//                     _ => {
-//                         self.last_x = Some(*x);
-//                         self.last_y = Some(*y);
-//                     }
-//                 },
-//                 _ => (),
-//             }
-//         }
-//     }
-// }
+use std::rc::Rc;
+use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
 impl Component for Handle<GlMesh<BlockVertex, u32>> {
     type Storage = DenseVecStorage<Self>;
@@ -168,16 +57,15 @@ pub struct TerrainRenderSystem {
 impl<'a> System<'a> for TerrainRenderSystem {
     type SystemData = (
         WriteStorage<'a, Handle<GlMesh<BlockVertex, u32>>>,
-        ReadStorage<'a, Transform>,
-        ReadStorage<'a, Player>,
-        ReadStorage<'a, ClientControlled>,
-        Read<'a, FramebufferSize>,
-        Read<'a, ViewFrustum, PanicHandler>,
+        ReadStorage<'a, comp::Transform>,
+        ReadStorage<'a, comp::Player>,
+        ReadStorage<'a, comp::ClientControlled>,
+        Read<'a, res::FramebufferSize>,
+        Read<'a, res::ViewFrustum, PanicHandler>,
         Read<'a, EventChannel<(Entity, Mesh<BlockVertex, u32>)>>,
-        Entities<'a>,
     );
 
-    fn run(&mut self, (mut meshes, transforms, player_marker, client_controlled_marker, framebuffer_size, frustum, new_meshes, entities): Self::SystemData) {
+    fn run(&mut self, (mut meshes, transforms, player_marker, client_controlled_marker, framebuffer_size, frustum, new_meshes): Self::SystemData) {
         let player_transform = (&player_marker, &client_controlled_marker, &transforms).join().map(|(_, _, tfm)| tfm).next();
 
         use gl_api::buffer::UsageType;
@@ -273,32 +161,32 @@ fn main() {
     let mut world = World::default();
 
     world.register::<Handle<GlMesh<BlockVertex, u32>>>();
-    world.register::<Transform>();
-    world.register::<LookTarget>();
-    world.register::<ClientControlled>();
-    world.register::<Player>();
-    world.register::<RigidBody>();
-    world.register::<ActiveDirections>();
-    world.register::<ChunkId>();
-    world.register::<DirtyMesh>();
+    world.register::<comp::Transform>();
+    world.register::<comp::LookTarget>();
+    world.register::<comp::ClientControlled>();
+    world.register::<comp::Player>();
+    world.register::<comp::RigidBody>();
+    world.register::<comp::ActiveDirections>();
+    world.register::<comp::ChunkId>();
+    world.register::<comp::DirtyMesh>();
 
-    let mut voxel_world = VoxelWorld::default();
+    let voxel_world = VoxelWorld::default();
 
     let pool = Rc::new(LocalPool::default());
-    let mut player_tfm = Transform::default();
+    let mut player_tfm = comp::Transform::default();
     player_tfm.position.z -= 10.0; 
     world.create_entity()
-        .with(ClientControlled)
-        .with(Player)
+        .with(comp::ClientControlled)
+        .with(comp::Player)
         .with(player_tfm)
-        .with(RigidBody {
+        .with(comp::RigidBody {
             mass: 100.0,
             drag: Vector3::new(3.0, 6.0, 3.0),
             velocity: Vector3::new(0.0, 0.0, 0.0),
             aabb: Aabb3::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0)),
         })
-        .with(ActiveDirections::default())
-        .with(LookTarget::default())
+        .with(comp::ActiveDirections::default())
+        .with(comp::LookTarget::default())
         .build();
 
     let mut mesh_channel = EventChannel::<(Entity, Mesh<BlockVertex, u32>)>::new();
@@ -313,17 +201,17 @@ fn main() {
         .with_thread_local(SmoothCamera)
         .with_thread_local(RigidBodyUpdater)
         .with_thread_local(TerrainGenerator::new(NoiseGenerator::new_default()))
-        .with_thread_local(ChunkMesher {})
+        .with_thread_local(ChunkMesher::new())
         .with_thread_local(terrain_renderer)
         .build();
     
     dispatcher.setup(&mut world.res);
 
     world.add_resource(mesh_channel);
-    world.add_resource(StopGameLoop(false));
+    world.add_resource(res::StopGameLoop(false));
     world.add_resource(window_events);
-    world.add_resource(Dt(Duration::from_secs(1)));
-    world.add_resource(ViewFrustum {
+    world.add_resource(res::Dt(Duration::from_secs(1)));
+    world.add_resource(res::ViewFrustum {
         fov: Deg(80.0),
         near_plane: 0.001,
         far_plane: 1000.0,
@@ -336,7 +224,7 @@ fn main() {
     use std::time::Instant;
     use engine::world::block::BlockRegistry;
 
-    while !world.res.fetch::<StopGameLoop>().0 {
+    while !world.res.fetch::<res::StopGameLoop>().0 {
         let frame_start = Instant::now();
         misc::clear(misc::ClearMode::Color(0.729411765, 0.907843137, 0.981568627, 1.0));
         misc::clear(misc::ClearMode::Depth(1.0));
@@ -347,13 +235,13 @@ fn main() {
 
         // Update systems and the world.
         world.maintain();
-        world.res.insert(StopGameLoop(false));
+        world.res.insert(res::StopGameLoop(false));
         dispatcher.dispatch(&world.res);
 
         // Swap the backbuffer
         window.lock().unwrap().swap_buffers();
         let frame_end = Instant::now();
         let dt = frame_end - frame_start;
-        *world.write_resource::<Dt>() = Dt(dt);
+        *world.write_resource::<res::Dt>() = res::Dt(dt);
     }
 }

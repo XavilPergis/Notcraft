@@ -1,6 +1,5 @@
-use cgmath::Deg;
-use engine::{ChunkPos, WorldPos};
-use cgmath::{Point3, Vector3};
+use cgmath::{Deg, Point3, Vector3};
+use engine::WorldPos;
 use std::cmp::Ordering;
 
 pub fn lerp_angle(a: Deg<f64>, b: Deg<f64>, t: f64) -> Deg<f64> {

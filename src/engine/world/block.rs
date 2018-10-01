@@ -1,8 +1,6 @@
-use image::RgbaImage;
 use std::collections::HashMap;
-use engine::VoxelProperties;
-use cgmath::{Vector2, Vector3};
-use engine::{Precomputed, Side, Voxel};
+use cgmath::Vector2;
+use engine::Side;
 
 pub const AIR: BlockId = 0;
 pub const STONE: BlockId = 1;
@@ -11,32 +9,6 @@ pub const GRASS: BlockId = 3;
 pub const WATER: BlockId = 4;
 
 pub type BlockId = usize;
-
-// fn create_basic_render_prototype(opaque: bool, offsets: [Vector2<f32>; 6]) -> impl BlockRenderPrototype {
-//     #[derive(Copy, Clone, Debug, PartialEq)]
-//     struct Basic {
-//         opaque: bool,
-//         offsets: [Vector2<f32>; 6],
-//     }
-
-//     impl BlockRenderPrototype for Basic {
-//         fn block_texture(&self) -> RgbaImage { unimplemented!() }
-//         fn can_merge(&self, other: &BlockRenderPrototype) -> bool { unimplemented!() }
-//         fn is_opaque(&self) -> bool { self.opaque }
-//         fn texture_for_side(&self, side: Side) -> Vector2<f32> {
-//             self.offsets[match side {
-//                 Side::Top => 0,
-//                 Side::Bottom => 1,
-//                 Side::Left => 2,
-//                 Side::Right => 3,
-//                 Side::Front => 4,
-//                 Side::Back => 5,
-//             }]
-//         }
-//     }
-
-//     Basic { opaque, offsets }
-// }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BlockRenderPrototype {
@@ -72,25 +44,6 @@ impl BlockRegistry {
         }
     }
 
-// fn calculate_vertex_data(block: Block, pre: Precomputed) -> BlockVertex {
-//     BlockVertex {
-//         pos: pre.pos,
-//         norm: pre.norm,
-//         face: pre.face,
-//         uv: pre.face_offset,
-//         tile: match block {
-//             Block::Air => Vector2::new(0.0, 0.0),
-//             Block::Stone => Vector2::new(1.0, 0.0),
-//             Block::Dirt => Vector2::new(2.0, 0.0),
-//             Block::Grass => match pre.side {
-//                 Side::Top => Vector2::new(0.0, 0.0),
-//                 Side::Bottom => Vector2::new(2.0, 0.0),
-//                 _ => Vector2::new(0.0, 1.0),
-//             },
-//             Block::Water => Vector2::new(1.0, 0.0),
-//         }
-//     }
-// }
     pub fn with_defaults(mut self) -> Self {
         macro_rules! proto {
             ($opaque:expr, [$($x:expr, $y:expr);*]) => {

@@ -1,13 +1,12 @@
 use cgmath::{Vector2, Vector3, Vector4};
 use gl::types::*;
-use smallvec::SmallVec;
 
 pub struct AttributeLayout {
     pub attrib_type: GLenum,
     pub attrib_size: GLint,
     pub attrib_offset: GLint,
 }
-pub type LayoutVec = SmallVec<[AttributeLayout; 8]>;
+pub type LayoutVec = Vec<AttributeLayout>;
 
 pub unsafe trait GlLayout {
     fn layout() -> LayoutVec;
@@ -18,17 +17,9 @@ pub unsafe trait SimpleLayout {
     fn ty() -> GLenum;
 }
 
-macro_rules! small_vec {
-    ($($item:expr),*) => ({
-        let mut vec = $crate::smallvec::SmallVec::new();
-        $(vec.push($item);)*
-        vec
-    })
-}
-
 unsafe impl<T: SimpleLayout> GlLayout for T {
     fn layout() -> LayoutVec {
-        small_vec![AttributeLayout {
+        vec![AttributeLayout {
             attrib_size: T::size(),
             attrib_type: T::ty(),
             attrib_offset: 0
@@ -65,7 +56,7 @@ macro_rules! vertex {
 
         unsafe impl $crate::gl_api::layout::GlLayout for $name {
             fn layout() -> $crate::gl_api::layout::LayoutVec {
-                small_vec![
+                vec![
                     $($crate::gl_api::layout::AttributeLayout {
                         attrib_type: <$attrib_type as $crate::gl_api::layout::SimpleLayout>::ty(),
                         attrib_size: <$attrib_type as $crate::gl_api::layout::SimpleLayout>::size(),

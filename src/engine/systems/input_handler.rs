@@ -14,7 +14,7 @@ impl<'a> System<'a> for SmoothCamera {
 
     fn run(&mut self, (mut transforms, targets, dt): Self::SystemData) {
         for (tfm, target) in (&mut transforms, &targets).join() {
-            use util::{lerp_angle, clamp};
+            use util::lerp_angle;
             tfm.orientation.x = lerp_angle(tfm.orientation.x, target.x, 12.0 * dt.as_secs());
             tfm.orientation.y = lerp_angle(tfm.orientation.y, target.y, 12.0 * dt.as_secs());
         }

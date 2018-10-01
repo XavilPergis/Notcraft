@@ -1,7 +1,6 @@
-use std::ops::Index;
-use gl_api::error::GlResult;
 use gl;
 use gl::types::*;
+use gl_api::error::GlResult;
 use gl_api::layout::GlLayout;
 use gl_api::vertex_array::VertexArray;
 use gl_api::buffer::{VertexBuffer, ElementBuffer, UsageType};
@@ -76,13 +75,9 @@ impl<'m, V: 'm, I: MeshIndex + 'm> Iterator for TriangleIter<'m, V, I> {
 }
 
 pub struct TriangleRef<'m, V: 'm, I: MeshIndex> {
-    indices: (I, I, I),
-    vertices: (&'m V, &'m V, &'m V),
+    pub indices: (I, I, I),
+    pub vertices: (&'m V, &'m V, &'m V),
 }
-
-// impl<'m, V: 'm, I: MeshIndex> TriangleRef<'m, V, I> {
-//     fn from_indices(vertices: &[V], indices: &[I])
-// }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Mesh<V, I: MeshIndex> {

@@ -66,25 +66,6 @@ impl NoiseGenerator {
 
 impl ChunkGenerator<BlockId> for NoiseGenerator {
     fn generate_chunk(&self, pos: ChunkPos) -> Chunk<BlockId> {
-
-        // pub fn from_shape_fn<Sh, F>(shape: Sh, f: F) -> Self where
-        //     Sh: ShapeBuilder<Dim = D>,
-        //     F: FnMut(D::Pattern) -> A, 
-
-
-
-        const SIZE: i32 = chunk::SIZE as i32;
-        // let mut buffer = Vec::with_capacity(chunk::VOLUME);
-        // for by in 0..SIZE {
-        //     for bz in 0..SIZE {
-        //         for bx in 0..SIZE {
-        //             let pos = Self::pos_at_block(pos, Vector3::new(bx, by, bz));
-        //             // pos.y /= SIZE as f64;
-        //             buffer.push(self.block_at(pos));
-        //         }
-        //     }
-        // }
-
         Chunk::new(::nd::Array3::from_shape_fn((chunk::SIZE, chunk::SIZE, chunk::SIZE), |coord| {
             self.block_at(Self::pos_at_block(pos, coord.into()))
         }))
