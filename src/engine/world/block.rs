@@ -47,11 +47,11 @@ pub struct BlockRenderPrototype {
 impl BlockRenderPrototype {
     pub fn texture_for_side(&self, side: Side) -> Vector2<f32> {
         self.texture_offsets[match side {
-            Side::Top => 0,
-            Side::Bottom => 1,
-            Side::Left => 2,
-            Side::Right => 3,
-            Side::Front => 4,
+            Side::Right => 0,
+            Side::Top => 1,
+            Side::Front => 2,
+            Side::Left => 3,
+            Side::Bottom => 4,
             Side::Back => 5,
         }]
     }
@@ -92,11 +92,21 @@ impl BlockRegistry {
 //     }
 // }
     pub fn with_defaults(mut self) -> Self {
-        self.register("air", BlockRenderPrototype { opaque: false, texture_offsets: [Vector2::new(0.0, 0.0), Vector2::new(0.0, 0.0), Vector2::new(0.0, 0.0), Vector2::new(0.0, 0.0), Vector2::new(0.0, 0.0), Vector2::new(0.0, 0.0)] }, Some(AIR));
-        self.register("stone", BlockRenderPrototype { opaque: true, texture_offsets: [Vector2::new(1.0, 0.0), Vector2::new(1.0, 0.0), Vector2::new(1.0, 0.0), Vector2::new(1.0, 0.0), Vector2::new(1.0, 0.0), Vector2::new(1.0, 0.0)] }, Some(STONE));
-        self.register("dirt", BlockRenderPrototype { opaque: true, texture_offsets: [Vector2::new(2.0, 0.0), Vector2::new(2.0, 0.0), Vector2::new(2.0, 0.0), Vector2::new(2.0, 0.0), Vector2::new(2.0, 0.0), Vector2::new(2.0, 0.0)] }, Some(DIRT));
-        self.register("grass", BlockRenderPrototype { opaque: true, texture_offsets: [Vector2::new(0.0, 0.0), Vector2::new(2.0, 0.0), Vector2::new(0.0, 1.0), Vector2::new(0.0, 1.0), Vector2::new(0.0, 1.0), Vector2::new(0.0, 1.0)] }, Some(GRASS));
-        self.register("water", BlockRenderPrototype { opaque: true, texture_offsets: [Vector2::new(1.0, 0.0), Vector2::new(1.0, 0.0), Vector2::new(1.0, 0.0), Vector2::new(1.0, 0.0), Vector2::new(1.0, 0.0), Vector2::new(1.0, 0.0)] }, Some(WATER));
+        macro_rules! proto {
+            ($opaque:expr, [$($x:expr, $y:expr);*]) => {
+                BlockRenderPrototype {
+                    opaque: $opaque,
+                    texture_offsets: [$(Vector2::new($x as f32, $y as f32)),*]
+                }
+            };
+        }
+
+        self.register("air",   proto! { false, [0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0] }, Some(AIR));
+        self.register("stone", proto! { true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0] }, Some(STONE));
+        self.register("dirt",  proto! { true,  [2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0] }, Some(DIRT));
+        self.register("grass", proto! { true,  [0.0, 1.0; 0.0, 0.0; 0.0, 1.0; 0.0, 1.0; 2.0, 0.0; 0.0, 1.0] }, Some(GRASS));
+        self.register("water", proto! { true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0] }, Some(WATER));
+
         self
     }
 

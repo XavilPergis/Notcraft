@@ -84,6 +84,7 @@ pub struct TriangleRef<'m, V: 'm, I: MeshIndex> {
 //     fn from_indices(vertices: &[V], indices: &[I])
 // }
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Mesh<V, I: MeshIndex> {
     crate vertices: Vec<V>,
     crate indices: Vec<I>,

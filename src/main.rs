@@ -25,7 +25,6 @@ pub mod handle;
 
 use engine::components::DirtyMesh;
 use engine::components::ChunkId;
-use engine::mesher::ChunkMesher;
 use engine::world::block::BlockId;
 use engine::world::VoxelWorld;
 use engine::resources::Dt;
@@ -40,7 +39,7 @@ use engine::components::Player;
 use shrev::EventChannel;
 use engine::resources::StopGameLoop;
 use gl_api::shader::program::LinkedProgram;
-use engine::mesher::BlockVertex;
+use engine::systems::mesher::{BlockVertex, ChunkMesher};
 use engine::mesh::{Mesh, GlMesh};
 use std::rc::Rc;
 use handle::{LocalPool, Handle};

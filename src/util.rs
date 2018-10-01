@@ -57,19 +57,6 @@ pub fn to_point<S>(vec: Vector3<S>) -> Point3<S> {
     Point3::new(vec.x, vec.y, vec.z)
 }
 
-/// Get a chunk position from a world position
-pub fn get_chunk_pos(pos: WorldPos) -> (ChunkPos, Vector3<i32>) {
-    const SIZE: i32 = ::engine::world::chunk::SIZE as i32;
-    let cx = ::util::floor_div(pos.x, SIZE);
-    let cy = ::util::floor_div(pos.y, SIZE);
-    let cz = ::util::floor_div(pos.z, SIZE);
-
-    let cpos = Point3::new(cx, cy, cz);
-    let bpos = pos - (SIZE*cpos);
-
-    (cpos, bpos)
-}
-
 /// Tests if `pos` is within `r` units from `center`
 pub fn in_range(pos: WorldPos, center: WorldPos, radii: Vector3<i32>) -> bool {
     pos.x <= center.x + radii.x && pos.x >= center.x - radii.x &&
