@@ -1,6 +1,6 @@
 use cgmath::{Point3, Vector3};
 
-pub const SIZE: usize = 24;
+pub const SIZE: usize = 32;
 pub const AREA: usize = SIZE * SIZE;
 pub const VOLUME: usize = SIZE * SIZE * SIZE;
 

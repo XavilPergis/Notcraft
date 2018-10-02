@@ -1,7 +1,9 @@
+use engine::systems::debug_render::Shape;
+use shrev::EventChannel;
 use cgmath::Point3;
 use specs::world::EntitiesRes;
 use engine::world::VoxelWorld;
-use cgmath::Vector3;
+use cgmath::{Vector3, Vector4};
 use specs::prelude::*;
 use std::sync::mpsc;
 use std::collections::HashSet;
@@ -47,9 +49,14 @@ impl NoiseGenerator {
         // let max = ::util::max(noise1, noise2);
 
         // let noise = (min + biome_noise * (max - min)) - pos.y;
-        let noise = self.noise.get([pos.x / 8.0, pos.y / 8.0, pos.z / 8.0]);
+        let noise = self.noise.get([pos.x, pos.y, pos.z]);
+        let block_noise = self.biome_noise.get([pos.x / 2.0, pos.y / 2.0, pos.z / 2.0]);
 
-        if noise > 0.0 { block::GRASS }
+        let block = if block_noise > 0.33 { block::GRASS }
+        else if block_noise > -0.33 { block::DIRT }
+        else { block::STONE };
+
+        if noise > 0.0 { block }
         // else if noise > 1.0 { block::DIRT }
         // else if noise > 0.0 { block::GRASS }
         else { block::AIR }
@@ -106,16 +113,25 @@ impl TerrainGenerator {
 
 
 impl<'a> System<'a> for TerrainGenerator {
-    type SystemData = (WriteExpect<'a, VoxelWorld>, ReadStorage<'a, Player>, ReadStorage<'a, Transform>, Read<'a, ViewDistance>, Read<'a, LazyUpdate>, Read<'a, EntitiesRes>);
+    type SystemData = (
+        WriteExpect<'a, VoxelWorld>,
+        ReadStorage<'a, Player>,
+        ReadStorage<'a, Transform>,
+        Read<'a, ViewDistance>,
+        Read<'a, LazyUpdate>,
+        Read<'a, EntitiesRes>,
+        WriteExpect<'a, EventChannel<Shape>>,
+    );
 
-    fn run(&mut self, (mut voxel_world, players, transforms, view_distance, lazy, entity_res): Self::SystemData) {
+    fn run(&mut self, (mut voxel_world, players, transforms, view_distance, lazy, entity_res, mut debug_channel): Self::SystemData) {
         let dist = view_distance.0;
         for (_, transform) in (&players, &transforms).join() {
             for xo in -dist.x..=dist.x {
                 for yo in -dist.y..=dist.y {
                     for zo in -dist.z..=dist.z {
                         let pos = ::util::to_point(-transform.position.cast().unwrap() / chunk::SIZE as i32 + Vector3::new(xo, yo, zo));
-                        if self.queue.insert(pos) {
+                        if !voxel_world.chunk_exists(pos) && !self.queue.contains(&pos) {
+                            self.queue.insert(pos);
                             self.request_tx.send(pos).unwrap();
                         }
                     }
@@ -123,8 +139,13 @@ impl<'a> System<'a> for TerrainGenerator {
             }
         }
 
+        for item in self.queue.iter() {
+            debug_channel.single_write(Shape::Chunk(2.0, item.cast().unwrap(), Vector4::new(1.0, 0.0, 0.0, 1.0)));
+        }
+
         for (pos, chunk) in self.chunk_rx.try_iter() {
             voxel_world.set_chunk(pos, chunk);
+            self.queue.remove(&pos);
             lazy.create_entity(&entity_res).with(ChunkId(pos)).with(DirtyMesh).with(Transform::default()).build();
         }
     }

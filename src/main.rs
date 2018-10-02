@@ -10,6 +10,7 @@ extern crate rayon;
 extern crate specs;
 extern crate shrev;
 extern crate rand;
+extern crate ordered_float;
 extern crate ndarray as nd;
 #[macro_use] extern crate lazy_static;
 
@@ -192,8 +193,11 @@ fn main() {
     let mut mesh_channel = EventChannel::<(Entity, Mesh<BlockVertex, u32>)>::new();
     let terrain_renderer = TerrainRenderSystem { pool, program, mesh_recv: mesh_channel.register_reader() };
 
+    let mut debug_request_channel = EventChannel::new();
+
     use engine::systems::*;
     use engine::systems::terrain_gen::*;
+    use engine::systems::debug_render::*;
     let mut dispatcher = DispatcherBuilder::new()
         .with_thread_local(ViewportUpdater::new(&window))
         .with_thread_local(InputHandler::new(&window, &mut window_events))
@@ -203,11 +207,13 @@ fn main() {
         .with_thread_local(TerrainGenerator::new(NoiseGenerator::new_default()))
         .with_thread_local(ChunkMesher::new())
         .with_thread_local(terrain_renderer)
+        .with_thread_local(DebugRenderer::new(debug_request_channel.register_reader()))
         .build();
     
     dispatcher.setup(&mut world.res);
 
     world.add_resource(mesh_channel);
+    world.add_resource(debug_request_channel);
     world.add_resource(res::StopGameLoop(false));
     world.add_resource(window_events);
     world.add_resource(res::Dt(Duration::from_secs(1)));

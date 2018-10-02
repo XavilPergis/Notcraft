@@ -4,6 +4,7 @@ mod window_info;
 mod physics;
 pub mod mesher;
 pub mod terrain_gen;
+pub mod debug_render;
 
 pub use self::player_controller::PlayerController;
 pub use self::input_handler::{InputHandler, SmoothCamera};

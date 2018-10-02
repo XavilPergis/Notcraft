@@ -1,4 +1,4 @@
-use cgmath::{Vector2, Vector3, Vector4};
+use cgmath::{Point2, Point3, Vector2, Vector3, Vector4};
 use gl::types::*;
 
 pub struct AttributeLayout {
@@ -87,7 +87,9 @@ layout_simple!([f32; 2]: FLOAT 2);
 layout_simple!([f32; 3]: FLOAT 3);
 layout_simple!([f32; 4]: FLOAT 4);
 layout_simple!(Vector2<f32>: FLOAT 2);
+layout_simple!(Point2<f32>: FLOAT 2);
 layout_simple!(Vector3<f32>: FLOAT 3);
+layout_simple!(Point3<f32>: FLOAT 3);
 layout_simple!(Vector4<f32>: FLOAT 4);
 
 layout_simple!(f64: DOUBLE 1);
@@ -100,7 +102,9 @@ layout_simple!([f64; 2]: DOUBLE 2);
 layout_simple!([f64; 3]: DOUBLE 3);
 layout_simple!([f64; 4]: DOUBLE 4);
 layout_simple!(Vector2<f64>: DOUBLE 2);
+layout_simple!(Point2<f64>: DOUBLE 2);
 layout_simple!(Vector3<f64>: DOUBLE 3);
+layout_simple!(Point3<f64>: DOUBLE 3);
 layout_simple!(Vector4<f64>: DOUBLE 4);
 
 layout_simple!(i32: INT 1);
@@ -113,7 +117,9 @@ layout_simple!([i32; 2]: INT 2);
 layout_simple!([i32; 3]: INT 3);
 layout_simple!([i32; 4]: INT 4);
 layout_simple!(Vector2<i32>: INT 2);
+layout_simple!(Point2<i32>: INT 2);
 layout_simple!(Vector3<i32>: INT 3);
+layout_simple!(Point3<i32>: INT 3);
 layout_simple!(Vector4<i32>: INT 4);
 
 layout_simple!(u32: UNSIGNED_INT 1);
@@ -126,7 +132,9 @@ layout_simple!([u32; 2]: UNSIGNED_INT 2);
 layout_simple!([u32; 3]: UNSIGNED_INT 3);
 layout_simple!([u32; 4]: UNSIGNED_INT 4);
 layout_simple!(Vector2<u32>: UNSIGNED_INT 2);
+layout_simple!(Point2<u32>: UNSIGNED_INT 2);
 layout_simple!(Vector3<u32>: UNSIGNED_INT 3);
+layout_simple!(Point3<u32>: UNSIGNED_INT 3);
 layout_simple!(Vector4<u32>: UNSIGNED_INT 4);
 
 layout_simple!(i16: SHORT 1);
@@ -139,7 +147,9 @@ layout_simple!([i16; 2]: SHORT 2);
 layout_simple!([i16; 3]: SHORT 3);
 layout_simple!([i16; 4]: SHORT 4);
 layout_simple!(Vector2<i16>: SHORT 2);
+layout_simple!(Point2<i16>: SHORT 2);
 layout_simple!(Vector3<i16>: SHORT 3);
+layout_simple!(Point3<i16>: SHORT 3);
 layout_simple!(Vector4<i16>: SHORT 4);
 
 layout_simple!(u16: UNSIGNED_SHORT 1);
@@ -152,7 +162,9 @@ layout_simple!([u16; 2]: UNSIGNED_SHORT 2);
 layout_simple!([u16; 3]: UNSIGNED_SHORT 3);
 layout_simple!([u16; 4]: UNSIGNED_SHORT 4);
 layout_simple!(Vector2<u16>: UNSIGNED_SHORT 2);
+layout_simple!(Point2<u16>: UNSIGNED_SHORT 2);
 layout_simple!(Vector3<u16>: UNSIGNED_SHORT 3);
+layout_simple!(Point3<u16>: UNSIGNED_SHORT 3);
 layout_simple!(Vector4<u16>: UNSIGNED_SHORT 4);
 
 layout_simple!(i8: BYTE 1);
@@ -165,7 +177,9 @@ layout_simple!([i8; 2]: BYTE 2);
 layout_simple!([i8; 3]: BYTE 3);
 layout_simple!([i8; 4]: BYTE 4);
 layout_simple!(Vector2<i8>: BYTE 2);
+layout_simple!(Point2<i8>: BYTE 2);
 layout_simple!(Vector3<i8>: BYTE 3);
+layout_simple!(Point3<i8>: BYTE 3);
 layout_simple!(Vector4<i8>: BYTE 4);
 
 layout_simple!(u8: UNSIGNED_BYTE 1);
@@ -178,5 +192,7 @@ layout_simple!([u8; 2]: UNSIGNED_BYTE 2);
 layout_simple!([u8; 3]: UNSIGNED_BYTE 3);
 layout_simple!([u8; 4]: UNSIGNED_BYTE 4);
 layout_simple!(Vector2<u8>: UNSIGNED_BYTE 2);
+layout_simple!(Point2<u8>: UNSIGNED_BYTE 2);
 layout_simple!(Vector3<u8>: UNSIGNED_BYTE 3);
+layout_simple!(Point3<u8>: UNSIGNED_BYTE 3);
 layout_simple!(Vector4<u8>: UNSIGNED_BYTE 4);

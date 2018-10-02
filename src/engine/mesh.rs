@@ -39,11 +39,11 @@ impl<V: GlLayout, I: MeshIndex> GlMesh<V, I> {
         self.indices.upload(indices.as_ref(), usage_type)?;
 
         let stray_vertices = self.indices.len() % 3;
-        println!(
-            "Created Mesh: \n\tVertices: {}\n\tTriangles: {}\n\tStray Vertices: {}",
-            vertices.as_ref().len(),
-            indices.as_ref().len(),
-            stray_vertices);
+        // println!(
+        //     "Created Mesh: \n\tVertices: {}\n\tTriangles: {}\n\tStray Vertices: {}",
+        //     vertices.as_ref().len(),
+        //     indices.as_ref().len(),
+        //     stray_vertices);
 
         Ok(())
     }

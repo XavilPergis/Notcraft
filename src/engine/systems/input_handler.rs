@@ -5,7 +5,7 @@ use shrev::EventChannel;
 use engine::components::*;
 use engine::resources::*;
 use glfw::{Window, WindowEvent, Key, Action};
-use cgmath::Deg;
+use cgmath::{Deg, Vector3};
 
 pub struct SmoothCamera;
 
@@ -59,9 +59,10 @@ impl<'a> System<'a> for InputHandler {
         Write<'a, StopGameLoop>,
         Write<'a, ActiveDirections>,
         Write<'a, ViewFrustum, PanicHandler>,
+        Write<'a, ViewDistance, PanicHandler>,
     );
 
-    fn run(&mut self, (window_events, mut look_targets, mut move_deltas, mut cursor_pos, mut stop_flag, mut active_directions, mut frustum): Self::SystemData) {
+    fn run(&mut self, (window_events, mut look_targets, mut move_deltas, mut cursor_pos, mut stop_flag, mut active_directions, mut frustum, mut view_distance): Self::SystemData) {
         // for delta in (&mut look_deltas).join() { *delta = LookDelta::default(); }
         for delta in (&mut move_deltas).join() { *delta = MoveDelta::default(); }
 
@@ -92,6 +93,8 @@ impl<'a> System<'a> for InputHandler {
                         target.y += Deg(dx);
                     }
                 },
+
+                WindowEvent::Key(Key::RightBracket, _, Action::Press, _) => { view_distance.0 += Vector3::new(1, 1, 1); },
 
                 WindowEvent::Key(Key::W, _, Action::Press, _) => { active_directions.front = true; },
                 WindowEvent::Key(Key::S, _, Action::Press, _) => { active_directions.back = true; },

@@ -1,7 +1,7 @@
 #version 330 core
 
 #define MIN_AO 0.5
-#define AO_CURVE 0.9
+#define AO_CURVE 0.8
 
 uniform vec3 u_CameraPosition;
 uniform vec3 u_LightAmbient;
