@@ -129,7 +129,8 @@ impl<'a> System<'a> for TerrainGenerator {
             for xo in -dist.x..=dist.x {
                 for yo in -dist.y..=dist.y {
                     for zo in -dist.z..=dist.z {
-                        let pos = ::util::to_point(-transform.position.cast().unwrap() / chunk::SIZE as i32 + Vector3::new(xo, yo, zo));
+                        let (cpos, _) = ::engine::world::chunk_pos_offset(::util::to_point(transform.position.cast().unwrap()));
+                        let pos = cpos + Vector3::new(xo, yo, zo);
                         if !voxel_world.chunk_exists(pos) && !self.queue.contains(&pos) {
                             self.queue.insert(pos);
                             self.request_tx.send(pos).unwrap();

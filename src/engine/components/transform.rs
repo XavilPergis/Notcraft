@@ -27,7 +27,12 @@ impl Transform {
         Matrix4::from_nonuniform_scale(self.scale.x, self.scale.y, self.scale.z)
         * Matrix4::from_angle_x(self.orientation.x)
         * Matrix4::from_angle_y(self.orientation.y)
-        * Matrix4::from_translation(self.position)
+        * Matrix4::from_translation(-self.position)
+    }
+
+    pub fn rotation_matrix(&self) -> Matrix3<f64> {
+        Matrix3::from_angle_x(self.orientation.x)
+        * Matrix3::from_angle_y(self.orientation.y)
     }
 
     pub fn basis_vectors(&self) -> (Vector3<f64>, Vector3<f64>) {

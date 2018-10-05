@@ -1,3 +1,4 @@
+use engine::systems::debug_render::Shape;
 use shrev::EventChannel;
 use engine::mesh::Mesh;
 use engine::world::VoxelWorld;
@@ -5,7 +6,7 @@ use engine::world::block::{BlockRegistry, BlockRenderPrototype};
 use engine::world::chunk::SIZE;
 use engine::components as comp;
 use specs::prelude::*;
-use cgmath::{Point3, Vector2, Vector3};
+use cgmath::{Point3, Vector2, Vector3, Vector4};
 
 use nd;
 
@@ -24,12 +25,13 @@ impl<'a> System<'a> for ChunkMesher {
         ReadExpect<'a, VoxelWorld>,
         ReadExpect<'a, BlockRegistry>,
         Write<'a, EventChannel<(Entity, Mesh<BlockVertex, u32>)>>,
+        WriteExpect<'a, EventChannel<Shape>>,
         Entities<'a>,
     );
 
-    fn run(&mut self, (mut dirty_markers, chunk_ids, world, registry, mut mesh_channel, entities): Self::SystemData) {
-        // let mut cleaned = vec![];
-        for (_, comp::ChunkId(pos), entity) in (&dirty_markers, &chunk_ids, &*entities).join() {
+    fn run(&mut self, (mut dirty_markers, chunk_ids, world, registry, mut mesh_channel, mut debug_channel, entities): Self::SystemData) {
+        for (_, &comp::ChunkId(pos), entity) in (&dirty_markers, &chunk_ids, &*entities).join() {
+            debug_channel.single_write(Shape::Chunk(2.0, pos, Vector4::new(0.5, 0.5, 1.0, 1.0)));
             // Ensure that the surrounding volume of chunks exist before meshing this one.
             let mut surrounded = true;
             for x in -1..=1 {
@@ -41,8 +43,9 @@ impl<'a> System<'a> for ChunkMesher {
             }
 
             if surrounded {
+                debug_channel.single_write(Shape::Chunk(2.0, pos, Vector4::new(1.0, 0.0, 1.0, 1.0)));
                 println!("Chunk `{:?}` is ready for meshing", pos);
-                let mut mesher = GreedyMesher::new(*pos, &world, &registry);
+                let mut mesher = GreedyMesher::new(pos, &world, &registry);
                 mesher.mesh();
                 mesh_channel.single_write((entity, mesher.mesh_constructor.mesh));
                 dirty_markers.remove(entity);
@@ -129,6 +132,11 @@ impl MeshConstructor {
         // };
 
         let quad = match (flipped, top, axis) {
+            (false, false, Axis::X) => NORMAL_QUAD_CW,
+            (false, true, Axis::X) => NORMAL_QUAD_CCW,
+            (true, true, Axis::X) => FLIPPED_QUAD_CCW,
+            (true, false, Axis::X) => FLIPPED_QUAD_CW,
+
             (false, false, Axis::Y) => NORMAL_QUAD_CCW,
             (false, true, Axis::Y) => NORMAL_QUAD_CW,
             (true, true, Axis::Y) => FLIPPED_QUAD_CW,
@@ -138,11 +146,6 @@ impl MeshConstructor {
             (false, true, Axis::Z) => NORMAL_QUAD_CW,
             (true, true, Axis::Z) => FLIPPED_QUAD_CW,
             (true, false, Axis::Z) => FLIPPED_QUAD_CCW,
-
-            (false, false, Axis::X) => NORMAL_QUAD_CW,
-            (false, true, Axis::X) => NORMAL_QUAD_CCW,
-            (true, true, Axis::X) => FLIPPED_QUAD_CCW,
-            (true, false, Axis::X) => FLIPPED_QUAD_CW,
         };
 
         let index = self.index;
@@ -174,8 +177,8 @@ impl MeshConstructor {
 
         if axis == Axis::Y {
             push_vertex(Vector3::new(x,     y + fh, z    ), Vector2::new(0.0, 0.0), ao_nn);
-            push_vertex(Vector3::new(x + w, y + fh, z    ), Vector2::new(w,   0.0), ao_pn);
-            push_vertex(Vector3::new(x,     y + fh, z + h), Vector2::new(0.0, h  ), ao_np);
+            push_vertex(Vector3::new(x + w, y + fh, z    ), Vector2::new(w,   0.0), ao_np);
+            push_vertex(Vector3::new(x,     y + fh, z + h), Vector2::new(0.0, h  ), ao_pn);
             push_vertex(Vector3::new(x + w, y + fh, z + h), Vector2::new(w,   h  ), ao_pp);
         }
 
@@ -271,13 +274,82 @@ impl<'w, 'r> GreedyMesher<'w, 'r> {
         }
     }
 
+    fn face_ao(&self, pos: Point3<i32>, axis: Axis, offset: i32) -> u8 {
+        let mut dir = Vector3::new(0, 0, 0);
+        dir[axis as usize] = offset;
+
+        let r = |u, v| {
+            let mut vec = Vector3::new(0, 0, 0);
+            vec[(axis as usize + 1) % 3] = u;
+            vec[(axis as usize + 2) % 3] = v;
+            vec
+        };
+
+        let is_opaque = |pos| self.registry[self.world.get_block(pos)].opaque;
+
+        let neg_neg = is_opaque(pos + dir + r(-1, -1));
+        let neg_cen = is_opaque(pos + dir + r(-1,  0));
+        let neg_pos = is_opaque(pos + dir + r(-1,  1));
+        let pos_neg = is_opaque(pos + dir + r( 1, -1));
+        let pos_cen = is_opaque(pos + dir + r( 1,  0));
+        let pos_pos = is_opaque(pos + dir + r( 1,  1));
+        let cen_neg = is_opaque(pos + dir + r( 0, -1));
+        let cen_pos = is_opaque(pos + dir + r( 0,  1));
+
+        let face_pos_pos = ao_value(cen_pos, pos_pos, pos_cen); // c+ ++ +c
+        let face_pos_neg = ao_value(pos_cen, pos_neg, cen_neg); // +c +- c-
+        let face_neg_neg = ao_value(cen_neg, neg_neg, neg_cen); // c- -- -c
+        let face_neg_pos = ao_value(neg_cen, neg_pos, cen_pos); // -c -+ c+
+
+        
+        face_pos_pos << VoxelFace::AO_POS_POS |
+        face_pos_neg << VoxelFace::AO_POS_NEG |
+        face_neg_neg << VoxelFace::AO_NEG_NEG |
+        face_neg_pos << VoxelFace::AO_NEG_POS
+    }
+
     fn mesh(&mut self) {
-        for cy in 0..SIZE as i32 {
+        let size = SIZE as i32;
+
+        for cx in 0..size {
             let mut slice_has_faces = false;
             // compute "mask"
-            for cx in 0..SIZE as i32 {
-                for cz in 0..SIZE as i32 {
-                    let pos = SIZE as i32 * self.pos + Vector3::new(cx, cy, cz);
+            for cy in 0..size {
+                for cz in 0..size {
+                    let pos = size * self.pos + Vector3::new(cx, cy, cz);
+                    let Point3 { x, y, z } = pos;
+                    let mut bot_top = <[VoxelFace; 2]>::default();
+                    let block = self.world.get_block(pos);
+
+                    for (idx, &dir) in (&[-1, 1]).iter().enumerate() {
+                        let side = &mut bot_top[idx];
+                        let above = self.world.get_block(pos + Vector3::new(dir, 0, 0)); // HERE
+                        side.visible = !self.registry[above].opaque && self.registry[block].opaque;
+                        if side.visible {
+                            slice_has_faces = true;
+                            side.ao = self.face_ao(pos, Axis::X, dir);
+                        }
+
+                    }
+
+                    let (cy, cz) = (cy as usize, cz as usize);
+
+                    self.previous_slice[(cy, cz)] = bot_top[0];
+                    self.next_slice[(cy, cz)] = bot_top[1];
+                }
+            }
+
+            
+            // Generate mesh slice for "mask"
+            if slice_has_faces { self.process_slices(Axis::X, cx); }
+        }
+
+        for cy in 0..size {
+            let mut slice_has_faces = false;
+            // compute "mask"
+            for cx in 0..size {
+                for cz in 0..size {
+                    let pos = size * self.pos + Vector3::new(cx, cy, cz);
                     let Point3 { x, y, z } = pos;
                     let mut bot_top = <[VoxelFace; 2]>::default();
                     let block = self.world.get_block(pos);
@@ -288,27 +360,7 @@ impl<'w, 'r> GreedyMesher<'w, 'r> {
                         side.visible = !self.registry[above].opaque && self.registry[block].opaque;
                         if side.visible {
                             slice_has_faces = true;
-                            let is_opaque = |pos| self.registry[self.world.get_block(pos)].opaque;
-
-                            let neg_neg = is_opaque(Point3::new(x-1, y + dir, z-1));
-                            let neg_cen = is_opaque(Point3::new(x-1, y + dir, z  ));
-                            let neg_pos = is_opaque(Point3::new(x-1, y + dir, z+1));
-                            let pos_neg = is_opaque(Point3::new(x+1, y + dir, z-1));
-                            let pos_cen = is_opaque(Point3::new(x+1, y + dir, z  ));
-                            let pos_pos = is_opaque(Point3::new(x+1, y + dir, z+1));
-                            let cen_neg = is_opaque(Point3::new(x,   y + dir, z-1));
-                            let cen_pos = is_opaque(Point3::new(x,   y + dir, z+1));
-
-                            let face_pos_pos = ao_value(cen_pos, pos_pos, pos_cen); // c+ ++ +c
-                            let face_pos_neg = ao_value(pos_cen, pos_neg, cen_neg); // +c +- c-
-                            let face_neg_neg = ao_value(cen_neg, neg_neg, neg_cen); // c- -- -c
-                            let face_neg_pos = ao_value(neg_cen, neg_pos, cen_pos); // -c -+ c+
-
-                            side.ao =
-                                face_pos_pos << VoxelFace::AO_POS_POS
-                                | face_pos_neg << VoxelFace::AO_POS_NEG
-                                | face_neg_neg << VoxelFace::AO_NEG_NEG
-                                | face_neg_pos << VoxelFace::AO_NEG_POS
+                            side.ao = self.face_ao(pos, Axis::Y, dir);
                         }
 
                     }
@@ -324,18 +376,12 @@ impl<'w, 'r> GreedyMesher<'w, 'r> {
             if slice_has_faces { self.process_slices(Axis::Y, cy); }
         }
 
-
-
-
-
-
-
-        for cz in 0..SIZE as i32 {
+        for cz in 0..size {
             let mut slice_has_faces = false;
             // compute "mask"
-            for cx in 0..SIZE as i32 {
-                for cy in 0..SIZE as i32 {
-                    let pos = SIZE as i32 * self.pos + Vector3::new(cx, cy, cz);
+            for cx in 0..size {
+                for cy in 0..size {
+                    let pos = size * self.pos + Vector3::new(cx, cy, cz);
                     let Point3 { x, y, z } = pos;
                     let mut bot_top = <[VoxelFace; 2]>::default();
                     let block = self.world.get_block(pos);
@@ -346,27 +392,7 @@ impl<'w, 'r> GreedyMesher<'w, 'r> {
                         side.visible = !self.registry[above].opaque && self.registry[block].opaque;
                         if side.visible {
                             slice_has_faces = true;
-                            let is_opaque = |pos| self.registry[self.world.get_block(pos)].opaque;
-
-                            let neg_neg = is_opaque(Point3::new(x-1, y-1, z + dir));
-                            let neg_cen = is_opaque(Point3::new(x-1, y  , z + dir));
-                            let neg_pos = is_opaque(Point3::new(x-1, y+1, z + dir));
-                            let pos_neg = is_opaque(Point3::new(x+1, y-1, z + dir));
-                            let pos_cen = is_opaque(Point3::new(x+1, y  , z + dir));
-                            let pos_pos = is_opaque(Point3::new(x+1, y+1, z + dir));
-                            let cen_neg = is_opaque(Point3::new(x,   y-1, z + dir));
-                            let cen_pos = is_opaque(Point3::new(x,   y+1, z + dir));
-
-                            let face_pos_pos = ao_value(cen_pos, pos_pos, pos_cen); // c+ ++ +c
-                            let face_pos_neg = ao_value(pos_cen, pos_neg, cen_neg); // +c +- c-
-                            let face_neg_neg = ao_value(cen_neg, neg_neg, neg_cen); // c- -- -c
-                            let face_neg_pos = ao_value(neg_cen, neg_pos, cen_pos); // -c -+ c+
-
-                            side.ao =
-                                face_pos_pos << VoxelFace::AO_POS_POS
-                                | face_pos_neg << VoxelFace::AO_POS_NEG
-                                | face_neg_neg << VoxelFace::AO_NEG_NEG
-                                | face_neg_pos << VoxelFace::AO_NEG_POS
+                            side.ao = self.face_ao(pos, Axis::Z, dir);
                         }
 
                     }
@@ -380,64 +406,6 @@ impl<'w, 'r> GreedyMesher<'w, 'r> {
 
             // Generate mesh slice for "mask"
             if slice_has_faces { self.process_slices(Axis::Z, cz); }
-        }
-
-
-
-
-
-
-
-        for cx in 0..SIZE as i32 {
-            let mut slice_has_faces = false;
-            // compute "mask"
-            for cy in 0..SIZE as i32 {
-                for cz in 0..SIZE as i32 {
-                    let pos = SIZE as i32 * self.pos + Vector3::new(cx, cy, cz);
-                    let Point3 { x, y, z } = pos;
-                    let mut bot_top = <[VoxelFace; 2]>::default();
-                    let block = self.world.get_block(pos);
-
-                    for (idx, &dir) in (&[-1, 1]).iter().enumerate() {
-                        let side = &mut bot_top[idx];
-                        let above = self.world.get_block(pos + Vector3::new(dir, 0, 0)); // HERE
-                        side.visible = !self.registry[above].opaque && self.registry[block].opaque;
-                        if side.visible {
-                            slice_has_faces = true;
-                            let is_opaque = |pos| self.registry[self.world.get_block(pos)].opaque;
-
-                            let neg_neg = is_opaque(Point3::new(x + dir, y-1, z-1));
-                            let neg_cen = is_opaque(Point3::new(x + dir, y-1, z  ));
-                            let neg_pos = is_opaque(Point3::new(x + dir, y-1, z+1));
-                            let pos_neg = is_opaque(Point3::new(x + dir, y+1, z-1));
-                            let pos_cen = is_opaque(Point3::new(x + dir, y+1, z  ));
-                            let pos_pos = is_opaque(Point3::new(x + dir, y+1, z+1));
-                            let cen_neg = is_opaque(Point3::new(x + dir, y  , z-1));
-                            let cen_pos = is_opaque(Point3::new(x + dir, y  , z+1));
-                            
-                            let face_pos_pos = ao_value(cen_pos, pos_pos, pos_cen); // c+ ++ +c
-                            let face_pos_neg = ao_value(pos_cen, pos_neg, cen_neg); // +c +- c-
-                            let face_neg_neg = ao_value(cen_neg, neg_neg, neg_cen); // c- -- -c
-                            let face_neg_pos = ao_value(neg_cen, neg_pos, cen_pos); // -c -+ c+
-
-                            side.ao =
-                                face_pos_pos << VoxelFace::AO_POS_POS
-                                | face_pos_neg << VoxelFace::AO_POS_NEG
-                                | face_neg_neg << VoxelFace::AO_NEG_NEG
-                                | face_neg_pos << VoxelFace::AO_NEG_POS
-                        }
-
-                    }
-
-                    let (cy, cz) = (cy as usize, cz as usize);
-
-                    self.previous_slice[(cy, cz)] = bot_top[0];
-                    self.next_slice[(cy, cz)] = bot_top[1];
-                }
-            }
-
-            // Generate mesh slice for "mask"
-            if slice_has_faces { self.process_slices(Axis::X, cx); }
         }
 
 
@@ -541,39 +509,39 @@ impl<'w, 'r> GreedyMesher<'w, 'r> {
         // }
     }
 
-    fn generate_face<F: Fn(i32, i32) -> Point3<i32>>(&mut self, offset: Vector3<i32>, dir: Vector3<i32>, next: bool, slice_index: (usize, usize), mapper: F) {
-        let pos = SIZE as i32 * self.pos + offset;
-        let Point3 { x, y, z } = pos;
-        let block = self.world.get_block(pos);
-        let mut side = VoxelFace::default();
+    // fn generate_face<F: Fn(i32, i32) -> Point3<i32>>(&mut self, offset: Vector3<i32>, dir: Vector3<i32>, next: bool, slice_index: (usize, usize), mapper: F) {
+    //     let pos = SIZE as i32 * self.pos + offset;
+    //     let Point3 { x, y, z } = pos;
+    //     let block = self.world.get_block(pos);
+    //     let mut side = VoxelFace::default();
 
-        let above = self.world.get_block(pos + dir); // HERE
-        side.visible = !self.registry[above].opaque && self.registry[block].opaque;
-        if side.visible {
-            let is_opaque = |u, v| self.registry[self.world.get_block(mapper(u, v) + dir)].opaque; // HERE
+    //     let above = self.world.get_block(pos + dir); // HERE
+    //     side.visible = !self.registry[above].opaque && self.registry[block].opaque;
+    //     if side.visible {
+    //         let is_opaque = |u, v| self.registry[self.world.get_block(mapper(u, v) + dir)].opaque; // HERE
 
-            let neg_neg = is_opaque(y-1, z-1);
-            let neg_cen = is_opaque(y-1, z, );
-            let neg_pos = is_opaque(y-1, z+1);
-            let pos_neg = is_opaque(y+1, z-1);
-            let pos_cen = is_opaque(y+1, z, );
-            let pos_pos = is_opaque(y+1, z+1);
-            let cen_neg = is_opaque(y,   z-1);
-            let cen_pos = is_opaque(y,   z+1);
+    //         let neg_neg = is_opaque(y-1, z-1);
+    //         let neg_cen = is_opaque(y-1, z, );
+    //         let neg_pos = is_opaque(y-1, z 1);
+    //         let pos_neg = is_opaque(y 1, z-1);
+    //         let pos_cen = is_opaque(y 1, z, );
+    //         let pos_pos = is_opaque(y 1, z 1);
+    //         let cen_neg = is_opaque(y,   z-1);
+    //         let cen_pos = is_opaque(y,   z 1);
 
-            let face_pos_pos = ao_value(cen_pos, pos_pos, pos_cen); // c+ ++ +c
-            let face_pos_neg = ao_value(pos_cen, pos_neg, cen_neg); // +c +- c-
-            let face_neg_neg = ao_value(cen_neg, neg_neg, neg_cen); // c- -- -c
-            let face_neg_pos = ao_value(neg_cen, neg_pos, cen_pos); // -c -+ c+
+    //         let face_pos_pos = ao_value(cen_pos, pos_pos, pos_cen); // c+ ++ +c
+    //         let face_pos_neg = ao_value(pos_cen, pos_neg, cen_neg); // +c +- c-
+    //         let face_neg_neg = ao_value(cen_neg, neg_neg, neg_cen); // c- -- -c
+    //         let face_neg_pos = ao_value(neg_cen, neg_pos, cen_pos); // -c -+ c+
 
-            side.ao =
-                face_pos_pos << VoxelFace::AO_POS_POS
-                | face_pos_neg << VoxelFace::AO_POS_NEG
-                | face_neg_neg << VoxelFace::AO_NEG_NEG
-                | face_neg_pos << VoxelFace::AO_NEG_POS
-        }
+    //         side.ao =
+    //             face_pos_pos << VoxelFace::AO_POS_POS
+    //             | face_pos_neg << VoxelFace::AO_POS_NEG
+    //             | face_neg_neg << VoxelFace::AO_NEG_NEG
+    //             | face_neg_pos << VoxelFace::AO_NEG_POS
+    //     }
 
-        let slice = if next { &mut self.next_slice } else { &mut self.previous_slice };
-        slice[slice_index] = side;
-    }
+    //     let slice = if next { &mut self.next_slice } else { &mut self.previous_slice };
+    //     slice[slice_index] = side;
+    // }
 }

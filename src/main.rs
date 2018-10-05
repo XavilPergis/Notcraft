@@ -79,7 +79,7 @@ impl<'a> System<'a> for TerrainRenderSystem {
             let aspect_ratio = framebuffer_size.x as f32 / framebuffer_size.y as f32;
             let projection = ::cgmath::perspective(Deg(frustum.fov.0 as f32), aspect_ratio, frustum.near_plane as f32, frustum.far_plane as f32);
             self.program.set_uniform("u_Projection", &projection);
-            self.program.set_uniform("u_CameraPosition", &-player_transform.position.cast::<f32>().unwrap());
+            self.program.set_uniform("u_CameraPosition", &player_transform.position.cast::<f32>().unwrap());
             for (mesh, tfm) in (&meshes, &transforms).join() {
                 let mesh = self.pool.fetch(mesh);
                 let tfm: Matrix4<f32> = tfm.as_matrix().cast::<f32>().unwrap();
