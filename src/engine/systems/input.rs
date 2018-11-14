@@ -210,8 +210,8 @@ impl<'a> System<'a> for InputHandler {
                         }
                         if KEYBIND_TOGGLE_WIREFRAME.matches_input(*input) {
                             info!("Toggled wireframe rendering");
-                            set_wireframe(self.wireframe);
                             self.wireframe = !self.wireframe;
+                            set_wireframe(self.wireframe);
                         }
                     }
 
@@ -246,11 +246,7 @@ impl<'a> System<'a> for InputHandler {
                         }
                     }
 
-                    // Event::Key(Key::F2, _, Action::Press, _) => { self.wireframe = !self.wireframe; set_wireframe(self.wireframe); },
                     // Event::Key(Key::F3, _, Action::Press, _) => { self.capture_mouse = !self.capture_mouse; set_mouse_capture(&mut *self.window.lock().unwrap(), self.capture_mouse) },
-                    // Event::Key(Key::Z, _, Action::Press, _) => frustum.fov = Deg(20.0),
-                    // Event::Key(Key::Z, _, Action::Release, _) => frustum.fov = Deg(80.0),
-
                     // Event::Key(Key::RightBracket, _, Action::Press, _) => { view_distance.0 += Vector3::new(1, 1, 1); },
                     _ => {}
                 }
