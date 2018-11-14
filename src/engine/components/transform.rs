@@ -1,7 +1,8 @@
 use cgmath::{Deg, Matrix3, Matrix4, Vector2, Vector3, Zero};
 use specs::prelude::*;
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Component)]
+#[storage(DenseVecStorage)]
 pub struct Transform {
     pub position: Vector3<f64>,
     pub orientation: Vector2<Deg<f64>>,
@@ -16,10 +17,6 @@ impl Default for Transform {
             scale: Vector3::new(1.0, 1.0, 1.0),
         }
     }
-}
-
-impl Component for Transform {
-    type Storage = DenseVecStorage<Self>;
 }
 
 impl Transform {

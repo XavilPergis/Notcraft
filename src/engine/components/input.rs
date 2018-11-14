@@ -1,11 +1,12 @@
+use cgmath::Deg;
 use cgmath::Vector3;
 use specs::prelude::*;
-use cgmath::Deg;
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Component)]
+#[storage(HashMapStorage)]
 pub struct LookTarget {
     pub x: Deg<f64>,
-    pub y: Deg<f64>
+    pub y: Deg<f64>,
 }
 
 impl Default for LookTarget {
@@ -17,11 +18,8 @@ impl Default for LookTarget {
     }
 }
 
-impl Component for LookTarget {
-    type Storage = HashMapStorage<Self>;
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Component)]
+#[storage(HashMapStorage)]
 pub struct MoveDelta(pub Vector3<f64>);
 
 impl Default for MoveDelta {
@@ -30,11 +28,8 @@ impl Default for MoveDelta {
     }
 }
 
-impl Component for MoveDelta {
-    type Storage = HashMapStorage<Self>;
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Default, Component)]
+#[storage(HashMapStorage)]
 pub struct ActiveDirections {
     pub front: bool,
     pub back: bool,
@@ -42,8 +37,4 @@ pub struct ActiveDirections {
     pub right: bool,
     pub down: bool,
     pub up: bool,
-}
-
-impl Component for ActiveDirections {
-    type Storage = HashMapStorage<Self>;
 }

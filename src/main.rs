@@ -20,6 +20,10 @@ extern crate shrev;
 extern crate specs;
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate specs_derive;
+#[macro_use]
+extern crate shred_derive;
 extern crate simple_logger;
 
 #[macro_use]
@@ -141,7 +145,7 @@ fn main() {
     let context = glutin::ContextBuilder::new().with_vsync(true);
     let gl_window = glutin::GlWindow::new(window, context, &events_loop).unwrap();
 
-    gl_window.grab_cursor(true).unwrap();
+    // gl_window.grab_cursor(true).unwrap();
     // let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
 
     // glfw.window_hint(WindowHint::ContextVersion(4, 5));
