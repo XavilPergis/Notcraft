@@ -1,6 +1,6 @@
-use engine::ChunkPos;
-use noise::NoiseFn;
 use engine::world::Chunk;
+use engine::world::ChunkPos;
+use noise::NoiseFn;
 
 pub trait ChunkGenerator<T> {
     fn generate(&self, pos: ChunkPos) -> Chunk<T>;
@@ -20,8 +20,8 @@ impl<N: NoiseFn<[f64; 3]>> NoiseFn<[f64; 3]> for OctaveNoise<N> {
         let x = point[0];
         let y = point[1];
         let z = point[2];
-        
-        for octave in 0..self.octaves-1 {
+
+        for octave in 0..self.octaves - 1 {
             let x = x * self.lacunarity.powf(octave as f64);
             let y = y * self.lacunarity.powf(octave as f64);
             let z = z * self.lacunarity.powf(octave as f64);
@@ -37,8 +37,8 @@ impl<N: NoiseFn<[f64; 2]>> NoiseFn<[f64; 2]> for OctaveNoise<N> {
         let mut total = 0.0;
         let x = point[0];
         let z = point[1];
-        
-        for octave in 0..self.octaves-1 {
+
+        for octave in 0..self.octaves - 1 {
             let x = x * self.lacunarity.powf(octave as f64);
             let z = z * self.lacunarity.powf(octave as f64);
             total += self.height * self.persistance.powf(octave as f64) * self.noise.get([x, z]);

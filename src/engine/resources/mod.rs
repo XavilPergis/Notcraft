@@ -17,12 +17,6 @@ pub struct ViewFrustum {
     pub far_plane: f64,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
-pub struct FramebufferSize {
-    pub x: f64,
-    pub y: f64,
-}
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ViewDistance(pub Vector3<i32>);
 

@@ -1,5 +1,5 @@
+use cgmath::{Deg, Matrix3, Matrix4, Vector2, Vector3, Zero};
 use specs::prelude::*;
-use cgmath::{Vector3, Vector2, Deg, Matrix4, Matrix3, Zero};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Transform {
@@ -25,9 +25,9 @@ impl Component for Transform {
 impl Transform {
     pub fn as_matrix(&self) -> Matrix4<f64> {
         Matrix4::from_nonuniform_scale(self.scale.x, self.scale.y, self.scale.z)
-        * Matrix4::from_angle_x(self.orientation.x)
-        * Matrix4::from_angle_y(self.orientation.y)
-        * Matrix4::from_translation(self.position)
+            * Matrix4::from_angle_x(self.orientation.x)
+            * Matrix4::from_angle_y(self.orientation.y)
+            * Matrix4::from_translation(-self.position)
     }
 
     pub fn basis_vectors(&self) -> (Vector3<f64>, Vector3<f64>) {

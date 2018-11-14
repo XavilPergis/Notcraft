@@ -2,7 +2,6 @@
 name = "noisy"
 version = "0.1.0"
 authors = ["XavilPergis <max.duzen@gmail.com>"]
-build = "build.rs"
 
 [dependencies]
 gl = "0.10.0"
@@ -19,18 +18,12 @@ rand = "0.5.5"
 flame = "0.2.2"
 ndarray = "0.12.0"
 new-ordered-float = "1.0.2"
+glutin = "0.18.0"
+specs-derive = "0.2.0"
+shred-derive = "0.5.0"
+log = "0.4.6"
+simple_logger = "1.0.1"
 
 [dependencies.specs]
 version = "0.12.1"
 features = ["nightly"]
-
-[dependencies.glfw]
-git = "https://github.com/bjz/glfw-rs.git"
-default-features = false
-
-# [target.'cfg(windows)'.dependencies.glfw]
-# git = "https://github.com/bjz/glfw-rs.git"
-# default-features = false
-
-# [target.'cfg(not(windows))'.dependencies.glfw]
-# git = "https://github.com/bjz/glfw-rs.git"

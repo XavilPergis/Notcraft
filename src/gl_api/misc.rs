@@ -11,7 +11,9 @@ pub enum PolygonMode {
 
 pub fn polygon_mode(mode: PolygonMode) {
     // Invalid enums are not possible here; GL_FRONT_AND_BACK is valid, and `mode` is a valid enum
-    unsafe { gl::PolygonMode(gl::FRONT_AND_BACK, mode as u32); }
+    unsafe {
+        gl::PolygonMode(gl::FRONT_AND_BACK, mode as u32);
+    }
 }
 
 pub enum ClearMode {
@@ -29,9 +31,7 @@ pub fn clear(mode: ClearMode) {
             ClearMode::Depth(n) => {
                 gl::Clear(gl::DEPTH_BUFFER_BIT);
                 gl::ClearDepth(n);
-            }
-            // TODO: stencil buffer
+            } // TODO: stencil buffer
         }
     }
 }
-

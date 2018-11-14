@@ -1,4 +1,4 @@
-use cgmath::{Vector2, Vector3, Vector4, Matrix2, Matrix3, Matrix4};
+use cgmath::{Matrix2, Matrix3, Matrix4, Vector2, Vector3, Vector4};
 
 pub type UniformLocation = ::gl::types::GLint;
 
@@ -11,7 +11,9 @@ impl<'a> Uniform for &'a [f32] {
         unsafe {
             ::gl::Uniform1fv(location, self.len() as i32, self.as_ptr());
             let error = ::gl::GetError();
-            if error != 0 { panic!("[f32] OpenGL Returned error {}", error); }
+            if error != 0 {
+                panic!("[f32] OpenGL Returned error {}", error);
+            }
         }
     }
 }
@@ -20,7 +22,9 @@ impl Uniform for [(f32, f32)] {
         unsafe {
             ::gl::Uniform2fv(location, self.len() as i32, self.as_ptr() as *const f32);
             let error = ::gl::GetError();
-            if error != 0 { panic!("OpenGL Returned error {}", error); }
+            if error != 0 {
+                panic!("OpenGL Returned error {}", error);
+            }
         }
     }
 }
@@ -29,7 +33,9 @@ impl<'a> Uniform for &'a [Vector3<f32>] {
         unsafe {
             ::gl::Uniform3fv(location, self.len() as i32, self.as_ptr() as *const f32);
             let error = ::gl::GetError();
-            if error != 0 { panic!("[Vector3<f32>] OpenGL Returned error {}", error); }
+            if error != 0 {
+                panic!("[Vector3<f32>] OpenGL Returned error {}", error);
+            }
         }
     }
 }

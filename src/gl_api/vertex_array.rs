@@ -1,68 +1,66 @@
-use super::error::GlResult;
-use std::mem;
-use gl;
-use gl::types::*;
-use gl_api::buffer::VertexBuffer;
-use gl_api::layout::{AttributeLayout, GlLayout};
+use gl_api::buffer::Buffer;
+use gl_api::context::Context;
+use gl_api::layout::{AttributeFormat, Layout};
+use gl_api::objects::RawVertexArray;
+use std::marker::PhantomData;
 
-#[derive(Debug)]
-pub struct VertexArray {
-    pub(crate) id: GLuint,
-    index: usize,
+// NOTE: this vertex array type only supports one vertex buffer bound at binding index 0 (for now at least)
+#[derive(Debug, Eq, PartialEq)]
+pub struct VertexArray<V> {
+    crate raw: RawVertexArray,
+    attribs: Vec<AttributeFormat>,
+    _marker: PhantomData<V>,
 }
 
-impl !Send for VertexArray {}
-impl !Sync for VertexArray {}
+impl<V: Layout> VertexArray<V> {
+    pub fn for_vertex_type(ctx: &Context) -> Self {
+        let vao = VertexArray {
+            raw: RawVertexArray::new(ctx),
+            attribs: V::layout(),
+            _marker: PhantomData,
+        };
 
-impl VertexArray {
-    pub fn new() -> Self {
-        let mut id = 0;
-        // UNWRAP: Can only fail if count is negative
-        unsafe { gl_call!(GenVertexArrays(1, &mut id)).unwrap(); }
-        VertexArray { id, index: 0 }
+        // TODO: is this actually correct?
+        let mut byte_offset = 0;
+        for (attr, fmt) in vao.attribs.iter().enumerate() {
+            vao.enable_attribute(attr);
+            vao.set_attribute_format(attr, *fmt, byte_offset);
+            vao.set_attribute_binding(attr, 0);
+            byte_offset += fmt.size();
+        }
+
+        vao
+    }
+
+    fn enable_attribute(&self, attr: usize) {
+        gl_call!(assert EnableVertexArrayAttrib(self.raw.id, attr as u32));
+    }
+
+    fn set_attribute_binding(&self, attr: usize, binding: usize) {
+        gl_call!(assert VertexArrayAttribBinding(self.raw.id, attr as u32, binding as u32));
+    }
+
+    fn set_attribute_format(&self, attr: usize, fmt: AttributeFormat, offset: usize) {
+        if fmt.ty.is_integer() {
+            gl_call!(assert VertexArrayAttribIFormat(self.raw.id, attr as u32, fmt.dim as i32, fmt.ty as u32, offset as u32));
+        } else {
+            gl_call!(assert VertexArrayAttribFormat(self.raw.id, attr as u32, fmt.dim as i32, fmt.ty as u32, gl::FALSE, offset as u32));
+        }
     }
 
     pub fn bind(&self) {
         // UNWRAP: our ID should always be valid
-        unsafe { gl_call!(BindVertexArray(self.id)).unwrap(); }
+        gl_call!(debug BindVertexArray(self.raw.id));
     }
 
-    unsafe fn attrib_ipointer<T>(&self, layout: AttributeLayout) -> GlResult<()> {
-        let index = self.index as u32;
-        let size = mem::size_of::<T>() as i32;
-        let offset = layout.attrib_offset as *const _;
-        gl_call!(VertexAttribIPointer(index, layout.attrib_size, layout.attrib_type, size, offset))
+    pub fn set_buffer(&mut self, buffer: &Buffer<V>) {
+        // all of our attributes are on binding index 0 (second param)
+        // the data will start at the first element of the buffer (fourth param)
+        gl_call!(assert VertexArrayVertexBuffer(self.raw.id, 0, buffer.raw.id, 0, ::std::mem::size_of::<V>() as i32));
     }
 
-    unsafe fn attrib_pointer<T>(&self, layout: AttributeLayout, normalized: bool) -> GlResult<()> {
-        let index = self.index as u32;
-        let size = mem::size_of::<T>() as i32;
-        let offset = layout.attrib_offset as *const _;
-        let normalized = normalized as u8;
-        gl_call!(VertexAttribPointer(index, layout.attrib_size, layout.attrib_type, normalized, size, offset))
-    }
-
-    pub fn add_buffer<T: GlLayout>(&mut self, buffer: &VertexBuffer<T>) -> GlResult<()> {
-        self.bind();
-        buffer.bind();
-
-        for element in T::layout() {
-            unsafe {
-                // Can fail if `self.index` is greater than `glGet(GL_MAX_VERTEX_ATTRIBS)`
-                gl_call!(EnableVertexAttribArray(self.index as GLuint))?;
-                // TODO: this feels like a hack
-                match element.attrib_type {
-                    | gl::BYTE | gl::UNSIGNED_BYTE
-                    | gl::SHORT | gl::UNSIGNED_SHORT
-                    | gl::INT | gl::UNSIGNED_INT
-                      => self.attrib_ipointer::<T>(element)?,
-                    _ => self.attrib_pointer::<T>(element, false)?,
-                }
-            }
-
-            self.index += 1;
-        }
-
-        Ok(())
+    pub fn with_buffer(mut self, buffer: &Buffer<V>) -> Self {
+        self.set_buffer(buffer);
+        self
     }
 }

@@ -1,36 +1,22 @@
-use engine::systems::debug_render::Shape;
-use shrev::EventChannel;
 use cgmath::Point3;
-use specs::world::EntitiesRes;
-use engine::world::VoxelWorld;
 use cgmath::{Vector3, Vector4};
-use specs::prelude::*;
-use std::sync::mpsc;
-use std::collections::HashSet;
-use engine::world::{chunk, Chunk, ChunkPos, block::BlockId};
 use engine::components::*;
 use engine::resources::*;
-
-use noise::{Fbm, SuperSimplex, MultiFractal, NoiseFn};
+use engine::systems::debug_render::Shape;
+use engine::world::block;
+use engine::world::VoxelWorld;
+use engine::world::{block::BlockId, chunk, Chunk, ChunkPos};
+use noise::{Fbm, MultiFractal, NoiseFn, SuperSimplex};
+use shrev::EventChannel;
+use specs::prelude::*;
+use specs::world::EntitiesRes;
+use std::collections::HashSet;
+use std::sync::mpsc;
 
 pub struct NoiseGenerator {
     noise: Fbm,
     biome_noise: SuperSimplex,
 }
-
-fn smoothstep(x: f64, curve: f64, center: f64) -> f64 {
-    // let c = (2.0 / (1.0 - curve)) - 1.0;
-    // let f = |x: f64, n: f64| x.powf(c) - n.powf(c - 1.0);
-
-    // if x > center {
-    //     f(x, center)
-    // } else {
-    //     1.0 - f(1.0 - x, 1.0 - center)
-    // }
-    x
-}
-
-use engine::world::block;
 
 impl NoiseGenerator {
     pub fn new_default() -> Self {
@@ -50,32 +36,43 @@ impl NoiseGenerator {
 
         // let noise = (min + biome_noise * (max - min)) - pos.y;
         let noise = self.noise.get([pos.x, pos.y, pos.z]);
-        let block_noise = self.biome_noise.get([pos.x / 2.0, pos.y / 2.0, pos.z / 2.0]);
+        let block_noise = self
+            .biome_noise
+            .get([pos.x / 2.0, pos.y / 2.0, pos.z / 2.0]);
 
-        let block = if block_noise > 0.33 { block::GRASS }
-        else if block_noise > -0.33 { block::DIRT }
-        else { block::STONE };
+        let block = if block_noise > 0.33 {
+            block::GRASS
+        } else if block_noise > -0.33 {
+            block::DIRT
+        } else {
+            block::STONE
+        };
 
-        if noise > 0.0 { block }
+        if noise > 0.0 {
+            block
+        }
         // else if noise > 1.0 { block::DIRT }
         // else if noise > 0.0 { block::GRASS }
-        else { block::AIR }
+        else {
+            block::AIR
+        }
     }
 
     fn pos_at_block(pos: ChunkPos, offset: Vector3<usize>) -> Point3<f64> {
         const SIZE: i32 = chunk::SIZE as i32;
-        let x = ((SIZE*pos.x) as f64 + offset.x as f64) / SIZE as f64;
-        let y = ((SIZE*pos.y) as f64 + offset.y as f64) / SIZE as f64;
-        let z = ((SIZE*pos.z) as f64 + offset.z as f64) / SIZE as f64;
+        let x = ((SIZE * pos.x) as f64 + offset.x as f64) / SIZE as f64;
+        let y = ((SIZE * pos.y) as f64 + offset.y as f64) / SIZE as f64;
+        let z = ((SIZE * pos.z) as f64 + offset.z as f64) / SIZE as f64;
         Point3::new(x, y, z)
     }
 }
 
 impl ChunkGenerator<BlockId> for NoiseGenerator {
     fn generate_chunk(&self, pos: ChunkPos) -> Chunk<BlockId> {
-        Chunk::new(::nd::Array3::from_shape_fn((chunk::SIZE, chunk::SIZE, chunk::SIZE), |coord| {
-            self.block_at(Self::pos_at_block(pos, coord.into()))
-        }))
+        Chunk::new(::nd::Array3::from_shape_fn(
+            (chunk::SIZE, chunk::SIZE, chunk::SIZE),
+            |coord| self.block_at(Self::pos_at_block(pos, coord.into())),
+        ))
     }
 }
 
@@ -104,13 +101,14 @@ impl TerrainGenerator {
                 }
             }
         });
-        
+
         TerrainGenerator {
-            chunk_rx, request_tx, queue: HashSet::default()
+            chunk_rx,
+            request_tx,
+            queue: HashSet::default(),
         }
     }
 }
-
 
 impl<'a> System<'a> for TerrainGenerator {
     type SystemData = (
@@ -123,13 +121,19 @@ impl<'a> System<'a> for TerrainGenerator {
         WriteExpect<'a, EventChannel<Shape>>,
     );
 
-    fn run(&mut self, (mut voxel_world, players, transforms, view_distance, lazy, entity_res, mut debug_channel): Self::SystemData) {
+    fn run(
+        &mut self,
+        (mut voxel_world, players, transforms, view_distance, lazy, entity_res, mut debug_channel): Self::SystemData,
+    ) {
         let dist = view_distance.0;
         for (_, transform) in (&players, &transforms).join() {
             for xo in -dist.x..=dist.x {
                 for yo in -dist.y..=dist.y {
                     for zo in -dist.z..=dist.z {
-                        let pos = ::util::to_point(-transform.position.cast().unwrap() / chunk::SIZE as i32 + Vector3::new(xo, yo, zo));
+                        let (cpos, _) = ::engine::world::chunk_pos_offset(::util::to_point(
+                            transform.position.cast().unwrap(),
+                        ));
+                        let pos = cpos + Vector3::new(xo, yo, zo);
                         if !voxel_world.chunk_exists(pos) && !self.queue.contains(&pos) {
                             self.queue.insert(pos);
                             self.request_tx.send(pos).unwrap();
@@ -140,13 +144,21 @@ impl<'a> System<'a> for TerrainGenerator {
         }
 
         for item in self.queue.iter() {
-            debug_channel.single_write(Shape::Chunk(2.0, item.cast().unwrap(), Vector4::new(1.0, 0.0, 0.0, 1.0)));
+            debug_channel.single_write(Shape::Chunk(
+                2.0,
+                item.cast().unwrap(),
+                Vector4::new(1.0, 0.0, 0.0, 1.0),
+            ));
         }
 
         for (pos, chunk) in self.chunk_rx.try_iter() {
             voxel_world.set_chunk(pos, chunk);
             self.queue.remove(&pos);
-            lazy.create_entity(&entity_res).with(ChunkId(pos)).with(DirtyMesh).with(Transform::default()).build();
+            lazy.create_entity(&entity_res)
+                .with(ChunkId(pos))
+                .with(DirtyMesh)
+                .with(Transform::default())
+                .build();
         }
     }
 }

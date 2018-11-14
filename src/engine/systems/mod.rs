@@ -1,12 +1,10 @@
-mod player_controller;
-mod input_handler;
-mod window_info;
-mod physics;
-pub mod mesher;
-pub mod terrain_gen;
 pub mod debug_render;
+mod input;
+pub mod mesher;
+mod physics;
+mod player_controller;
+pub mod terrain_gen;
 
-pub use self::player_controller::PlayerController;
-pub use self::input_handler::{InputHandler, SmoothCamera};
-pub use self::window_info::ViewportUpdater;
+pub use self::input::{InputHandler, LockCursor, SmoothCamera};
 pub use self::physics::RigidBodyUpdater;
+pub use self::player_controller::PlayerController;
