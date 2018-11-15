@@ -92,8 +92,6 @@ impl<'w, 'r> CullMesher<'w, 'r> {
     }
 
     fn face_ao(&self, pos: Point3<i32>, side: Side) -> FaceAo {
-        let dir: Vector3<i32> = side.normal();
-
         let is_opaque = |pos| self.registry[self.world.get_block(pos)].opaque;
 
         let neg_neg = is_opaque(pos + side.uvl_to_xyz(-1, -1, 1));

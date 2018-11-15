@@ -56,7 +56,6 @@ use shrev::EventChannel;
 use specs::prelude::*;
 use specs::shred::PanicHandler;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 impl Component for Handle<GlMesh<BlockVertex, u32>> {
@@ -111,7 +110,6 @@ impl<'a> System<'a> for TerrainRenderSystem {
                 .unwrap();
         }
 
-        let mut counter = 0;
         if let Some(player_transform) = player_transform {
             let aspect_ratio = ::util::aspect_ratio(&window).unwrap() as f32;
             let projection = ::cgmath::perspective(
@@ -131,9 +129,7 @@ impl<'a> System<'a> for TerrainRenderSystem {
                 let view_matrix: Matrix4<f32> = player_transform.as_matrix().cast::<f32>().unwrap();
                 self.program.set_uniform("u_View", &view_matrix);
                 self.program.set_uniform("u_Transform", &tfm);
-                // println!("{:?}", mesh);
                 mesh.draw_with(&self.program);
-                counter += 1;
             }
         }
     }
@@ -149,20 +145,10 @@ fn main() {
     let gl_window = glutin::GlWindow::new(window, context, &events_loop).unwrap();
 
     // gl_window.grab_cursor(true).unwrap();
-    // let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
-
-    // glfw.window_hint(WindowHint::ContextVersion(4, 5));
-    // glfw.window_hint(WindowHint::DepthBits(Some(24)));
-    // glfw.window_hint(WindowHint::Samples(Some(4)));
-
-    // let (mut window, events) = glfw.create_window(600, 600, "Not Minecraft", glfw::WindowMode::Windowed)
-    //     .expect("Failed to create GLFW window.");
-    // println!("Window created");
 
     unsafe {
         gl_window.make_current().unwrap();
     }
-    // glfw.set_swap_interval(SwapInterval::Sync(1));
 
     // Load OpenGL function pointers.
     // good *god* this function takes a long time fo compile

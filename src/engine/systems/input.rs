@@ -1,8 +1,6 @@
 use cgmath::Deg;
 use engine::components::*;
 use engine::resources::*;
-use glutin::dpi::LogicalPosition;
-use glutin::GlWindow;
 use glutin::{ElementState, Event, KeyboardInput, ModifiersState, VirtualKeyCode, WindowEvent};
 use shrev::EventChannel;
 use specs::prelude::*;
@@ -195,7 +193,6 @@ impl<'a> System<'a> for InputHandler {
             player,
         ): Self::SystemData,
     ) {
-        // for delta in (&mut look_deltas).join() { *delta = LookDelta::default(); }
         for delta in (&mut move_deltas).join() {
             *delta = MoveDelta::default();
         }
@@ -311,23 +308,15 @@ impl LockCursor {
 use glutin::DeviceEvent;
 
 impl<'a> System<'a> for LockCursor {
-    type SystemData = (
-        Read<'a, EventChannel<Event>>,
-        WriteExpect<'a, GlWindow>,
-        WriteStorage<'a, LookTarget>,
-    );
+    type SystemData = (Read<'a, EventChannel<Event>>, WriteStorage<'a, LookTarget>);
 
-    fn run(&mut self, (events, window, mut look_targets): Self::SystemData) {
+    fn run(&mut self, (events, mut look_targets): Self::SystemData) {
         for event in events.read(&mut self.reader) {
             match event {
                 &Event::DeviceEvent {
                     event: DeviceEvent::MouseMotion { delta: (dx, dy) },
                     ..
                 } => {
-                    let size = window.get_inner_size().unwrap();
-                    let center = LogicalPosition::new(size.width / 2.0, size.height / 2.0);
-                    // window.set_cursor_position(center).unwrap();
-
                     for target in (&mut look_targets).join() {
                         // Ok, I know this looks weird, but `target` describes which *axis* should be rotated around.
                         // It just so happens that the Y coordinate of the mouse corresponds to a rotation around the X axis
