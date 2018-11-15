@@ -130,6 +130,15 @@ const KEYBIND_EXIT: Keybind = Keybind {
         logo: false,
     }),
 };
+const KEYBIND_DEBUG: Keybind = Keybind {
+    key: Key::Virtual(VirtualKeyCode::B),
+    modifiers: Some(ModifiersState {
+        shift: false,
+        ctrl: true,
+        alt: false,
+        logo: false,
+    }),
+};
 
 const KEYBIND_TOGGLE_WIREFRAME: Keybind = Keybind {
     key: Key::Virtual(VirtualKeyCode::F),
@@ -141,6 +150,28 @@ const KEYBIND_TOGGLE_WIREFRAME: Keybind = Keybind {
     }),
 };
 
+use engine::components as comp;
+
+#[derive(SystemData)]
+pub struct ReadClientPlayer<'a> {
+    client_controlled: ReadStorage<'a, comp::ClientControlled>,
+    player_marker: ReadStorage<'a, comp::Player>,
+    transform: ReadStorage<'a, comp::Transform>,
+}
+
+impl<'a> ReadClientPlayer<'a> {
+    fn get_transform(&self) -> Option<&Transform> {
+        (
+            &self.client_controlled,
+            &self.player_marker,
+            &self.transform,
+        )
+            .join()
+            .next()
+            .map(|(_, _, tfm)| tfm)
+    }
+}
+
 impl<'a> System<'a> for InputHandler {
     type SystemData = (
         Read<'a, EventChannel<Event>>,
@@ -149,6 +180,7 @@ impl<'a> System<'a> for InputHandler {
         Write<'a, ActiveDirections>,
         Write<'a, ViewFrustum, PanicHandler>,
         Write<'a, ViewDistance, PanicHandler>,
+        ReadClientPlayer<'a>,
     );
 
     fn run(
@@ -160,6 +192,7 @@ impl<'a> System<'a> for InputHandler {
             mut active_directions,
             mut frustum,
             mut view_distance,
+            player,
         ): Self::SystemData,
     ) {
         // for delta in (&mut look_deltas).join() { *delta = LookDelta::default(); }
@@ -207,6 +240,14 @@ impl<'a> System<'a> for InputHandler {
                         if KEYBIND_EXIT.matches_input(*input) {
                             stop_flag.0 = true;
                             break;
+                        }
+                        if KEYBIND_DEBUG.matches_input(*input) {
+                            let tfm = player.get_transform().unwrap();
+                            let (cpos, offset) = ::engine::world::chunk_pos_offset(
+                                ::util::to_point(tfm.position.cast().unwrap()),
+                            );
+                            debug!("client position: {:?}", tfm.position);
+                            debug!("chunk/offset: {:?}/{:?}", cpos, offset);
                         }
                         if KEYBIND_TOGGLE_WIREFRAME.matches_input(*input) {
                             info!("Toggled wireframe rendering");
@@ -285,7 +326,7 @@ impl<'a> System<'a> for LockCursor {
                 } => {
                     let size = window.get_inner_size().unwrap();
                     let center = LogicalPosition::new(size.width / 2.0, size.height / 2.0);
-                    window.set_cursor_position(center).unwrap();
+                    // window.set_cursor_position(center).unwrap();
 
                     for target in (&mut look_targets).join() {
                         // Ok, I know this looks weird, but `target` describes which *axis* should be rotated around.

@@ -8,6 +8,7 @@ use engine::world::ChunkPos;
 use gl_api::buffer::{Buffer, UsageType};
 use gl_api::context::Context;
 use gl_api::shader::{program::LinkedProgram, simple_pipeline};
+use gl_api::PrimitiveType;
 use ordered_float::OrderedFloat;
 use shrev::EventChannel;
 use shrev::ReaderId;
@@ -198,14 +199,9 @@ impl<'a> System<'a> for DebugRenderer {
             for (weight, geom) in &self.geometry {
                 self.vbo.upload(geom, UsageType::DynamicDraw).unwrap();
 
-                // ctx.draw(&shader, &data_source);
-
-                unsafe {
-                    // gl_call!(LineWidth(weight.0 as f32)).unwrap();
-                    // self.program.bind();
-                    // ctx.draw_arrays();
-                    // gl_call!(DrawArrays(gl::LINES, 0, self.vbo.len() as i32)).unwrap();
-                }
+                gl_call!(LineWidth(weight.0 as f32)).unwrap();
+                self.ctx
+                    .draw_arrays(PrimitiveType::Lines, &self.program, &self.vbo);
             }
         }
     }

@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use cgmath::Vector2;
 use engine::Side;
+use std::collections::HashMap;
 
 pub const AIR: BlockId = 0;
 pub const STONE: BlockId = 1;
@@ -17,7 +17,7 @@ pub struct BlockRenderPrototype {
 }
 
 impl BlockRenderPrototype {
-    pub fn texture_for_side(&self, side: Side) -> Vector2<f32> {
+    pub fn get_texture_offset(&self, side: Side) -> Vector2<f32> {
         self.texture_offsets[match side {
             Side::Right => 0,
             Side::Top => 1,
@@ -54,17 +54,42 @@ impl BlockRegistry {
             };
         }
 
-        self.register("air",   proto! { false, [0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0] }, Some(AIR));
-        self.register("stone", proto! { true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0] }, Some(STONE));
-        self.register("dirt",  proto! { true,  [2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0] }, Some(DIRT));
-        self.register("grass", proto! { true,  [0.0, 1.0; 0.0, 0.0; 0.0, 1.0; 0.0, 1.0; 2.0, 0.0; 0.0, 1.0] }, Some(GRASS));
-        self.register("water", proto! { true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0] }, Some(WATER));
+        self.register(
+            "air",
+            proto! { false, [0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0] },
+            Some(AIR),
+        );
+        self.register(
+            "stone",
+            proto! { true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0] },
+            Some(STONE),
+        );
+        self.register(
+            "dirt",
+            proto! { true,  [2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0] },
+            Some(DIRT),
+        );
+        self.register(
+            "grass",
+            proto! { true,  [0.0, 1.0; 0.0, 0.0; 0.0, 1.0; 0.0, 1.0; 2.0, 0.0; 0.0, 1.0] },
+            Some(GRASS),
+        );
+        self.register(
+            "water",
+            proto! { true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0] },
+            Some(WATER),
+        );
 
         self
     }
 
     /// Register a block renderer prototype and return its ID
-    pub fn register(&mut self, name: impl Into<String>, render_prototype: BlockRenderPrototype, id: Option<BlockId>) -> BlockId {
+    pub fn register(
+        &mut self,
+        name: impl Into<String>,
+        render_prototype: BlockRenderPrototype,
+        id: Option<BlockId>,
+    ) -> BlockId {
         // Force this item to have a particular ID, and panic if one already exists
         if let Some(force_id) = id {
             // Don't overwrite any previous items
@@ -75,14 +100,16 @@ impl BlockRegistry {
         } else {
             // Since we can register anything anywhere, we step over the items that are already
             // registered. We just keep trying the next item until we find a free slot.
-            while self.map.contains_key(&self.current_id) { self.current_id += 1; }
+            while self.map.contains_key(&self.current_id) {
+                self.current_id += 1;
+            }
             self.name_map.insert(name.into(), self.current_id);
             self.map.insert(self.current_id, render_prototype);
             self.current_id
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item=&BlockRenderPrototype> {
+    pub fn iter(&self) -> impl Iterator<Item = &BlockRenderPrototype> {
         self.map.iter().map(|(_, v)| v)
     }
 

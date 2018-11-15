@@ -26,6 +26,9 @@ extern crate specs_derive;
 extern crate shred_derive;
 extern crate simple_logger;
 
+// need this due to weird quirk of shred_derive
+pub use specs::shred;
+
 #[macro_use]
 pub mod gl_api;
 pub mod engine;

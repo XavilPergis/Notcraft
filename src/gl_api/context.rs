@@ -160,6 +160,34 @@ impl Context {
         }
     }
 
+    // self.ctx.draw_elements(gl::TRIANGLES, &shader, &self.vertices);
+    pub fn draw_arrays<V: Layout>(
+        &self,
+        primitive: PrimitiveType,
+        program: &LinkedProgram,
+        vertices: &Buffer<V>,
+    ) {
+        if vertices.len() > 0 {
+            // Find a VAO that describes our vertex format, creating one if it does not exist.
+            let mut map = self.0.format_cache.borrow_mut();
+            let vao = map
+                .entry::<V>()
+                .or_insert_with(|| VertexArray::<V>::for_vertex_type(self).with_buffer(vertices));
+
+            // set the buffer binding the the buffer that was passed in
+            vao.set_buffer(vertices);
+
+            vao.bind();
+            program.bind();
+
+            gl_call!(assert DrawArrays(
+                primitive as u32,
+                0,
+                vertices.len() as i32
+            ));
+        }
+    }
+
     // pub fn draw_arrays<D>(&self, source: &D, program: &LinkedProgram) {
     //     let vao = self.vao_format_cache.get::<D>();
     //     D::

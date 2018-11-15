@@ -27,11 +27,32 @@ impl<'a> System<'a> for PlayerController {
         }
 
         for (_, tfm) in (&player, &player_transform).join() {
-            let cpos = ::util::to_point(-tfm.position.cast().unwrap() / SIZE as i32);
+            let (cpos, _) =
+                ::engine::world::chunk_pos_offset(::util::to_point(tfm.position.cast().unwrap()));
+            let center = (SIZE as i32 * cpos).cast().unwrap()
+                + Vector3::new(SIZE / 2, SIZE / 2, SIZE / 2).cast().unwrap();
             debug_channel.single_write(Shape::GriddedChunk(
                 2.0,
                 cpos,
                 Vector4::new(0.5, 0.5, 1.0, 1.0),
+            ));
+            debug_channel.single_write(Shape::Line(
+                5.0,
+                center,
+                Vector3::unit_x(),
+                Vector4::new(1.0, 0.0, 0.0, 1.0),
+            ));
+            debug_channel.single_write(Shape::Line(
+                5.0,
+                center,
+                Vector3::unit_y(),
+                Vector4::new(0.0, 1.0, 0.0, 1.0),
+            ));
+            debug_channel.single_write(Shape::Line(
+                5.0,
+                center,
+                Vector3::unit_z(),
+                Vector4::new(0.0, 0.0, 1.0, 1.0),
             ));
         }
 

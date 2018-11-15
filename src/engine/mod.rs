@@ -9,6 +9,14 @@ pub mod components;
 pub mod resources;
 pub mod systems;
 
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum Axis {
+    X = 0,
+    Y = 1,
+    Z = 2,
+}
+
 /// Six sides of a cube.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Side {
@@ -27,7 +35,14 @@ pub enum Side {
 }
 
 impl Side {
-    pub fn offset<S: One + Zero + Neg<Output = S>>(&self) -> Vector3<S> {
+    pub fn facing_positive(&self) -> bool {
+        match self {
+            Side::Top | Side::Right | Side::Front => true,
+            _ => false,
+        }
+    }
+
+    pub fn normal<S: One + Zero + Neg<Output = S>>(&self) -> Vector3<S> {
         match *self {
             Side::Top => Vector3::new(S::zero(), S::one(), S::zero()),
             Side::Bottom => Vector3::new(S::zero(), -S::one(), S::zero()),
@@ -35,6 +50,27 @@ impl Side {
             Side::Left => Vector3::new(-S::one(), S::zero(), S::zero()),
             Side::Front => Vector3::new(S::zero(), S::zero(), S::one()),
             Side::Back => Vector3::new(S::zero(), S::zero(), -S::one()),
+        }
+    }
+
+    /// take coordinates (u, v, l) where (u, v) is parallel to this face and convert it to a relative xyz coord
+    pub fn uvl_to_xyz(&self, u: i32, v: i32, l: i32) -> Vector3<i32> {
+        let mut vec = Vector3::new(0, 0, 0);
+        let axis: Axis = (*self).into();
+        let l = if self.facing_positive() { l } else { -l };
+        vec[axis as usize % 3] = l;
+        vec[(axis as usize + 1) % 3] = u;
+        vec[(axis as usize + 2) % 3] = v;
+        vec
+    }
+}
+
+impl From<Side> for Axis {
+    fn from(side: Side) -> Self {
+        match side {
+            Side::Left | Side::Right => Axis::X,
+            Side::Top | Side::Bottom => Axis::Y,
+            Side::Front | Side::Back => Axis::Z,
         }
     }
 }
