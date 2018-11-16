@@ -33,33 +33,23 @@ fn collidable_blocks_in_aabb(world: &VoxelWorld, aabb: Aabb3<f64>) -> Vec<BlockP
     found
 }
 
-#[test]
-fn test_resolve_func() {
-    let res = resolve_collision(0.0, 2.0, 1.0, 3.0);
-
-    assert_eq!(res, -1.0)
-}
-
 // take two ranges (like an aabb projected down to a single axis) and find how far `a` needs to move so that the ranges do not overlap
-fn resolve_collision(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> f64 {
+fn resolve_collision(a: Aabb3<f64>, b: Aabb3<f64>, axis: usize) -> f64 {
     // the ranges are already disjoint, no resolution needs to be applied.
-    if a_max <= b_min {
-        return 0.0;
-    }
-    if b_max <= a_min {
+    if !a.intersects(&b) {
         return 0.0;
     }
 
     // find the center point of the ranges
-    let a_center = (a_min + a_max) / 2.0;
-    let b_center = (b_min + b_max) / 2.0;
+    let a_center = (a.min[axis] + a.max[axis]) / 2.0;
+    let b_center = (b.min[axis] + b.max[axis]) / 2.0;
 
     // if a in on the "left" side of b, then we project out to the "left" side
     // otherwise we project "right"
     if a_center < b_center {
-        b_min - a_max
+        b.min[axis] - a.max[axis]
     } else {
-        b_max - a_min
+        b.max[axis] - a.min[axis]
     }
 }
 
@@ -111,7 +101,7 @@ fn physics_step_x(ctx: &mut PhysicsStepContext, debug: &mut EventChannel<Shape>)
         dbg_aabb(entity, i);
         dbg_aabb(cube, i);
 
-        let resolution = resolve_collision(entity.min.x, entity.max.x, cube.min.x, cube.max.x);
+        let resolution = resolve_collision(entity, cube, 0);
 
         if resolution != 0.0 {
             ctx.transform.position.x += resolution;
@@ -146,7 +136,7 @@ fn physics_step_y(ctx: &mut PhysicsStepContext, debug: &mut EventChannel<Shape>)
         dbg_aabb(entity, i);
         dbg_aabb(cube, i);
 
-        let resolution = resolve_collision(entity.min.y, entity.max.y, cube.min.y, cube.max.y);
+        let resolution = resolve_collision(entity, cube, 1);
 
         if resolution != 0.0 {
             ctx.transform.position.y += resolution;
@@ -177,10 +167,11 @@ fn physics_step_z(ctx: &mut PhysicsStepContext, debug: &mut EventChannel<Shape>)
     for (i, block) in blocks.iter().enumerate() {
         let entity = ctx.entity_aabb();
         let cube = cube_aabb(*block);
-        let resolution = resolve_collision(entity.min.z, entity.max.z, cube.min.z, cube.max.z);
 
         dbg_aabb(entity, i);
         dbg_aabb(cube, i);
+
+        let resolution = resolve_collision(entity, cube, 2);
 
         if resolution != 0.0 {
             ctx.transform.position.z += resolution;
@@ -221,8 +212,8 @@ impl<'a> System<'a> for Physics {
                         dt,
                     };
 
-                    physics_step_y(&mut ctx, &mut debug_channel);
                     physics_step_x(&mut ctx, &mut debug_channel);
+                    physics_step_y(&mut ctx, &mut debug_channel);
                     physics_step_z(&mut ctx, &mut debug_channel);
                 }
             }
