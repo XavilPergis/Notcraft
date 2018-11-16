@@ -1,9 +1,9 @@
 use super::super::error::GlError;
 use super::shader::CompiledShader;
-use std::collections::HashMap;
-use gl_api::uniform::*;
-use gl::types::*;
 use gl;
+use gl::types::*;
+use gl_api::uniform::*;
+use std::collections::HashMap;
 
 pub struct Program {
     id: GLuint,
@@ -15,35 +15,30 @@ impl !Sync for Program {}
 impl Program {
     pub fn new() -> Option<Self> {
         // UNWRAP: this function never sets an error state
-        let id = unsafe { gl_call!(CreateProgram()).unwrap() };
+        let id = gl_call!(assert CreateProgram());
         match id {
             0 => None,
-            id => Some(Program { id })
+            id => Some(Program { id }),
         }
     }
 
-    #[inline(never)]
     pub fn bind(&self) {
-        // glUseProgram fails, even though program validation succeeds, and using the program
-        // seems to bind it just fine... Smells like a driver bug to me.
-        unsafe { let _ = gl_call!(UseProgram(self.id)); }
+        gl_call!(assert UseProgram(self.id));
     }
 
     pub fn attach_shader(&self, shader: CompiledShader) {
-        self.bind();
-        unsafe { gl_call!(AttachShader(self.id, shader.shader.id)).unwrap(); }
+        gl_call!(assert AttachShader(self.id, shader.shader.id));
     }
 
     pub fn link(self) -> Result<LinkedProgram, LinkError> {
-        self.bind();
-        unsafe {
-            assert!(self.id != 0);
-            gl_call!(LinkProgram(self.id))?;
-            check_program_status(self.id, gl::LINK_STATUS)?;
-            gl_call!(ValidateProgram(self.id))?;
-            check_program_status(self.id, gl::VALIDATE_STATUS)?;
-        }
-        Ok(LinkedProgram { program: self, uniform_cache: HashMap::new() })
+        gl_call!(LinkProgram(self.id))?;
+        check_program_status(self.id, gl::LINK_STATUS)?;
+        gl_call!(ValidateProgram(self.id))?;
+        check_program_status(self.id, gl::VALIDATE_STATUS)?;
+        Ok(LinkedProgram {
+            program: self,
+            uniform_cache: HashMap::new(),
+        })
     }
 }
 
@@ -70,12 +65,10 @@ impl LinkedProgram {
 
     fn get_uniform_location(&self, name: &str) -> UniformLocation {
         self.program.bind();
-        unsafe {
-            use std::ffi::CString;
-            let c_string = CString::new(name).unwrap();
-            // UNWRAP: program ID is valid, and the program has been successfully linked
-            gl_call!(GetUniformLocation(self.program.id, c_string.as_ptr())).unwrap()
-        }
+        use std::ffi::CString;
+        let c_string = CString::new(name).unwrap();
+        // UNWRAP: program ID is valid, and the program has been successfully linked
+        gl_call!(assert GetUniformLocation(self.program.id, c_string.as_ptr()))
     }
 }
 
@@ -86,32 +79,42 @@ pub enum LinkError {
 }
 
 impl From<::gl_api::error::GlError> for LinkError {
-    fn from(err: ::gl_api::error::GlError) -> Self { LinkError::Gl(err) }
+    fn from(err: ::gl_api::error::GlError) -> Self {
+        LinkError::Gl(err)
+    }
 }
 
 fn check_program_status(id: GLuint, ty: GLenum) -> Result<(), LinkError> {
     let mut status = 1;
-    unsafe { gl_call!(GetProgramiv(id, ty, &mut status)).unwrap(); }
+    gl_call!(assert GetProgramiv(id, ty, &mut status));
 
     if status == 0 {
-        Err(LinkError::Other(program_info_log(id).unwrap_or(String::new())))
+        Err(LinkError::Other(
+            program_info_log(id).unwrap_or(String::new()),
+        ))
     } else {
         Ok(())
     }
 }
 
 fn program_info_log(id: GLuint) -> Option<String> {
-    unsafe {
-        let mut length = 0;
-        gl_call!(GetProgramiv(id, gl::INFO_LOG_LENGTH, &mut length)).unwrap();
-        if length == 0 {
-            None
-        } else {
-            let mut buffer = Vec::<u8>::with_capacity(length as usize);
-            gl_call!(GetProgramInfoLog(id, length, ::std::ptr::null_mut(), buffer.as_mut_ptr() as *mut i8)).unwrap();
-            buffer.set_len((length - 1) as usize);
+    let mut length = 0;
+    gl_call!(assert GetProgramiv(id, gl::INFO_LOG_LENGTH, &mut length));
+    if length == 0 {
+        None
+    } else {
+        let mut buffer = Vec::<u8>::with_capacity(length as usize);
+        gl_call!(assert GetProgramInfoLog(
+            id,
+            length,
+            ::std::ptr::null_mut(),
+            buffer.as_mut_ptr() as *mut i8
+        ));
 
-            Some(String::from_utf8(buffer).expect("Program info log was not UTF-8"))
+        unsafe {
+            buffer.set_len((length - 1) as usize);
         }
+
+        Some(String::from_utf8(buffer).expect("Program info log was not UTF-8"))
     }
 }
