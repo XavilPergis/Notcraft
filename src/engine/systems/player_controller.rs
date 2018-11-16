@@ -1,5 +1,4 @@
-use cgmath::{Vector3, Vector4};
-use engine::components::*;
+use engine::prelude::*;
 use engine::systems::debug_render::Shape;
 use engine::world::chunk::SIZE;
 use shrev::EventChannel;
@@ -10,11 +9,11 @@ pub struct PlayerController;
 
 impl<'a> System<'a> for PlayerController {
     type SystemData = (
-        ReadStorage<'a, Player>,
-        WriteStorage<'a, Transform>,
-        WriteStorage<'a, RigidBody>,
-        ReadStorage<'a, MoveDelta>,
-        Read<'a, ActiveDirections>,
+        ReadStorage<'a, comp::Player>,
+        WriteStorage<'a, comp::Transform>,
+        WriteStorage<'a, comp::RigidBody>,
+        ReadStorage<'a, comp::MoveDelta>,
+        Read<'a, res::ActiveDirections>,
         WriteExpect<'a, EventChannel<Shape>>,
     );
 
@@ -27,10 +26,11 @@ impl<'a> System<'a> for PlayerController {
         }
 
         for (_, tfm) in (&player, &player_transform).join() {
-            let (cpos, _) =
-                ::engine::world::chunk_pos_offset(::util::to_point(tfm.position.cast().unwrap()));
-            let center = (SIZE as i32 * cpos).cast().unwrap()
-                + Vector3::new(SIZE / 2, SIZE / 2, SIZE / 2).cast().unwrap();
+            let cpos: ChunkPos = WorldPos(tfm.position).into();
+            let center = cpos
+                .base()
+                .offset((SIZE as i32 / 2, SIZE as i32 / 2, SIZE as i32 / 2))
+                .center();
             debug_channel.single_write(Shape::GriddedChunk(
                 2.0,
                 cpos,

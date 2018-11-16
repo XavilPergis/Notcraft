@@ -1,5 +1,4 @@
 use cgmath::{Deg, Point3, Vector3};
-use engine::world::BlockPos;
 use glutin::GlWindow;
 use std::cmp::Ordering;
 
@@ -69,7 +68,7 @@ pub fn to_point<S>(vec: Vector3<S>) -> Point3<S> {
 }
 
 /// Tests if `pos` is within `r` units from `center`
-pub fn in_range(pos: BlockPos, center: BlockPos, radii: Vector3<i32>) -> bool {
+pub fn in_range(pos: Point3<i32>, center: Point3<i32>, radii: Vector3<i32>) -> bool {
     pos.x <= center.x + radii.x
         && pos.x >= center.x - radii.x
         && pos.y <= center.y + radii.y

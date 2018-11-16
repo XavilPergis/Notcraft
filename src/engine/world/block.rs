@@ -2,21 +2,23 @@ use cgmath::Vector2;
 use engine::Side;
 use std::collections::HashMap;
 
-pub const AIR: BlockId = 0;
-pub const STONE: BlockId = 1;
-pub const DIRT: BlockId = 2;
-pub const GRASS: BlockId = 3;
-pub const WATER: BlockId = 4;
+pub const AIR: BlockId = BlockId(0);
+pub const STONE: BlockId = BlockId(1);
+pub const DIRT: BlockId = BlockId(2);
+pub const GRASS: BlockId = BlockId(3);
+pub const WATER: BlockId = BlockId(4);
 
-pub type BlockId = usize;
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct BlockId(usize);
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct BlockRenderPrototype {
+pub struct BlockProperties {
+    pub collidable: bool,
     pub opaque: bool,
     pub texture_offsets: [Vector2<f32>; 6],
 }
 
-impl BlockRenderPrototype {
+impl BlockProperties {
     pub fn get_texture_offset(&self, side: Side) -> Vector2<f32> {
         self.texture_offsets[match side {
             Side::Right => 0,
@@ -29,16 +31,17 @@ impl BlockRenderPrototype {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct BlockRegistry {
     current_id: BlockId,
     name_map: HashMap<String, BlockId>,
-    map: HashMap<BlockId, BlockRenderPrototype>,
+    map: HashMap<BlockId, BlockProperties>,
 }
 
 impl BlockRegistry {
     pub fn new() -> Self {
         BlockRegistry {
-            current_id: 0,
+            current_id: BlockId(0),
             name_map: HashMap::default(),
             map: HashMap::default(),
         }
@@ -46,9 +49,10 @@ impl BlockRegistry {
 
     pub fn with_defaults(mut self) -> Self {
         macro_rules! proto {
-            ($opaque:expr, [$($x:expr, $y:expr);*]) => {
-                BlockRenderPrototype {
+            ($opaque:expr, $solid:expr, [$($x:expr, $y:expr);*]) => {
+                BlockProperties {
                     opaque: $opaque,
+                    collidable: $solid,
                     texture_offsets: [$(Vector2::new($x as f32, $y as f32)),*]
                 }
             };
@@ -56,27 +60,27 @@ impl BlockRegistry {
 
         self.register(
             "air",
-            proto! { false, [0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0] },
+            proto! { false, false, [0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0] },
             Some(AIR),
         );
         self.register(
             "stone",
-            proto! { true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0] },
+            proto! { true,  true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0] },
             Some(STONE),
         );
         self.register(
             "dirt",
-            proto! { true,  [2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0] },
+            proto! { true,  true,  [2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0] },
             Some(DIRT),
         );
         self.register(
             "grass",
-            proto! { true,  [0.0, 1.0; 0.0, 0.0; 0.0, 1.0; 0.0, 1.0; 2.0, 0.0; 0.0, 1.0] },
+            proto! { true,  true,  [0.0, 1.0; 0.0, 0.0; 0.0, 1.0; 0.0, 1.0; 2.0, 0.0; 0.0, 1.0] },
             Some(GRASS),
         );
         self.register(
             "water",
-            proto! { true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0] },
+            proto! { true,  true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0] },
             Some(WATER),
         );
 
@@ -87,7 +91,7 @@ impl BlockRegistry {
     pub fn register(
         &mut self,
         name: impl Into<String>,
-        render_prototype: BlockRenderPrototype,
+        render_prototype: BlockProperties,
         id: Option<BlockId>,
     ) -> BlockId {
         // Force this item to have a particular ID, and panic if one already exists
@@ -101,7 +105,7 @@ impl BlockRegistry {
             // Since we can register anything anywhere, we step over the items that are already
             // registered. We just keep trying the next item until we find a free slot.
             while self.map.contains_key(&self.current_id) {
-                self.current_id += 1;
+                self.current_id.0 += 1;
             }
             self.name_map.insert(name.into(), self.current_id);
             self.map.insert(self.current_id, render_prototype);
@@ -109,7 +113,7 @@ impl BlockRegistry {
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &BlockRenderPrototype> {
+    pub fn iter(&self) -> impl Iterator<Item = &BlockProperties> {
         self.map.iter().map(|(_, v)| v)
     }
 
@@ -121,9 +125,9 @@ impl BlockRegistry {
 use std::ops::Index;
 
 impl Index<BlockId> for BlockRegistry {
-    type Output = BlockRenderPrototype;
+    type Output = BlockProperties;
 
-    fn index(&self, index: BlockId) -> &BlockRenderPrototype {
+    fn index(&self, index: BlockId) -> &BlockProperties {
         &self.map[&index]
     }
 }

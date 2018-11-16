@@ -210,11 +210,12 @@ fn main() {
     world.register::<comp::ClientControlled>();
     world.register::<comp::Player>();
     world.register::<comp::RigidBody>();
-    world.register::<comp::ActiveDirections>();
     world.register::<comp::ChunkId>();
     world.register::<comp::DirtyMesh>();
+    world.register::<comp::Collidable>();
 
-    let voxel_world = VoxelWorld::default();
+    let registry = BlockRegistry::new().with_defaults();
+    let voxel_world = VoxelWorld::new(registry);
 
     let pool = Rc::new(LocalPool::default());
     let player_tfm = comp::Transform::default();
@@ -223,13 +224,14 @@ fn main() {
         .with(comp::ClientControlled)
         .with(comp::Player)
         .with(player_tfm)
+        .with(comp::Collidable {
+            aabb: Aabb3::new(Point3::new(-0.4, -1.8, -0.4), Point3::new(0.4, 0.2, 0.4)),
+        })
         .with(comp::RigidBody {
             mass: 100.0,
             drag: Vector3::new(3.0, 6.0, 3.0),
             velocity: Vector3::new(0.0, 0.0, 0.0),
-            aabb: Aabb3::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0)),
         })
-        .with(comp::ActiveDirections::default())
         .with(comp::LookTarget::default())
         .build();
 
@@ -254,7 +256,7 @@ fn main() {
         )
         .with(PlayerController, "player controller", &[])
         .with(SmoothCamera, "smooth camera", &[])
-        .with(RigidBodyUpdater, "rigidbody updater", &[])
+        .with(RigidBodyUpdater::new(), "rigidbody updater", &[])
         .with(
             TerrainGenerator::new(NoiseGenerator::new_default()),
             "terrain generator",
@@ -271,6 +273,7 @@ fn main() {
 
     dispatcher.setup(&mut world.res);
 
+    world.add_resource(res::ActiveDirections::default());
     world.add_resource(mesh_channel);
     world.add_resource(debug_request_channel);
     world.add_resource(res::StopGameLoop(false));
@@ -283,8 +286,6 @@ fn main() {
     });
 
     world.add_resource(voxel_world);
-    let registry = BlockRegistry::new().with_defaults();
-    world.add_resource(registry);
     world.add_resource(gl_window);
 
     println!("World set up");

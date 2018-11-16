@@ -1,5 +1,5 @@
-use std::time::Duration;
 use cgmath::{Deg, Vector3};
+use std::time::Duration;
 
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub struct CursorPos {
@@ -21,7 +21,9 @@ pub struct ViewFrustum {
 pub struct ViewDistance(pub Vector3<i32>);
 
 impl Default for ViewDistance {
-    fn default() -> Self { ViewDistance(Vector3::new(3, 3, 3)) }
+    fn default() -> Self {
+        ViewDistance(Vector3::new(3, 3, 3))
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
@@ -31,4 +33,14 @@ impl Dt {
     pub fn as_secs(&self) -> f64 {
         self.0.as_secs() as f64 + self.0.subsec_nanos() as f64 * 1e-9
     }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub struct ActiveDirections {
+    pub front: bool,
+    pub back: bool,
+    pub left: bool,
+    pub right: bool,
+    pub down: bool,
+    pub up: bool,
 }

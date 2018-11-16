@@ -1,10 +1,7 @@
 use cgmath::Deg;
-use cgmath::{Point3, Vector3, Vector4};
 use collision::Aabb3;
-use engine::components as comp;
-use engine::resources as res;
+use engine::prelude::*;
 use engine::world::chunk::SIZE;
-use engine::world::ChunkPos;
 use gl_api::buffer::{Buffer, UsageType};
 use gl_api::context::Context;
 use gl_api::shader::{program::LinkedProgram, simple_pipeline};
@@ -12,7 +9,6 @@ use gl_api::PrimitiveType;
 use ordered_float::OrderedFloat;
 use shrev::EventChannel;
 use shrev::ReaderId;
-use specs::prelude::*;
 use specs::shred::PanicHandler;
 use std::collections::HashMap;
 
@@ -28,7 +24,7 @@ pub enum Shape {
     GriddedChunk(f64, ChunkPos, Vector4<f64>),
     Chunk(f64, ChunkPos, Vector4<f64>),
     Box(f64, Aabb3<f64>, Vector4<f64>),
-    Line(f64, Point3<f64>, Vector3<f64>, Vector4<f64>),
+    Line(f64, WorldPos, Vector3<f64>, Vector4<f64>),
 }
 
 pub struct DebugRenderer {
@@ -53,15 +49,18 @@ impl DebugRenderer {
         }
     }
 
-    fn add_line(&mut self, start: Point3<f64>, end: Point3<f64>, color: Vector4<f64>, weight: f64) {
+    fn add_line(&mut self, start: WorldPos, end: WorldPos, color: Vector4<f64>, weight: f64) {
         self.geometry
             .entry(OrderedFloat(weight))
             .or_default()
-            .push(DebugVertex { pos: start, color });
+            .push(DebugVertex {
+                pos: start.0,
+                color,
+            });
         self.geometry
             .entry(OrderedFloat(weight))
             .or_default()
-            .push(DebugVertex { pos: end, color });
+            .push(DebugVertex { pos: end.0, color });
     }
 
     fn add_box(&mut self, b: Aabb3<f64>, color: Vector4<f64>, weight: f64) {
@@ -69,15 +68,16 @@ impl DebugRenderer {
         let len_y = b.max.y - b.min.y;
         let len_z = b.max.z - b.min.z;
 
-        let y_lnn = b.min;
-        let y_lnp = b.min + Vector3::new(0.0, 0.0, len_z);
-        let y_lpn = b.min + Vector3::new(len_x, 0.0, 0.0);
-        let y_lpp = b.min + Vector3::new(len_x, 0.0, len_z);
+        let bmin = WorldPos(b.min);
 
-        let y_hnn = b.min + Vector3::new(0.0, len_y, 0.0);
-        let y_hnp = b.min + Vector3::new(0.0, len_y, len_z);
-        let y_hpn = b.min + Vector3::new(len_x, len_y, 0.0);
-        let y_hpp = b.min + Vector3::new(len_x, len_y, len_z);
+        let y_lnn = bmin;
+        let y_lnp = bmin.offset((0.0, 0.0, len_z));
+        let y_lpn = bmin.offset((len_x, 0.0, 0.0));
+        let y_lpp = bmin.offset((len_x, 0.0, len_z));
+        let y_hnn = bmin.offset((0.0, len_y, 0.0));
+        let y_hnp = bmin.offset((0.0, len_y, len_z));
+        let y_hpn = bmin.offset((len_x, len_y, 0.0));
+        let y_hpp = bmin.offset((len_x, len_y, len_z));
 
         self.add_line(y_lnn, y_lnp, color, weight);
         self.add_line(y_lnp, y_lpp, color, weight);
@@ -119,7 +119,7 @@ impl<'a> System<'a> for DebugRenderer {
 
                 &Shape::Chunk(weight, pos, color) => {
                     let fsize = SIZE as f64;
-                    let base = fsize * pos.cast().unwrap();
+                    let base = pos.base().base().0;
                     self.add_box(
                         Aabb3::new(base, base + Vector3::new(fsize, fsize, fsize)),
                         color,
@@ -129,52 +129,47 @@ impl<'a> System<'a> for DebugRenderer {
 
                 &Shape::GriddedChunk(weight, pos, color) => {
                     let fsize = SIZE as f64;
-                    let base = fsize * pos.cast().unwrap();
+                    let base = pos.base().base();
                     self.add_box(
-                        Aabb3::new(base, base + Vector3::new(fsize, fsize, fsize)),
+                        Aabb3::new(base.0, base.0 + Vector3::new(fsize, fsize, fsize)),
                         color,
                         weight,
                     );
 
-                    for x in 0..SIZE {
-                        let y_nn = base + Vector3::new(x as f64, 0.0, 0.0);
-                        let y_np = base + Vector3::new(x as f64, 0.0, fsize);
-                        let y_pn = base + Vector3::new(x as f64, fsize, 0.0);
-                        let y_pp = base + Vector3::new(x as f64, fsize, fsize);
+                    for n in 0..SIZE {
+                        let n = n as f64;
+                        let x_nn = base.offset((n, 0.0, 0.0));
+                        let x_np = base.offset((n, 0.0, fsize));
+                        let x_pn = base.offset((n, fsize, 0.0));
+                        let x_pp = base.offset((n, fsize, fsize));
+                        let y_nn = base.offset((0.0, n, 0.0));
+                        let y_np = base.offset((0.0, n, fsize));
+                        let y_pn = base.offset((fsize, n, 0.0));
+                        let y_pp = base.offset((fsize, n, fsize));
+                        let z_nn = base.offset((0.0, 0.0, n));
+                        let z_np = base.offset((0.0, fsize, n));
+                        let z_pn = base.offset((fsize, 0.0, n));
+                        let z_pp = base.offset((fsize, fsize, n));
 
-                        self.add_line(y_nn, y_np, Vector4::new(1.0, 0.5, 0.5, 1.0), weight / 2.0);
-                        self.add_line(y_np, y_pp, Vector4::new(1.0, 0.5, 0.5, 1.0), weight / 2.0);
-                        self.add_line(y_pp, y_pn, Vector4::new(1.0, 0.5, 0.5, 1.0), weight / 2.0);
-                        self.add_line(y_pn, y_nn, Vector4::new(1.0, 0.5, 0.5, 1.0), weight / 2.0);
-                    }
-
-                    for y in 0..SIZE {
-                        let y_nn = base + Vector3::new(0.0, y as f64, 0.0);
-                        let y_np = base + Vector3::new(0.0, y as f64, fsize);
-                        let y_pn = base + Vector3::new(fsize, y as f64, 0.0);
-                        let y_pp = base + Vector3::new(fsize, y as f64, fsize);
+                        self.add_line(x_nn, x_np, Vector4::new(1.0, 0.5, 0.5, 1.0), weight / 2.0);
+                        self.add_line(x_np, x_pp, Vector4::new(1.0, 0.5, 0.5, 1.0), weight / 2.0);
+                        self.add_line(x_pp, x_pn, Vector4::new(1.0, 0.5, 0.5, 1.0), weight / 2.0);
+                        self.add_line(x_pn, x_nn, Vector4::new(1.0, 0.5, 0.5, 1.0), weight / 2.0);
 
                         self.add_line(y_nn, y_np, Vector4::new(0.5, 1.0, 0.5, 1.0), weight / 2.0);
                         self.add_line(y_np, y_pp, Vector4::new(0.5, 1.0, 0.5, 1.0), weight / 2.0);
                         self.add_line(y_pp, y_pn, Vector4::new(0.5, 1.0, 0.5, 1.0), weight / 2.0);
                         self.add_line(y_pn, y_nn, Vector4::new(0.5, 1.0, 0.5, 1.0), weight / 2.0);
-                    }
 
-                    for z in 0..SIZE {
-                        let y_nn = base + Vector3::new(0.0, 0.0, z as f64);
-                        let y_np = base + Vector3::new(0.0, fsize, z as f64);
-                        let y_pn = base + Vector3::new(fsize, 0.0, z as f64);
-                        let y_pp = base + Vector3::new(fsize, fsize, z as f64);
-
-                        self.add_line(y_nn, y_np, Vector4::new(0.5, 0.5, 1.0, 1.0), weight / 2.0);
-                        self.add_line(y_np, y_pp, Vector4::new(0.5, 0.5, 1.0, 1.0), weight / 2.0);
-                        self.add_line(y_pp, y_pn, Vector4::new(0.5, 0.5, 1.0, 1.0), weight / 2.0);
-                        self.add_line(y_pn, y_nn, Vector4::new(0.5, 0.5, 1.0, 1.0), weight / 2.0);
+                        self.add_line(z_nn, z_np, Vector4::new(0.5, 0.5, 1.0, 1.0), weight / 2.0);
+                        self.add_line(z_np, z_pp, Vector4::new(0.5, 0.5, 1.0, 1.0), weight / 2.0);
+                        self.add_line(z_pp, z_pn, Vector4::new(0.5, 0.5, 1.0, 1.0), weight / 2.0);
+                        self.add_line(z_pn, z_nn, Vector4::new(0.5, 0.5, 1.0, 1.0), weight / 2.0);
                     }
                 }
 
                 &Shape::Line(weight, start, end, color) => {
-                    self.add_line(start, start + end, color, weight)
+                    self.add_line(start, start.offset(end), color, weight)
                 }
             }
         }

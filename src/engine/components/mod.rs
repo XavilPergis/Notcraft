@@ -5,8 +5,8 @@ mod physics;
 mod transform;
 mod world;
 
-pub use self::input::{ActiveDirections, LookTarget, MoveDelta};
-pub use self::physics::RigidBody;
+pub use self::input::{LookTarget, MoveDelta};
+pub use self::physics::{Collidable, RigidBody};
 pub use self::transform::Transform;
 pub use self::world::ChunkId;
 

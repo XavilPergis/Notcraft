@@ -9,6 +9,17 @@ pub mod components;
 pub mod resources;
 pub mod systems;
 
+pub mod prelude {
+    pub use super::components as comp;
+    pub use super::resources as res;
+    pub use super::world::{
+        block, block::BlockId, chunk, BlockPos, Chunk, ChunkPos, VoxelWorld, WorldPos,
+    };
+    pub use cgmath::{prelude::*, Point1, Point2, Point3, Vector2, Vector3, Vector4};
+    pub use shrev::EventChannel;
+    pub use specs::prelude::*;
+}
+
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Axis {

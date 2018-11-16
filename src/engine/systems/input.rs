@@ -1,18 +1,16 @@
 use cgmath::Deg;
-use engine::components::*;
-use engine::resources::*;
+use engine::prelude::*;
 use glutin::{ElementState, Event, KeyboardInput, ModifiersState, VirtualKeyCode, WindowEvent};
 use shrev::EventChannel;
-use specs::prelude::*;
 use specs::shred::PanicHandler;
 
 pub struct SmoothCamera;
 
 impl<'a> System<'a> for SmoothCamera {
     type SystemData = (
-        WriteStorage<'a, Transform>,
-        ReadStorage<'a, LookTarget>,
-        Read<'a, Dt>,
+        WriteStorage<'a, comp::Transform>,
+        ReadStorage<'a, comp::LookTarget>,
+        Read<'a, res::Dt>,
     );
 
     fn run(&mut self, (mut transforms, targets, dt): Self::SystemData) {
@@ -158,7 +156,7 @@ pub struct ReadClientPlayer<'a> {
 }
 
 impl<'a> ReadClientPlayer<'a> {
-    fn get_transform(&self) -> Option<&Transform> {
+    fn get_transform(&self) -> Option<&comp::Transform> {
         (
             &self.client_controlled,
             &self.player_marker,
@@ -173,11 +171,11 @@ impl<'a> ReadClientPlayer<'a> {
 impl<'a> System<'a> for InputHandler {
     type SystemData = (
         Read<'a, EventChannel<Event>>,
-        WriteStorage<'a, MoveDelta>,
-        Write<'a, StopGameLoop>,
-        Write<'a, ActiveDirections>,
-        Write<'a, ViewFrustum, PanicHandler>,
-        Write<'a, ViewDistance, PanicHandler>,
+        WriteStorage<'a, comp::MoveDelta>,
+        Write<'a, res::StopGameLoop>,
+        Write<'a, res::ActiveDirections>,
+        Write<'a, res::ViewFrustum, PanicHandler>,
+        Write<'a, res::ViewDistance, PanicHandler>,
         ReadClientPlayer<'a>,
     );
 
@@ -194,7 +192,7 @@ impl<'a> System<'a> for InputHandler {
         ): Self::SystemData,
     ) {
         for delta in (&mut move_deltas).join() {
-            *delta = MoveDelta::default();
+            *delta = comp::MoveDelta::default();
         }
 
         for event in window_events.read(&mut self.events_handle) {
@@ -240,9 +238,8 @@ impl<'a> System<'a> for InputHandler {
                         }
                         if KEYBIND_DEBUG.matches_input(*input) {
                             let tfm = player.get_transform().unwrap();
-                            let (cpos, offset) = ::engine::world::chunk_pos_offset(
-                                ::util::to_point(tfm.position.cast().unwrap()),
-                            );
+                            let bpos: BlockPos = WorldPos(tfm.position).into();
+                            let (cpos, offset) = bpos.chunk_pos_offset();
                             debug!("client position: {:?}", tfm.position);
                             debug!("chunk/offset: {:?}/{:?}", cpos, offset);
                         }
@@ -308,7 +305,10 @@ impl LockCursor {
 use glutin::DeviceEvent;
 
 impl<'a> System<'a> for LockCursor {
-    type SystemData = (Read<'a, EventChannel<Event>>, WriteStorage<'a, LookTarget>);
+    type SystemData = (
+        Read<'a, EventChannel<Event>>,
+        WriteStorage<'a, comp::LookTarget>,
+    );
 
     fn run(&mut self, (events, mut look_targets): Self::SystemData) {
         for event in events.read(&mut self.reader) {

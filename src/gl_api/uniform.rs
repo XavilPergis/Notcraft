@@ -1,4 +1,4 @@
-use cgmath::{Matrix2, Matrix3, Matrix4, Vector2, Vector3, Vector4};
+use cgmath::{Matrix2, Matrix3, Matrix4, Point1, Point2, Point3, Vector2, Vector3, Vector4};
 
 pub type UniformLocation = ::gl::types::GLint;
 
@@ -88,6 +88,9 @@ uniform!(self, (f32, f32, f32, f32) => Uniform4f(self.0, self.1, self.2, self.3)
 uniform!(self, Vector2<f32> => Uniform2f(self.x, self.y));
 uniform!(self, Vector3<f32> => Uniform3f(self.x, self.y, self.z));
 uniform!(self, Vector4<f32> => Uniform4f(self.x, self.y, self.z, self.w));
+uniform!(self, Point1<f32> => Uniform1f(self.x));
+uniform!(self, Point2<f32> => Uniform2f(self.x, self.y));
+uniform!(self, Point3<f32> => Uniform3f(self.x, self.y, self.z));
 
 uniform!(self, f64 => Uniform1d(*self));
 uniform!(self, [f64; 1] => Uniform1d(self[0]));
@@ -101,6 +104,9 @@ uniform!(self, (f64, f64, f64, f64) => Uniform4d(self.0, self.1, self.2, self.3)
 uniform!(self, Vector2<f64> => Uniform2d(self.x, self.y));
 uniform!(self, Vector3<f64> => Uniform3d(self.x, self.y, self.z));
 uniform!(self, Vector4<f64> => Uniform4d(self.x, self.y, self.z, self.w));
+uniform!(self, Point1<f64> => Uniform1d(self.x));
+uniform!(self, Point2<f64> => Uniform2d(self.x, self.y));
+uniform!(self, Point3<f64> => Uniform3d(self.x, self.y, self.z));
 
 uniform!(self, i32 => Uniform1i(*self));
 uniform!(self, [i32; 1] => Uniform1i(self[0]));
@@ -114,6 +120,9 @@ uniform!(self, (i32, i32, i32, i32) => Uniform4i(self.0, self.1, self.2, self.3)
 uniform!(self, Vector2<i32> => Uniform2i(self.x, self.y));
 uniform!(self, Vector3<i32> => Uniform3i(self.x, self.y, self.z));
 uniform!(self, Vector4<i32> => Uniform4i(self.x, self.y, self.z, self.w));
+uniform!(self, Point1<i32> => Uniform1i(self.x));
+uniform!(self, Point2<i32> => Uniform2i(self.x, self.y));
+uniform!(self, Point3<i32> => Uniform3i(self.x, self.y, self.z));
 
 uniform!(self, u32 => Uniform1ui(*self));
 uniform!(self, [u32; 1] => Uniform1ui(self[0]));
@@ -127,6 +136,9 @@ uniform!(self, (u32, u32, u32, u32) => Uniform4ui(self.0, self.1, self.2, self.3
 uniform!(self, Vector2<u32> => Uniform2ui(self.x, self.y));
 uniform!(self, Vector3<u32> => Uniform3ui(self.x, self.y, self.z));
 uniform!(self, Vector4<u32> => Uniform4ui(self.x, self.y, self.z, self.w));
+uniform!(self, Point1<u32> => Uniform1ui(self.x));
+uniform!(self, Point2<u32> => Uniform2ui(self.x, self.y));
+uniform!(self, Point3<u32> => Uniform3ui(self.x, self.y, self.z));
 
 use cgmath::Matrix;
 

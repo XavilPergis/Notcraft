@@ -2,7 +2,6 @@ use cgmath::{Point3, Vector2, Vector3, Vector4};
 use engine::components as comp;
 use engine::mesh::Mesh;
 use engine::systems::debug_render::Shape;
-use engine::world::block::{BlockRegistry, BlockRenderPrototype};
 use engine::world::chunk::SIZE;
 use engine::world::BlockPos;
 use engine::world::ChunkPos;
@@ -24,7 +23,6 @@ impl<'a> System<'a> for ChunkMesher {
         WriteStorage<'a, comp::DirtyMesh>,
         ReadStorage<'a, comp::ChunkId>,
         ReadExpect<'a, VoxelWorld>,
-        ReadExpect<'a, BlockRegistry>,
         Write<'a, EventChannel<(Entity, Mesh<BlockVertex, u32>)>>,
         WriteExpect<'a, EventChannel<Shape>>,
         Entities<'a>,
@@ -36,7 +34,6 @@ impl<'a> System<'a> for ChunkMesher {
             mut dirty_markers,
             chunk_ids,
             world,
-            registry,
             mut mesh_channel,
             mut debug_channel,
             entities,
@@ -49,7 +46,7 @@ impl<'a> System<'a> for ChunkMesher {
             for x in -1..=1 {
                 for y in -1..=1 {
                     for z in -1..=1 {
-                        surrounded &= world.chunk_exists(pos + Vector3::new(x, y, z));
+                        surrounded &= world.chunk_exists(pos.offset((x, y, z)));
                     }
                 }
             }
@@ -61,7 +58,7 @@ impl<'a> System<'a> for ChunkMesher {
                     Vector4::new(1.0, 0.0, 1.0, 1.0),
                 ));
                 trace!("Chunk {:?} is ready for meshing", pos);
-                let mut mesher = CullMesher::new(pos, &world, &registry);
+                let mut mesher = CullMesher::new(pos, &world);
                 mesher.mesh();
                 mesh_channel.single_write((entity, mesher.mesh_constructor.mesh));
                 dirty_markers.remove(entity);
@@ -71,37 +68,36 @@ impl<'a> System<'a> for ChunkMesher {
     }
 }
 
-struct CullMesher<'w, 'r> {
+struct CullMesher<'w> {
     pos: ChunkPos,
     world: &'w VoxelWorld,
-    registry: &'r BlockRegistry,
-    mesh_constructor: MeshConstructor,
+    mesh_constructor: MeshConstructor<'w>,
 }
 
-impl<'w, 'r> CullMesher<'w, 'r> {
-    fn new(pos: ChunkPos, world: &'w VoxelWorld, registry: &'r BlockRegistry) -> Self {
+impl<'w> CullMesher<'w> {
+    fn new(pos: ChunkPos, world: &'w VoxelWorld) -> Self {
         CullMesher {
             pos,
             world,
-            registry,
             mesh_constructor: MeshConstructor {
                 index: 0,
                 mesh: Default::default(),
+                world,
             },
         }
     }
 
-    fn face_ao(&self, pos: Point3<i32>, side: Side) -> FaceAo {
-        let is_opaque = |pos| self.registry[self.world.get_block(pos)].opaque;
+    fn face_ao(&self, pos: BlockPos, side: Side) -> FaceAo {
+        let is_opaque = |pos| self.world.get_block_properties(pos).unwrap().opaque;
 
-        let neg_neg = is_opaque(pos + side.uvl_to_xyz(-1, -1, 1));
-        let neg_cen = is_opaque(pos + side.uvl_to_xyz(-1, 0, 1));
-        let neg_pos = is_opaque(pos + side.uvl_to_xyz(-1, 1, 1));
-        let pos_neg = is_opaque(pos + side.uvl_to_xyz(1, -1, 1));
-        let pos_cen = is_opaque(pos + side.uvl_to_xyz(1, 0, 1));
-        let pos_pos = is_opaque(pos + side.uvl_to_xyz(1, 1, 1));
-        let cen_neg = is_opaque(pos + side.uvl_to_xyz(0, -1, 1));
-        let cen_pos = is_opaque(pos + side.uvl_to_xyz(0, 1, 1));
+        let neg_neg = is_opaque(pos.offset(side.uvl_to_xyz(-1, -1, 1)));
+        let neg_cen = is_opaque(pos.offset(side.uvl_to_xyz(-1, 0, 1)));
+        let neg_pos = is_opaque(pos.offset(side.uvl_to_xyz(-1, 1, 1)));
+        let pos_neg = is_opaque(pos.offset(side.uvl_to_xyz(1, -1, 1)));
+        let pos_cen = is_opaque(pos.offset(side.uvl_to_xyz(1, 0, 1)));
+        let pos_pos = is_opaque(pos.offset(side.uvl_to_xyz(1, 1, 1)));
+        let cen_neg = is_opaque(pos.offset(side.uvl_to_xyz(0, -1, 1)));
+        let cen_pos = is_opaque(pos.offset(side.uvl_to_xyz(0, 1, 1)));
 
         let face_pos_pos = ao_value(cen_pos, pos_pos, pos_cen); // c+ ++ +c
         let face_pos_neg = ao_value(pos_cen, pos_neg, cen_neg); // +c +- c-
@@ -117,20 +113,20 @@ impl<'w, 'r> CullMesher<'w, 'r> {
     }
 
     fn is_not_occluded(&self, pos: BlockPos, offset: Vector3<i32>) -> bool {
-        let cur = self.registry[self.world.get_block(pos)];
-        let other = self.registry[self.world.get_block(pos + offset)];
+        let cur = self.world.get_block_properties(pos).unwrap();
+        let other = self.world.get_block_properties(pos.offset(offset)).unwrap();
 
         cur.opaque && !other.opaque
     }
 
     fn mesh(&mut self) {
         let size = SIZE as i32;
-        let base = size * self.pos;
+        let base = self.pos.base();
         for x in 0..size {
             for y in 0..size {
                 for z in 0..size {
-                    let pos = base + Vector3::new(x, y, z);
-                    let block = self.world.get_block(pos);
+                    let pos = base.offset((x, y, z));
+                    // let block = self.world.get_block(pos);
 
                     for side in &[
                         Side::Top,
@@ -141,12 +137,8 @@ impl<'w, 'r> CullMesher<'w, 'r> {
                         Side::Back,
                     ] {
                         if self.is_not_occluded(pos, side.normal()) {
-                            self.mesh_constructor.add(
-                                &self.registry[block],
-                                self.face_ao(pos, *side),
-                                *side,
-                                pos,
-                            )
+                            self.mesh_constructor
+                                .add(self.face_ao(pos, *side), *side, pos)
                         }
                     }
                 }
@@ -181,13 +173,14 @@ impl FaceAo {
 }
 
 #[derive(Clone, Debug)]
-struct MeshConstructor {
+struct MeshConstructor<'w> {
     index: u32,
     mesh: Mesh<BlockVertex, u32>,
+    world: &'w VoxelWorld,
 }
 
-impl MeshConstructor {
-    fn add(&mut self, proto: &BlockRenderPrototype, ao: FaceAo, side: Side, pos: Point3<i32>) {
+impl<'w> MeshConstructor<'w> {
+    fn add(&mut self, ao: FaceAo, side: Side, pos: BlockPos) {
         const NORMAL_QUAD_CW: &'static [u32] = &[0, 1, 2, 3, 2, 1];
         const FLIPPED_QUAD_CW: &'static [u32] = &[3, 2, 0, 0, 1, 3];
         const NORMAL_QUAD_CCW: &'static [u32] = &[2, 1, 0, 1, 2, 3];
@@ -247,12 +240,16 @@ impl MeshConstructor {
 
         let normal = side.normal();
 
-        let tile_offset = proto.get_texture_offset(side);
+        let tile_offset = self
+            .world
+            .get_block_properties(pos)
+            .unwrap()
+            .get_texture_offset(side);
 
-        let fp: Point3<f32> = pos.cast().unwrap();
-        let mut push_vertex = |pos, uv, ao| {
+        let base = pos.base().0.cast::<f32>().unwrap();
+        let mut push_vertex = |offset, uv, ao| {
             self.mesh.vertices.push(BlockVertex {
-                pos: fp + pos,
+                pos: (base + offset),
                 uv,
                 ao,
                 normal,

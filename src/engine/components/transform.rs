@@ -1,10 +1,11 @@
-use cgmath::{Deg, Matrix3, Matrix4, Vector2, Vector3, Zero};
+use cgmath::Point3;
+use cgmath::{Deg, Matrix3, Matrix4, Vector2, Vector3};
 use specs::prelude::*;
 
 #[derive(Copy, Clone, Debug, PartialEq, Component)]
 #[storage(DenseVecStorage)]
 pub struct Transform {
-    pub position: Vector3<f64>,
+    pub position: Point3<f64>,
     pub orientation: Vector2<Deg<f64>>,
     pub scale: Vector3<f64>,
 }
@@ -12,7 +13,7 @@ pub struct Transform {
 impl Default for Transform {
     fn default() -> Self {
         Transform {
-            position: Vector3::zero(),
+            position: Point3::new(0.0, 0.0, 0.0),
             orientation: Vector2::new(Deg(0.0), Deg(0.0)),
             scale: Vector3::new(1.0, 1.0, 1.0),
         }
@@ -24,7 +25,7 @@ impl Transform {
         Matrix4::from_nonuniform_scale(self.scale.x, self.scale.y, self.scale.z)
             * Matrix4::from_angle_x(self.orientation.x)
             * Matrix4::from_angle_y(self.orientation.y)
-            * Matrix4::from_translation(-self.position)
+            * Matrix4::from_translation(-::util::to_vector(self.position))
     }
 
     pub fn basis_vectors(&self) -> (Vector3<f64>, Vector3<f64>) {

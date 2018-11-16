@@ -27,14 +27,3 @@ impl Default for MoveDelta {
         MoveDelta(Vector3::new(0.0, 0.0, 0.0))
     }
 }
-
-#[derive(Copy, Clone, Debug, PartialEq, Default, Component)]
-#[storage(HashMapStorage)]
-pub struct ActiveDirections {
-    pub front: bool,
-    pub back: bool,
-    pub left: bool,
-    pub right: bool,
-    pub down: bool,
-    pub up: bool,
-}

@@ -1,17 +1,10 @@
-use cgmath::Point3;
-use cgmath::{Vector3, Vector4};
-use engine::components::*;
-use engine::resources::*;
 use engine::systems::debug_render::Shape;
-use engine::world::block;
-use engine::world::VoxelWorld;
-use engine::world::{block::BlockId, chunk, Chunk, ChunkPos};
 use noise::{Fbm, MultiFractal, NoiseFn, SuperSimplex};
-use shrev::EventChannel;
-use specs::prelude::*;
 use specs::world::EntitiesRes;
 use std::collections::HashSet;
 use std::sync::mpsc;
+
+use engine::prelude::*;
 
 pub struct NoiseGenerator {
     noise: Fbm,
@@ -58,7 +51,7 @@ impl NoiseGenerator {
         }
     }
 
-    fn pos_at_block(pos: ChunkPos, offset: Vector3<usize>) -> Point3<f64> {
+    fn pos_at_block(ChunkPos(pos): ChunkPos, offset: Vector3<usize>) -> Point3<f64> {
         const SIZE: i32 = chunk::SIZE as i32;
         let x = ((SIZE * pos.x) as f64 + offset.x as f64) / SIZE as f64;
         let y = ((SIZE * pos.y) as f64 + offset.y as f64) / SIZE as f64;
@@ -113,9 +106,9 @@ impl TerrainGenerator {
 impl<'a> System<'a> for TerrainGenerator {
     type SystemData = (
         WriteExpect<'a, VoxelWorld>,
-        ReadStorage<'a, Player>,
-        ReadStorage<'a, Transform>,
-        Read<'a, ViewDistance>,
+        ReadStorage<'a, comp::Player>,
+        ReadStorage<'a, comp::Transform>,
+        Read<'a, res::ViewDistance>,
         Read<'a, LazyUpdate>,
         Read<'a, EntitiesRes>,
         WriteExpect<'a, EventChannel<Shape>>,
@@ -127,13 +120,11 @@ impl<'a> System<'a> for TerrainGenerator {
     ) {
         let dist = view_distance.0;
         for (_, transform) in (&players, &transforms).join() {
+            let base_pos: ChunkPos = WorldPos(transform.position).into();
             for xo in -dist.x..=dist.x {
                 for yo in -dist.y..=dist.y {
                     for zo in -dist.z..=dist.z {
-                        let (cpos, _) = ::engine::world::chunk_pos_offset(::util::to_point(
-                            transform.position.cast().unwrap(),
-                        ));
-                        let pos = cpos + Vector3::new(xo, yo, zo);
+                        let pos = base_pos.offset((xo, yo, zo));
                         if !voxel_world.chunk_exists(pos) && !self.queue.contains(&pos) {
                             self.queue.insert(pos);
                             self.request_tx.send(pos).unwrap();
@@ -144,20 +135,16 @@ impl<'a> System<'a> for TerrainGenerator {
         }
 
         for item in self.queue.iter() {
-            debug_channel.single_write(Shape::Chunk(
-                2.0,
-                item.cast().unwrap(),
-                Vector4::new(1.0, 0.0, 0.0, 1.0),
-            ));
+            debug_channel.single_write(Shape::Chunk(2.0, *item, Vector4::new(1.0, 0.0, 0.0, 1.0)));
         }
 
         for (pos, chunk) in self.chunk_rx.try_iter() {
             voxel_world.set_chunk(pos, chunk);
             self.queue.remove(&pos);
             lazy.create_entity(&entity_res)
-                .with(ChunkId(pos))
-                .with(DirtyMesh)
-                .with(Transform::default())
+                .with(comp::ChunkId(pos))
+                .with(comp::DirtyMesh)
+                .with(comp::Transform::default())
                 .build();
         }
     }
