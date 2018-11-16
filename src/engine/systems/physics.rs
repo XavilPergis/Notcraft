@@ -4,11 +4,11 @@ use engine::systems::debug_render::Shape;
 use engine::world::VoxelWorld;
 use shrev::EventChannel;
 
-pub struct RigidBodyUpdater;
+pub struct Physics;
 
-impl RigidBodyUpdater {
+impl Physics {
     pub fn new() -> Self {
-        RigidBodyUpdater
+        Physics
     }
 }
 
@@ -189,7 +189,7 @@ fn physics_step_z(ctx: &mut PhysicsStepContext, debug: &mut EventChannel<Shape>)
     }
 }
 
-impl<'a> System<'a> for RigidBodyUpdater {
+impl<'a> System<'a> for Physics {
     type SystemData = (
         WriteStorage<'a, comp::Transform>,
         WriteStorage<'a, comp::RigidBody>,

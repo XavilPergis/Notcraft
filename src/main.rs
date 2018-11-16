@@ -256,7 +256,7 @@ fn main() {
         )
         .with(PlayerController, "player controller", &[])
         .with(SmoothCamera, "smooth camera", &[])
-        .with(RigidBodyUpdater::new(), "rigidbody updater", &[])
+        .with(Physics::new(), "rigidbody updater", &[])
         .with(
             TerrainGenerator::new(NoiseGenerator::new_default()),
             "terrain generator",

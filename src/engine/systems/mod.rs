@@ -6,5 +6,5 @@ mod player_controller;
 pub mod terrain_gen;
 
 pub use self::input::{InputHandler, LockCursor, SmoothCamera};
-pub use self::physics::RigidBodyUpdater;
+pub use self::physics::Physics;
 pub use self::player_controller::PlayerController;
