@@ -1,5 +1,6 @@
 use cgmath::Deg;
 use engine::prelude::*;
+use engine::systems::debug_render::DebugAccumulator;
 use glutin::{ElementState, Event, KeyboardInput, ModifiersState, VirtualKeyCode, WindowEvent};
 use shrev::EventChannel;
 use specs::shred::PanicHandler;
@@ -177,6 +178,7 @@ impl<'a> System<'a> for InputHandler {
         Write<'a, res::ViewFrustum, PanicHandler>,
         Write<'a, res::ViewDistance, PanicHandler>,
         ReadClientPlayer<'a>,
+        WriteExpect<'a, DebugAccumulator>,
     );
 
     fn run(
@@ -189,6 +191,7 @@ impl<'a> System<'a> for InputHandler {
             mut frustum,
             mut view_distance,
             player,
+            mut debug,
         ): Self::SystemData,
     ) {
         for delta in (&mut move_deltas).join() {
@@ -236,6 +239,30 @@ impl<'a> System<'a> for InputHandler {
                             stop_flag.0 = true;
                             break;
                         }
+
+                        // TODO: I don't like having arbitrary strings in my program like this, maybe I can find
+                        // a cleaner way to do debug sections later, but it's fine for now.
+                        for &(key, section) in &[
+                            (VirtualKeyCode::C, "chunk grid"),
+                            (VirtualKeyCode::T, "terrain generation"),
+                            (VirtualKeyCode::M, "mesher"),
+                            (VirtualKeyCode::P, "physics"),
+                        ] {
+                            if Keybind::new(
+                                key,
+                                Some(ModifiersState {
+                                    shift: false,
+                                    ctrl: true,
+                                    alt: false,
+                                    logo: false,
+                                }),
+                            )
+                            .matches_input(*input)
+                            {
+                                debug.toggle(section.to_owned());
+                            }
+                        }
+
                         if KEYBIND_DEBUG.matches_input(*input) {
                             let tfm = player.get_transform().unwrap();
                             let bpos: BlockPos = WorldPos(tfm.position).into();

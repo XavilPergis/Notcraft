@@ -1,6 +1,7 @@
 use cgmath::{Point3, Vector2, Vector3, Vector4};
 use engine::components as comp;
 use engine::mesh::Mesh;
+use engine::systems::debug_render::DebugAccumulator;
 use engine::systems::debug_render::Shape;
 use engine::world::chunk::SIZE;
 use engine::world::BlockPos;
@@ -24,23 +25,17 @@ impl<'a> System<'a> for ChunkMesher {
         ReadStorage<'a, comp::ChunkId>,
         ReadExpect<'a, VoxelWorld>,
         Write<'a, EventChannel<(Entity, Mesh<BlockVertex, u32>)>>,
-        WriteExpect<'a, EventChannel<Shape>>,
+        ReadExpect<'a, DebugAccumulator>,
         Entities<'a>,
     );
 
     fn run(
         &mut self,
-        (
-            mut dirty_markers,
-            chunk_ids,
-            world,
-            mut mesh_channel,
-            mut debug_channel,
-            entities,
-        ): Self::SystemData,
+        (mut dirty_markers, chunk_ids, world, mut mesh_channel, debug, entities): Self::SystemData,
     ) {
         for (_, &comp::ChunkId(pos), entity) in (&dirty_markers, &chunk_ids, &*entities).join() {
-            debug_channel.single_write(Shape::Chunk(2.0, pos, Vector4::new(0.5, 0.5, 1.0, 1.0)));
+            let mut section = debug.section("mesher");
+            section.draw(Shape::Chunk(2.0, pos, Vector4::new(0.5, 0.5, 1.0, 1.0)));
             // Ensure that the surrounding volume of chunks exist before meshing this one.
             let mut surrounded = true;
             for x in -1..=1 {
@@ -52,11 +47,7 @@ impl<'a> System<'a> for ChunkMesher {
             }
 
             if surrounded {
-                debug_channel.single_write(Shape::Chunk(
-                    2.0,
-                    pos,
-                    Vector4::new(1.0, 0.0, 1.0, 1.0),
-                ));
+                section.draw(Shape::Chunk(2.0, pos, Vector4::new(1.0, 0.0, 1.0, 1.0)));
                 trace!("Chunk {:?} is ready for meshing", pos);
                 let mut mesher = CullMesher::new(pos, &world);
                 mesher.mesh();

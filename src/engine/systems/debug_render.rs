@@ -10,7 +10,9 @@ use ordered_float::OrderedFloat;
 use shrev::EventChannel;
 use shrev::ReaderId;
 use specs::shred::PanicHandler;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::MutexGuard;
+use std::sync::{mpsc, Arc, Mutex};
 
 vertex! {
     vertex DebugVertex {
@@ -27,26 +29,78 @@ pub enum Shape {
     Line(f64, WorldPos, Vector3<f64>, Vector4<f64>),
 }
 
+pub enum DebugSection<'a> {
+    Disabled,
+    Enabled(MutexGuard<'a, Vec<Shape>>),
+}
+
+impl<'a> DebugSection<'a> {
+    pub fn draw(&mut self, shape: Shape) {
+        match self {
+            DebugSection::Enabled(buf) => buf.push(shape),
+            _ => {}
+        }
+    }
+}
+
+pub struct DebugAccumulator {
+    shape_buffer: Mutex<Vec<Shape>>,
+    enabled: HashSet<String>,
+}
+
+impl DebugAccumulator {
+    pub fn section(&self, name: &str) -> DebugSection {
+        if self.enabled.contains(name) {
+            self.shape_buffer
+                .try_lock()
+                .map(|guard| DebugSection::Enabled(guard))
+                .unwrap_or(DebugSection::Disabled)
+        } else {
+            DebugSection::Disabled
+        }
+    }
+
+    pub fn shapes_mut(&mut self) -> &mut Vec<Shape> {
+        self.shape_buffer.get_mut().unwrap()
+    }
+
+    pub fn enable(&mut self, name: String) {
+        self.enabled.insert(name);
+    }
+
+    pub fn toggle(&mut self, name: String) {
+        if self.enabled.contains(&name) {
+            self.enabled.remove(&name);
+        } else {
+            self.enabled.insert(name);
+        }
+    }
+}
+
 pub struct DebugRenderer {
     ctx: Context,
     program: LinkedProgram,
     vbo: Buffer<DebugVertex>,
     geometry: HashMap<OrderedFloat<f64>, Vec<DebugVertex>>,
-    request_rx: ReaderId<Shape>,
 }
 
 impl DebugRenderer {
-    pub fn new(ctx: &Context, request_rx: ReaderId<Shape>) -> Self {
+    pub fn new(ctx: &Context) -> (Self, DebugAccumulator) {
         let program = simple_pipeline("resources/debug.vs", "resources/debug.fs").unwrap();
         let vbo = Buffer::new(ctx);
 
-        DebugRenderer {
-            ctx: ctx.clone(),
-            geometry: HashMap::new(),
-            program,
-            vbo,
-            request_rx,
-        }
+        (
+            DebugRenderer {
+                ctx: ctx.clone(),
+                geometry: HashMap::new(),
+                program,
+                vbo,
+            },
+            DebugAccumulator {
+                shape_buffer: Mutex::new(vec![]),
+                enabled: HashSet::new(),
+            },
+        )
     }
 
     fn add_line(&mut self, start: WorldPos, end: WorldPos, color: Vector4<f64>, weight: f64) {
@@ -98,26 +152,26 @@ impl DebugRenderer {
 
 impl<'a> System<'a> for DebugRenderer {
     type SystemData = (
-        Read<'a, EventChannel<Shape>>,
         ReadStorage<'a, comp::Transform>,
         ReadStorage<'a, comp::Player>,
         ReadStorage<'a, comp::ClientControlled>,
         Read<'a, res::ViewFrustum, PanicHandler>,
         ReadExpect<'a, ::glutin::GlWindow>,
+        WriteExpect<'a, DebugAccumulator>,
     );
 
     fn run(
         &mut self,
-        (channel, transforms, player_marker, client_controlled_marker, frustum, window): Self::SystemData,
+        (transforms, player_marker, client_controlled_marker, frustum, window, mut accumulator): Self::SystemData,
     ) {
         self.geometry.clear();
-        for shape in channel.read(&mut self.request_rx) {
+        for shape in accumulator.shapes_mut().drain(..) {
             match shape {
-                &Shape::Box(weight, b, color) => {
+                Shape::Box(weight, b, color) => {
                     self.add_box(b, color, weight);
                 }
 
-                &Shape::Chunk(weight, pos, color) => {
+                Shape::Chunk(weight, pos, color) => {
                     let fsize = SIZE as f64;
                     let base = pos.base().base().0;
                     self.add_box(
@@ -127,7 +181,7 @@ impl<'a> System<'a> for DebugRenderer {
                     );
                 }
 
-                &Shape::GriddedChunk(weight, pos, color) => {
+                Shape::GriddedChunk(weight, pos, color) => {
                     let fsize = SIZE as f64;
                     let base = pos.base().base();
                     self.add_box(
@@ -168,7 +222,7 @@ impl<'a> System<'a> for DebugRenderer {
                     }
                 }
 
-                &Shape::Line(weight, start, end, color) => {
+                Shape::Line(weight, start, end, color) => {
                     self.add_line(start, start.offset(end), color, weight)
                 }
             }

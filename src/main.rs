@@ -243,11 +243,12 @@ fn main() {
         mesh_recv: mesh_channel.register_reader(),
     };
 
-    let mut debug_request_channel = EventChannel::new();
-
     use engine::systems::debug_render::*;
     use engine::systems::terrain_gen::*;
     use engine::systems::*;
+
+    let (debug_rendering_system, debug_accumulator) = DebugRenderer::new(&ctx);
+
     let mut dispatcher = DispatcherBuilder::new()
         .with(
             LockCursor::new(&mut window_events),
@@ -265,17 +266,14 @@ fn main() {
         .with(ChunkMesher::new(), "chunk mesher", &["terrain generator"])
         .with_thread_local(InputHandler::new(&mut window_events))
         .with_thread_local(terrain_renderer)
-        .with_thread_local(DebugRenderer::new(
-            &ctx,
-            debug_request_channel.register_reader(),
-        ))
+        .with_thread_local(debug_rendering_system)
         .build();
 
     dispatcher.setup(&mut world.res);
 
+    world.add_resource(debug_accumulator);
     world.add_resource(res::ActiveDirections::default());
     world.add_resource(mesh_channel);
-    world.add_resource(debug_request_channel);
     world.add_resource(res::StopGameLoop(false));
     world.add_resource(window_events);
     world.add_resource(res::Dt(Duration::from_secs(1)));

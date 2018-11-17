@@ -1,4 +1,5 @@
 use engine::prelude::*;
+use engine::systems::debug_render::DebugAccumulator;
 use engine::systems::debug_render::Shape;
 use engine::world::chunk::SIZE;
 use shrev::EventChannel;
@@ -14,13 +15,14 @@ impl<'a> System<'a> for PlayerController {
         WriteStorage<'a, comp::RigidBody>,
         ReadStorage<'a, comp::MoveDelta>,
         Read<'a, res::ActiveDirections>,
-        WriteExpect<'a, EventChannel<Shape>>,
+        WriteExpect<'a, DebugAccumulator>,
     );
 
     fn run(
         &mut self,
-        (player, mut player_transform, mut rigidbody, move_delta, directions, mut debug_channel): Self::SystemData,
+        (player, mut player_transform, mut rigidbody, move_delta, directions, debug): Self::SystemData,
     ) {
+        let mut section = debug.section("chunk grid");
         for (_, tfm, move_delta) in (&player, &mut player_transform, &move_delta).join() {
             tfm.position += move_delta.0;
         }
@@ -31,24 +33,24 @@ impl<'a> System<'a> for PlayerController {
                 .base()
                 .offset((SIZE as i32 / 2, SIZE as i32 / 2, SIZE as i32 / 2))
                 .center();
-            debug_channel.single_write(Shape::GriddedChunk(
+            section.draw(Shape::GriddedChunk(
                 2.0,
                 cpos,
                 Vector4::new(0.5, 0.5, 1.0, 1.0),
             ));
-            debug_channel.single_write(Shape::Line(
+            section.draw(Shape::Line(
                 5.0,
                 center,
                 Vector3::unit_x(),
                 Vector4::new(1.0, 0.0, 0.0, 1.0),
             ));
-            debug_channel.single_write(Shape::Line(
+            section.draw(Shape::Line(
                 5.0,
                 center,
                 Vector3::unit_y(),
                 Vector4::new(0.0, 1.0, 0.0, 1.0),
             ));
-            debug_channel.single_write(Shape::Line(
+            section.draw(Shape::Line(
                 5.0,
                 center,
                 Vector3::unit_z(),

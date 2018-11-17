@@ -1,5 +1,7 @@
 use collision::{prelude::*, Aabb3};
 use engine::prelude::*;
+use engine::systems::debug_render::DebugAccumulator;
+use engine::systems::debug_render::DebugSection;
 use engine::systems::debug_render::Shape;
 use engine::world::VoxelWorld;
 use shrev::EventChannel;
@@ -74,14 +76,14 @@ fn cube_aabb(pos: BlockPos) -> Aabb3<f64> {
     cube_base.add_v(::util::to_vector(pos.base().0))
 }
 
-fn physics_step_x(ctx: &mut PhysicsStepContext, debug: &mut EventChannel<Shape>) {
+fn physics_step_x(ctx: &mut PhysicsStepContext, debug: &mut DebugSection) {
     // Apply step along the X axis
     ctx.body.velocity.x *= 1.0 / (1.0 + ctx.body.drag.x * ctx.dt);
     ctx.transform.position.x += ctx.body.velocity.x * ctx.dt;
 
     // get the possible collisions
     let blocks = collidable_blocks_in_aabb(ctx.world, ctx.entity_aabb());
-    debug.single_write(Shape::Box(
+    debug.draw(Shape::Box(
         5.0,
         ctx.entity_aabb(),
         Vector4::new(1.0, 0.0, 0.0, 1.0),
@@ -90,7 +92,7 @@ fn physics_step_x(ctx: &mut PhysicsStepContext, debug: &mut EventChannel<Shape>)
     let num_blocks = blocks.len();
     let mut dbg_aabb = |aabb, i| {
         let val = i as f64 / num_blocks as f64;
-        debug.single_write(Shape::Box(5.0, aabb, Vector4::new(val, 0.0, 0.0, 1.0)));
+        debug.draw(Shape::Box(5.0, aabb, Vector4::new(val, 0.0, 0.0, 1.0)));
     };
 
     // try to resolve the collisions
@@ -109,14 +111,14 @@ fn physics_step_x(ctx: &mut PhysicsStepContext, debug: &mut EventChannel<Shape>)
         }
     }
 }
-fn physics_step_y(ctx: &mut PhysicsStepContext, debug: &mut EventChannel<Shape>) {
+fn physics_step_y(ctx: &mut PhysicsStepContext, debug: &mut DebugSection) {
     // Apply step along the Y axis
     ctx.body.velocity.y *= 1.0 / (1.0 + ctx.body.drag.y * ctx.dt);
     ctx.transform.position.y += ctx.body.velocity.y * ctx.dt;
 
     // get the possible collisions
     let blocks = collidable_blocks_in_aabb(ctx.world, ctx.entity_aabb());
-    debug.single_write(Shape::Box(
+    debug.draw(Shape::Box(
         5.0,
         ctx.entity_aabb(),
         Vector4::new(0.0, 1.0, 0.0, 1.0),
@@ -125,7 +127,7 @@ fn physics_step_y(ctx: &mut PhysicsStepContext, debug: &mut EventChannel<Shape>)
     let num_blocks = blocks.len();
     let mut dbg_aabb = |aabb, i| {
         let val = i as f64 / num_blocks as f64;
-        debug.single_write(Shape::Box(5.0, aabb, Vector4::new(0.0, val, 0.0, 1.0)));
+        debug.draw(Shape::Box(5.0, aabb, Vector4::new(0.0, val, 0.0, 1.0)));
     };
 
     // try to resolve the collisions
@@ -144,14 +146,14 @@ fn physics_step_y(ctx: &mut PhysicsStepContext, debug: &mut EventChannel<Shape>)
         }
     }
 }
-fn physics_step_z(ctx: &mut PhysicsStepContext, debug: &mut EventChannel<Shape>) {
+fn physics_step_z(ctx: &mut PhysicsStepContext, debug: &mut DebugSection) {
     // Apply step along the Y axis
     ctx.body.velocity.z *= 1.0 / (1.0 + ctx.body.drag.z * ctx.dt);
     ctx.transform.position.z += ctx.body.velocity.z * ctx.dt;
 
     // get the possible collisions
     let blocks = collidable_blocks_in_aabb(ctx.world, ctx.entity_aabb());
-    debug.single_write(Shape::Box(
+    debug.draw(Shape::Box(
         5.0,
         ctx.entity_aabb(),
         Vector4::new(0.0, 0.0, 1.0, 1.0),
@@ -160,7 +162,7 @@ fn physics_step_z(ctx: &mut PhysicsStepContext, debug: &mut EventChannel<Shape>)
     let num_blocks = blocks.len();
     let mut dbg_aabb = |aabb, i| {
         let val = i as f64 / num_blocks as f64;
-        debug.single_write(Shape::Box(5.0, aabb, Vector4::new(0.0, 0.0, val, 1.0)));
+        debug.draw(Shape::Box(5.0, aabb, Vector4::new(0.0, 0.0, val, 1.0)));
     };
 
     // try to resolve the collisions
@@ -187,17 +189,18 @@ impl<'a> System<'a> for Physics {
         ReadStorage<'a, comp::Collidable>,
         ReadExpect<'a, VoxelWorld>,
         Read<'a, res::Dt>,
-        WriteExpect<'a, EventChannel<Shape>>,
+        WriteExpect<'a, DebugAccumulator>,
     );
 
     fn run(
         &mut self,
-        (mut transforms, mut rigidbodies, collidables, world, dt, mut debug_channel): Self::SystemData,
+        (mut transforms, mut rigidbodies, collidables, world, dt, mut debug): Self::SystemData,
     ) {
         for (transform, rigidbody, collidable) in
             (&mut transforms, &mut rigidbodies, collidables.maybe()).join()
         {
-            let steps = if collidable.is_some() { 1 } else { 1 };
+            let mut section = debug.section("physics");
+            let steps = if collidable.is_some() { 4 } else { 1 };
             // adjusted dt for smaller steps when there are more of them
             let dt = dt.as_secs() / steps as f64;
 
@@ -212,9 +215,9 @@ impl<'a> System<'a> for Physics {
                         dt,
                     };
 
-                    physics_step_x(&mut ctx, &mut debug_channel);
-                    physics_step_y(&mut ctx, &mut debug_channel);
-                    physics_step_z(&mut ctx, &mut debug_channel);
+                    physics_step_x(&mut ctx, &mut section);
+                    physics_step_y(&mut ctx, &mut section);
+                    physics_step_z(&mut ctx, &mut section);
                 }
             }
         }

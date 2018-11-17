@@ -1,3 +1,4 @@
+use engine::systems::debug_render::DebugAccumulator;
 use engine::systems::debug_render::Shape;
 use noise::{Fbm, MultiFractal, NoiseFn, SuperSimplex};
 use specs::world::EntitiesRes;
@@ -111,12 +112,12 @@ impl<'a> System<'a> for TerrainGenerator {
         Read<'a, res::ViewDistance>,
         Read<'a, LazyUpdate>,
         Read<'a, EntitiesRes>,
-        WriteExpect<'a, EventChannel<Shape>>,
+        ReadExpect<'a, DebugAccumulator>,
     );
 
     fn run(
         &mut self,
-        (mut voxel_world, players, transforms, view_distance, lazy, entity_res, mut debug_channel): Self::SystemData,
+        (mut voxel_world, players, transforms, view_distance, lazy, entity_res, debug): Self::SystemData,
     ) {
         let dist = view_distance.0;
         for (_, transform) in (&players, &transforms).join() {
@@ -134,8 +135,9 @@ impl<'a> System<'a> for TerrainGenerator {
             }
         }
 
+        let mut section = debug.section("terrain generation");
         for item in self.queue.iter() {
-            debug_channel.single_write(Shape::Chunk(2.0, *item, Vector4::new(1.0, 0.0, 0.0, 1.0)));
+            section.draw(Shape::Chunk(2.0, *item, Vector4::new(1.0, 0.0, 0.0, 1.0)));
         }
 
         for (pos, chunk) in self.chunk_rx.try_iter() {
