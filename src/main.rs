@@ -276,7 +276,7 @@ fn main() {
     world.add_resource(res::Dt(Duration::from_secs(1)));
     world.add_resource(res::ViewFrustum {
         fov: Deg(80.0),
-        near_plane: 0.001,
+        near_plane: 0.01,
         far_plane: 1000.0,
     });
 
