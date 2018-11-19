@@ -124,6 +124,10 @@ impl VoxelWorld {
         }
     }
 
+    pub fn unload_chunk(&mut self, pos: ChunkPos) {
+        self.chunks.remove(&pos);
+    }
+
     pub fn set_chunk(&mut self, pos: ChunkPos, chunk: Chunk<BlockId>) {
         self.chunks.insert(pos, chunk);
     }

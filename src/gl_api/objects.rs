@@ -36,3 +36,4 @@ macro_rules! define_raw_object {
 
 define_raw_object!(RawVertexArray, CreateVertexArrays, DeleteVertexArrays);
 define_raw_object!(RawBuffer, CreateBuffers, DeleteBuffers);
+define_raw_object!(RawFramebuffer, CreateFramebuffers, DeleteFramebuffers);

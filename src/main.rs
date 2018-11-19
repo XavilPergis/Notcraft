@@ -250,6 +250,7 @@ fn main() {
     let (debug_rendering_system, debug_accumulator) = DebugRenderer::new(&ctx);
 
     let mut dispatcher = DispatcherBuilder::new()
+        .with(ChunkUnloader::default(), "chunk unloader", &[])
         .with(
             LockCursor::new(&mut window_events),
             "cursor input handler",
@@ -258,11 +259,7 @@ fn main() {
         .with(PlayerController, "player controller", &[])
         .with(SmoothCamera, "smooth camera", &[])
         .with(Physics::new(), "rigidbody updater", &[])
-        .with(
-            TerrainGenerator::new(NoiseGenerator::new_default()),
-            "terrain generator",
-            &[],
-        )
+        .with(TerrainGenerator::new(), "terrain generator", &[])
         .with(ChunkMesher::new(), "chunk mesher", &["terrain generator"])
         .with_thread_local(InputHandler::new(&mut window_events))
         .with_thread_local(terrain_renderer)

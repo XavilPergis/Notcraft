@@ -20,8 +20,8 @@ void main()
 {
     vec2 tex_coords = v_Tile / 4.0 + (fract(v_Uv) / 4.0);
 
-    float density = 0.007;
-    float gradient = 2.3;
+    float density = 0.021;
+    float gradient = 5.0;
     float fog = exp(-pow(length(u_CameraPosition - v_Pos) * density, gradient));
     vec4 tex_color = texture(u_TextureMap, tex_coords);
     // return ((n-start1)/(stop1-start1))*(stop2-start2)+start2;

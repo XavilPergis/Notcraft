@@ -6,11 +6,13 @@ pub mod terrain;
 pub mod world;
 
 pub mod components;
+pub mod job;
 pub mod resources;
 pub mod systems;
 
 pub mod prelude {
     pub use super::components as comp;
+    pub use super::job;
     pub use super::resources as res;
     pub use super::world::{
         block, block::BlockId, chunk, BlockPos, Chunk, ChunkPos, VoxelWorld, WorldPos,
