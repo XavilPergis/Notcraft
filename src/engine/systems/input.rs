@@ -89,6 +89,20 @@ impl Keybind {
     }
 }
 
+const NO_MODIFIERS: ModifiersState = ModifiersState {
+    shift: false,
+    ctrl: false,
+    alt: false,
+    logo: false,
+};
+
+const CTRL_MODIFIERS: ModifiersState = ModifiersState {
+    shift: false,
+    ctrl: true,
+    alt: false,
+    logo: false,
+};
+
 const KEYBIND_FORWARDS: Keybind = Keybind {
     key: Key::Physical(0x11),
     modifiers: None,
@@ -115,36 +129,28 @@ const KEYBIND_DOWN: Keybind = Keybind {
 };
 const KEYBIND_ZOOM: Keybind = Keybind {
     key: Key::Physical(0x2E),
-    modifiers: None,
+    modifiers: Some(NO_MODIFIERS),
 };
 
 const KEYBIND_EXIT: Keybind = Keybind {
     key: Key::Virtual(VirtualKeyCode::Escape),
-    modifiers: Some(ModifiersState {
-        shift: false,
-        ctrl: false,
-        alt: false,
-        logo: false,
-    }),
+    modifiers: Some(NO_MODIFIERS),
 };
 const KEYBIND_DEBUG: Keybind = Keybind {
     key: Key::Virtual(VirtualKeyCode::B),
-    modifiers: Some(ModifiersState {
-        shift: false,
-        ctrl: true,
-        alt: false,
-        logo: false,
-    }),
+    modifiers: Some(CTRL_MODIFIERS),
 };
-
 const KEYBIND_TOGGLE_WIREFRAME: Keybind = Keybind {
     key: Key::Virtual(VirtualKeyCode::F),
-    modifiers: Some(ModifiersState {
-        shift: false,
-        ctrl: true,
-        alt: false,
-        logo: false,
-    }),
+    modifiers: Some(CTRL_MODIFIERS),
+};
+const KEYBIND_INC_RENDER_DISTANCE: Keybind = Keybind {
+    key: Key::Virtual(VirtualKeyCode::RBracket),
+    modifiers: Some(CTRL_MODIFIERS),
+};
+const KEYBIND_DEC_RENDER_DISTANCE: Keybind = Keybind {
+    key: Key::Virtual(VirtualKeyCode::LBracket),
+    modifiers: Some(CTRL_MODIFIERS),
 };
 
 use engine::components as comp;
@@ -238,6 +244,13 @@ impl<'a> System<'a> for InputHandler {
                         if KEYBIND_EXIT.matches_input(*input) {
                             stop_flag.0 = true;
                             break;
+                        }
+
+                        if KEYBIND_INC_RENDER_DISTANCE.matches_input(*input) {
+                            view_distance.0 += Vector3::new(1, 1, 1);
+                        }
+                        if KEYBIND_DEC_RENDER_DISTANCE.matches_input(*input) {
+                            view_distance.0 -= Vector3::new(1, 1, 1);
                         }
 
                         // TODO: I don't like having arbitrary strings in my program like this, maybe I can find

@@ -7,12 +7,10 @@ use gl_api::context::Context;
 use gl_api::shader::{program::LinkedProgram, simple_pipeline};
 use gl_api::PrimitiveType;
 use ordered_float::OrderedFloat;
-use shrev::EventChannel;
-use shrev::ReaderId;
 use specs::shred::PanicHandler;
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 use std::sync::MutexGuard;
-use std::sync::{mpsc, Arc, Mutex};
 
 vertex! {
     vertex DebugVertex {

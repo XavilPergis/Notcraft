@@ -4,7 +4,6 @@ use engine::systems::debug_render::DebugAccumulator;
 use engine::systems::debug_render::DebugSection;
 use engine::systems::debug_render::Shape;
 use engine::world::VoxelWorld;
-use shrev::EventChannel;
 
 pub struct Physics;
 
@@ -194,7 +193,7 @@ impl<'a> System<'a> for Physics {
 
     fn run(
         &mut self,
-        (mut transforms, mut rigidbodies, collidables, world, dt, mut debug): Self::SystemData,
+        (mut transforms, mut rigidbodies, collidables, world, dt, debug): Self::SystemData,
     ) {
         for (transform, rigidbody, collidable) in
             (&mut transforms, &mut rigidbodies, collidables.maybe()).join()

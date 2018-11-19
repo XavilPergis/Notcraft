@@ -136,7 +136,7 @@ impl<'a> System<'a> for TerrainRenderSystem {
 }
 
 fn main() {
-    simple_logger::init().unwrap();
+    simple_logger::init_with_level(log::Level::Debug).unwrap();
     let mut events_loop = glutin::EventsLoop::new();
     let window = glutin::WindowBuilder::new()
         .with_title("Hello, world!")

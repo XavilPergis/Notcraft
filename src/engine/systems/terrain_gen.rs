@@ -3,7 +3,6 @@ use engine::systems::debug_render::Shape;
 use noise::{Fbm, MultiFractal, NoiseFn, SuperSimplex};
 use specs::world::EntitiesRes;
 use std::collections::HashSet;
-use std::sync::mpsc;
 
 use engine::prelude::*;
 
@@ -78,7 +77,7 @@ impl<'a> System<'a> for ChunkUnloader {
 
     fn run(
         &mut self,
-        (mut world, mut marked, chunks, players, transforms, distance, entities, debug): Self::SystemData,
+        (mut world, mut marked, chunks, players, transforms, distance, entities, _debug): Self::SystemData,
     ) {
         let distance = distance.0;
 
@@ -100,46 +99,6 @@ impl<'a> System<'a> for ChunkUnloader {
         for (entity, &comp::ChunkId(chunk)) in (&entities, &chunks).join() {
             if !self.keep_loaded.contains(&chunk) {
                 let _ = marked.insert(entity, comp::MarkedForDeletion);
-            }
-        }
-    }
-}
-
-pub struct ChunkLoader {
-    loaded: HashSet<ChunkPos>,
-}
-
-impl<'a> System<'a> for ChunkLoader {
-    type SystemData = (
-        ReadExpect<'a, VoxelWorld>,
-        ReadStorage<'a, comp::Player>,
-        ReadStorage<'a, comp::Transform>,
-        Entities<'a>,
-        Read<'a, res::ViewDistance>,
-        Read<'a, LazyUpdate>,
-        ReadExpect<'a, DebugAccumulator>,
-    );
-
-    fn run(
-        &mut self,
-        (world, players, transforms, entities, distance, lazy, debug): Self::SystemData,
-    ) {
-        let distance = distance.0;
-        for (_, transform) in (&players, &transforms).join() {
-            let base: ChunkPos = WorldPos(transform.position).into();
-            for xo in -distance.x..=distance.x {
-                for yo in -distance.y..=distance.y {
-                    for zo in -distance.z..=distance.z {
-                        let pos = base.offset((xo, yo, zo));
-                        if self.loaded.insert(pos) {
-                            lazy.create_entity(&entities)
-                                .with(comp::ChunkId(pos))
-                                .with(comp::MarkedForLoading)
-                                .with(comp::Transform::default())
-                                .build();
-                        }
-                    }
-                }
             }
         }
     }

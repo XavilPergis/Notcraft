@@ -2,7 +2,6 @@ use engine::prelude::*;
 use engine::systems::debug_render::DebugAccumulator;
 use engine::systems::debug_render::Shape;
 use engine::world::chunk::SIZE;
-use shrev::EventChannel;
 use specs::prelude::*;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
