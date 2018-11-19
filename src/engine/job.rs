@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::thread;
@@ -13,7 +12,7 @@ pub trait Worker: Send + 'static {
 pub struct WorkerHandle<W: Worker> {
     working: bool,
     sender: mpsc::Sender<W::Input>,
-    handle: thread::JoinHandle<()>,
+    _handle: thread::JoinHandle<()>,
 }
 
 impl<W: Worker> WorkerHandle<W> {
@@ -39,7 +38,7 @@ impl<W: Worker> WorkerHandle<W> {
 
         WorkerHandle {
             working: false,
-            handle: thread,
+            _handle: thread,
             sender,
         }
     }
@@ -54,7 +53,7 @@ impl<W: Worker> WorkerHandle<W> {
 
 pub struct Service<W: Worker> {
     workers: Vec<WorkerHandle<W>>,
-    worker_tx: mpsc::Sender<(usize, W::Input, W::Output)>,
+    _worker_tx: mpsc::Sender<(usize, W::Input, W::Output)>,
     service_rx: mpsc::Receiver<(usize, W::Input, W::Output)>,
     work_queue: VecDeque<W::Input>,
     finished_queue: Vec<(W::Input, W::Output)>,
@@ -79,7 +78,7 @@ impl<W: Worker> Service<W> {
 
         Service {
             workers,
-            worker_tx,
+            _worker_tx: worker_tx,
             service_rx,
             work_queue: VecDeque::new(),
             finished_queue: Vec::new(),
