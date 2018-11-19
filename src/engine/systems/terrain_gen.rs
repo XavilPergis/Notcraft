@@ -41,7 +41,7 @@ impl NoiseGenerator {
 
 impl job::Worker for NoiseGenerator {
     type Input = ChunkPos;
-    type Output = Chunk<BlockId>;
+    type Output = Chunk;
 
     fn compute(&mut self, pos: &Self::Input) -> Self::Output {
         Chunk::new(::nd::Array3::from_shape_fn(

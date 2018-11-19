@@ -2,7 +2,6 @@ use cgmath::{One, Vector3, Zero};
 use std::ops::Neg;
 
 pub mod mesh;
-pub mod terrain;
 pub mod world;
 
 pub mod components;

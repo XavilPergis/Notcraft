@@ -1,4 +1,6 @@
 use cgmath::{Point3, Vector3};
+use engine::world::block::BlockId;
+use nd::Array3;
 
 pub const SIZE: usize = 32;
 pub const AREA: usize = SIZE * SIZE;
@@ -10,20 +12,24 @@ pub fn in_chunk_bounds(pos: Point3<i32>) -> bool {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct Chunk<T> {
-    crate data: ::nd::Array3<T>,
+pub struct Chunk {
+    data: Array3<BlockId>,
+    homogeneous: bool,
 }
 
-impl<T> Chunk<T> {
-    pub fn new(voxels: ::nd::Array3<T>) -> Self {
+impl Chunk {
+    pub fn new(voxels: Array3<BlockId>) -> Self {
+        let first = voxels.iter().next().unwrap();
+        let homogeneous = voxels.iter().all(|item| item == first);
         Chunk {
-            data: ::nd::Array3::from(voxels)
+            data: voxels,
+            homogeneous,
         }
     }
 }
 
-impl<T> Chunk<T> {
-    pub fn get(&self, pos: Point3<i32>) -> Option<&T> {
+impl Chunk {
+    pub fn get(&self, pos: Point3<i32>) -> Option<&BlockId> {
         if in_chunk_bounds(pos) {
             let pos: Point3<usize> = pos.cast().unwrap();
             Some(&self[pos])
@@ -32,7 +38,7 @@ impl<T> Chunk<T> {
         }
     }
 
-    pub fn get_mut(&mut self, pos: Point3<i32>) -> Option<&mut T> {
+    pub fn get_mut(&mut self, pos: Point3<i32>) -> Option<&mut BlockId> {
         if in_chunk_bounds(pos) {
             let pos: Point3<usize> = pos.cast().unwrap();
             Some(&mut self[pos])
@@ -50,9 +56,9 @@ use std::ops::{Index, IndexMut};
 
 macro_rules! gen_index {
     ($name:ident : $type:ty => $x:expr, $y:expr, $z:expr) => {
-        impl<T> Index<$type> for Chunk<T> {
-            type Output = T;
-            fn index(&self, $name: $type) -> &T {
+        impl Index<$type> for Chunk {
+            type Output = BlockId;
+            fn index(&self, $name: $type) -> &BlockId {
                 debug_assert!(in_chunk_bounds(Point3::new(
                     $x as i32, $y as i32, $z as i32
                 )));
@@ -60,8 +66,8 @@ macro_rules! gen_index {
             }
         }
 
-        impl<T> IndexMut<$type> for Chunk<T> {
-            fn index_mut(&mut self, $name: $type) -> &mut T {
+        impl IndexMut<$type> for Chunk {
+            fn index_mut(&mut self, $name: $type) -> &mut BlockId {
                 debug_assert!(in_chunk_bounds(Point3::new(
                     $x as i32, $y as i32, $z as i32
                 )));

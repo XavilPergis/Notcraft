@@ -86,7 +86,7 @@ impl WorldPos {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoxelWorld {
-    chunks: HashMap<ChunkPos, Chunk<BlockId>>,
+    chunks: HashMap<ChunkPos, Chunk>,
     registry: BlockRegistry,
 }
 
@@ -128,11 +128,11 @@ impl VoxelWorld {
         self.chunks.remove(&pos);
     }
 
-    pub fn set_chunk(&mut self, pos: ChunkPos, chunk: Chunk<BlockId>) {
+    pub fn set_chunk(&mut self, pos: ChunkPos, chunk: Chunk) {
         self.chunks.insert(pos, chunk);
     }
 
-    pub fn chunk(&self, pos: ChunkPos) -> Option<&Chunk<BlockId>> {
+    pub fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> {
         self.chunks.get(&pos)
     }
 
