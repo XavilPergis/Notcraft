@@ -8,7 +8,7 @@ mod world;
 pub use self::input::{LookTarget, MoveDelta};
 pub use self::physics::{Collidable, RigidBody};
 pub use self::transform::Transform;
-pub use self::world::ChunkId;
+pub use self::world::*;
 
 #[derive(Copy, Clone, Debug, PartialEq, Default, Component)]
 #[storage(NullStorage)]
