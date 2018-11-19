@@ -172,10 +172,10 @@ struct MeshConstructor<'w> {
 
 impl<'w> MeshConstructor<'w> {
     fn add(&mut self, ao: FaceAo, side: Side, pos: BlockPos) {
-        const NORMAL_QUAD_CW: &'static [u32] = &[0, 1, 2, 3, 2, 1];
-        const FLIPPED_QUAD_CW: &'static [u32] = &[3, 2, 0, 0, 1, 3];
-        const NORMAL_QUAD_CCW: &'static [u32] = &[2, 1, 0, 1, 2, 3];
-        const FLIPPED_QUAD_CCW: &'static [u32] = &[0, 2, 3, 3, 1, 0];
+        const FLIPPED_QUAD_CW: &'static [u32] = &[0, 1, 2, 3, 2, 1];
+        const FLIPPED_QUAD_CCW: &'static [u32] = &[2, 1, 0, 1, 2, 3];
+        const NORMAL_QUAD_CW: &'static [u32] = &[3, 2, 0, 0, 1, 3];
+        const NORMAL_QUAD_CCW: &'static [u32] = &[0, 2, 3, 3, 1, 0];
 
         let top = side.facing_positive();
 
