@@ -258,7 +258,12 @@ fn main() {
         )
         .with(PlayerController, "player controller", &[])
         .with(SmoothCamera, "smooth camera", &[])
-        .with(Physics::new(), "rigidbody updater", &[])
+        .with(Physics::new(), "physics", &[])
+        .with(
+            BlockInteraction::new(&mut window_events),
+            "block interactions",
+            &["physics"],
+        )
         .with(TerrainGenerator::new(), "terrain generator", &[])
         .with(ChunkMesher::new(), "chunk mesher", &["terrain generator"])
         .with_thread_local(InputHandler::new(&mut window_events))

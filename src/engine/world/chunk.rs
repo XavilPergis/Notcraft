@@ -26,6 +26,10 @@ impl Chunk {
             homogeneous,
         }
     }
+
+    pub fn is_homogeneous(&self) -> bool {
+        self.homogeneous
+    }
 }
 
 impl Chunk {

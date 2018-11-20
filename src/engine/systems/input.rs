@@ -260,6 +260,7 @@ impl<'a> System<'a> for InputHandler {
                             (VirtualKeyCode::T, "terrain generation"),
                             (VirtualKeyCode::M, "mesher"),
                             (VirtualKeyCode::P, "physics"),
+                            (VirtualKeyCode::I, "interaction"),
                         ] {
                             if Keybind::new(
                                 key,
@@ -325,6 +326,66 @@ impl<'a> System<'a> for InputHandler {
                     // Event::Key(Key::RightBracket, _, Action::Press, _) => { view_distance.0 += Vector3::new(1, 1, 1); },
                     _ => {}
                 }
+            }
+        }
+    }
+}
+
+pub struct BlockInteraction {
+    reader: ReaderId<Event>,
+}
+
+impl BlockInteraction {
+    pub fn new(events: &mut EventChannel<Event>) -> Self {
+        BlockInteraction {
+            reader: events.register_reader(),
+        }
+    }
+}
+
+use engine::systems::debug_render::Shape;
+
+impl<'a> System<'a> for BlockInteraction {
+    type SystemData = (
+        Read<'a, EventChannel<Event>>,
+        WriteExpect<'a, VoxelWorld>,
+        ReadClientPlayer<'a>,
+        ReadExpect<'a, DebugAccumulator>,
+    );
+
+    fn run(&mut self, (events, mut world, player, debug): Self::SystemData) {
+        let mut section = debug.section("interaction");
+        let transform = player.get_transform().unwrap();
+        let ray = transform.camera_ray();
+        transform.debug(&mut section);
+        section.draw(Shape::Ray(10.0, ray, Vector4::new(1.0, 0.0, 0.0, 1.0)));
+        if let Some((block, normal)) = world.trace_block(transform.camera_ray(), 10.0, &mut section)
+        {
+            section.draw(Shape::Block(3.0, block, Vector4::new(1.0, 1.0, 1.0, 1.0)));
+        }
+
+        for event in events.read(&mut self.reader) {
+            match event {
+                &Event::DeviceEvent {
+                    event:
+                        DeviceEvent::Button {
+                            button,
+                            state: ElementState::Pressed,
+                        },
+                    ..
+                } => match button {
+                    1 => {
+                        if let Some((block, _)) =
+                            world.trace_block(transform.camera_ray(), 10.0, &mut section)
+                        {
+                            world.set_block_id(block, ::engine::world::block::AIR);
+                        }
+                    }
+                    3 => {}
+                    _ => {}
+                },
+
+                _ => (),
             }
         }
     }

@@ -1,5 +1,6 @@
 use cgmath::Deg;
 use collision::Aabb3;
+use collision::Ray3;
 use engine::prelude::*;
 use engine::world::chunk::SIZE;
 use gl_api::buffer::{Buffer, UsageType};
@@ -24,6 +25,8 @@ pub enum Shape {
     GriddedChunk(f64, ChunkPos, Vector4<f64>),
     Chunk(f64, ChunkPos, Vector4<f64>),
     Box(f64, Aabb3<f64>, Vector4<f64>),
+    Block(f64, BlockPos, Vector4<f64>),
+    Ray(f64, Ray3<f64>, Vector4<f64>),
     Line(f64, WorldPos, Vector3<f64>, Vector4<f64>),
 }
 
@@ -167,6 +170,19 @@ impl<'a> System<'a> for DebugRenderer {
             match shape {
                 Shape::Box(weight, b, color) => {
                     self.add_box(b, color, weight);
+                }
+
+                Shape::Block(weight, pos, color) => {
+                    self.add_box(pos.aabb(), color, weight);
+                }
+
+                Shape::Ray(weight, ray, color) => {
+                    self.add_line(
+                        WorldPos(ray.origin),
+                        WorldPos(ray.origin).offset(ray.direction),
+                        color,
+                        weight,
+                    );
                 }
 
                 Shape::Chunk(weight, pos, color) => {

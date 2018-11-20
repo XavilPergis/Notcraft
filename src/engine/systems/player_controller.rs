@@ -59,10 +59,10 @@ impl<'a> System<'a> for PlayerController {
 
         for (_, tfm, rigidbody) in (&player, &player_transform, &mut rigidbody).join() {
             if directions.front {
-                rigidbody.velocity -= tfm.basis_vectors().0
+                rigidbody.velocity += tfm.basis_vectors().0
             };
             if directions.back {
-                rigidbody.velocity += tfm.basis_vectors().0
+                rigidbody.velocity -= tfm.basis_vectors().0
             };
             if directions.left {
                 rigidbody.velocity -= tfm.basis_vectors().1

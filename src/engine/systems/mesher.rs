@@ -208,23 +208,6 @@ impl<'w> MeshConstructor<'w> {
             }
         };
 
-        // let quad = match (flipped, side) {
-        //     (false, false, Axis::X) => NORMAL_QUAD_CW,
-        //     (false, true, Axis::X) => NORMAL_QUAD_CCW,
-        //     (true, false, Axis::X) => FLIPPED_QUAD_CW,
-        //     (true, true, Axis::X) => FLIPPED_QUAD_CCW,
-
-        //     (false, false, Axis::Y) => NORMAL_QUAD_CCW,
-        //     (false, true, Axis::Y) => NORMAL_QUAD_CW,
-        //     (true, false, Axis::Y) => FLIPPED_QUAD_CCW,
-        //     (true, true, Axis::Y) => FLIPPED_QUAD_CW,
-
-        //     (false, false, Axis::Z) => NORMAL_QUAD_CCW,
-        //     (false, true, Axis::Z) => NORMAL_QUAD_CW,
-        //     (true, false, Axis::Z) => FLIPPED_QUAD_CCW,
-        //     (true, true, Axis::Z) => FLIPPED_QUAD_CW,
-        // };
-
         let index = self.index;
         self.mesh.indices.extend(quad.iter().map(|i| i + index));
         self.index += 4;

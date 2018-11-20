@@ -1,5 +1,8 @@
-use cgmath::{Point3, Vector3};
+use cgmath::{Point3, Vector3, Vector4};
+use collision::{Aabb, Aabb3};
+use engine::systems::debug_render::{DebugSection, Shape};
 use engine::world::block::BlockRegistry;
+use engine::Side;
 use std::collections::HashMap;
 
 use self::block::BlockId;
@@ -75,6 +78,11 @@ impl BlockPos {
             self.0.y as f64 + 0.5,
             self.0.z as f64 + 0.5,
         ))
+    }
+
+    pub fn aabb(&self) -> Aabb3<f64> {
+        Aabb3::new(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0))
+            .add_v(::util::to_vector(self.base().0))
     }
 }
 
@@ -159,4 +167,122 @@ impl VoxelWorld {
             .get(&chunk_pos)
             .map(|chunk| &self.registry[chunk[block_pos]])
     }
+
+    pub fn trace_block(
+        &self,
+        ray: Ray3<f64>,
+        radius: f64,
+        debug: &mut DebugSection,
+    ) -> Option<(BlockPos, Option<Vector3<i32>>)> {
+        let mut ret_pos = WorldPos(ray.origin).into();
+        let mut ret_norm = None;
+
+        if trace_ray(ray, radius, |pos, norm| {
+            ret_pos = pos;
+            ret_norm = norm;
+            debug.draw(Shape::Block(1.0, pos, Vector4::new(1.0, 0.0, 1.0, 1.0)));
+            self.get_block_properties(pos)
+                .map(|props| props.opaque)
+                .unwrap_or(false)
+        }) {
+            Some((ret_pos, ret_norm))
+        } else {
+            None
+        }
+    }
+}
+
+use collision::Ray3;
+
+fn modulo(a: f64, b: f64) -> f64 {
+    (a % b + b) % b
+}
+
+fn int_bound(ray: Ray3<f64>, axis: usize) -> f64 {
+    if ray.direction[axis] < 0.0 {
+        let mut new = ray;
+        new.origin[axis] *= -1.0;
+        new.direction[axis] *= -1.0;
+        int_bound(new, axis)
+    } else {
+        (1.0 - modulo(ray.origin[axis], 1.0)) / ray.direction[axis]
+    }
+}
+
+fn sign(n: f64) -> f64 {
+    if n > 0.0 {
+        1.0
+    } else if n < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+fn trace_ray<F>(ray: Ray3<f64>, radius: f64, mut func: F) -> bool
+where
+    F: FnMut(BlockPos, Option<Vector3<i32>>) -> bool,
+{
+    // init phase
+    let origin: BlockPos = WorldPos(ray.origin).into();
+    let mut current = origin.0;
+    let step_x = sign(ray.direction.x);
+    let step_y = sign(ray.direction.y);
+    let step_z = sign(ray.direction.z);
+
+    let mut t_max_x = int_bound(ray, 0);
+    let mut t_max_y = int_bound(ray, 1);
+    let mut t_max_z = int_bound(ray, 2);
+
+    let t_delta_x = step_x / ray.direction.x;
+    let t_delta_y = step_y / ray.direction.y;
+    let t_delta_z = step_z / ray.direction.z;
+
+    let step_x = step_x as i32;
+    let step_y = step_y as i32;
+    let step_z = step_z as i32;
+    let mut normal = None;
+
+    // incremental pahse
+    loop {
+        if func(BlockPos(current), normal) {
+            return true;
+        }
+
+        if t_max_x < t_max_y {
+            if t_max_x < t_max_z {
+                if t_max_x > radius {
+                    break;
+                }
+                current.x += step_x;
+                t_max_x += t_delta_x;
+                normal = Some(Vector3::new(-step_x, 0, 0));
+            } else {
+                if t_max_z > radius {
+                    break;
+                }
+                current.z += step_z;
+                t_max_z += t_delta_z;
+                normal = Some(Vector3::new(0, 0, -step_z));
+            }
+        } else {
+            if t_max_y < t_max_z {
+                if t_max_y > radius {
+                    break;
+                }
+                current.y += step_y;
+                t_max_y += t_delta_y;
+                normal = Some(Vector3::new(0, -step_y, 0));
+            } else {
+                if t_max_z > radius {
+                    break;
+                }
+                current.z += step_z;
+                t_max_z += t_delta_z;
+                normal = Some(Vector3::new(0, 0, -step_z));
+            }
+        }
+    }
+
+    false
 }
