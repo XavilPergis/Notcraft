@@ -1,15 +1,20 @@
 use cgmath::{Point3, Vector3, Vector4};
 use collision::{Aabb, Aabb3};
-use engine::systems::debug_render::{DebugSection, Shape};
-use engine::world::block::BlockRegistry;
-use engine::Side;
-use std::collections::HashMap;
+use engine::{
+    render::{
+        debug::{DebugSection, Shape},
+        terrain::ChunkMesh,
+    },
+    world::block::BlockRegistry,
+};
+use std::collections::{HashMap, HashSet};
 
 use self::block::BlockId;
 pub use self::chunk::Chunk;
 
 pub mod block;
 pub mod chunk;
+pub mod gen;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ChunkPos(pub Point3<i32>);
@@ -92,9 +97,11 @@ impl WorldPos {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct VoxelWorld {
     chunks: HashMap<ChunkPos, Chunk>,
+    meshes: HashMap<ChunkPos, ChunkMesh>,
+    dirty_mesh: HashSet<ChunkPos>,
     registry: BlockRegistry,
 }
 
@@ -128,6 +135,8 @@ impl VoxelWorld {
     pub fn new(registry: BlockRegistry) -> Self {
         VoxelWorld {
             chunks: Default::default(),
+            meshes: Default::default(),
+            dirty_mesh: Default::default(),
             registry,
         }
     }
@@ -137,6 +146,7 @@ impl VoxelWorld {
     }
 
     pub fn set_chunk(&mut self, pos: ChunkPos, chunk: Chunk) {
+        self.dirty_mesh.insert(pos);
         self.chunks.insert(pos, chunk);
     }
 
@@ -151,6 +161,7 @@ impl VoxelWorld {
     /// Tries to replace the block at `pos`, returning the block that was replaced if it was found
     pub fn set_block_id(&mut self, pos: BlockPos, block: BlockId) -> Option<BlockId> {
         let (chunk_pos, block_pos) = pos.chunk_pos_offset();
+        self.dirty_mesh.insert(chunk_pos);
         self.chunks
             .get_mut(&chunk_pos)
             .map(|chunk| ::std::mem::replace(&mut chunk[block_pos], block))
@@ -166,6 +177,28 @@ impl VoxelWorld {
         self.chunks
             .get(&chunk_pos)
             .map(|chunk| &self.registry[chunk[block_pos]])
+    }
+
+    pub fn get_dirty_chunk(&mut self) -> Option<ChunkPos> {
+        self.dirty_mesh
+            .iter()
+            .filter(|pos| {
+                let mut surrounded = true;
+                for x in -1..=1 {
+                    for y in -1..=1 {
+                        for z in -1..=1 {
+                            surrounded &= self.chunk_exists(pos.offset((x, y, z)));
+                        }
+                    }
+                }
+                surrounded
+            })
+            .next()
+            .cloned()
+    }
+
+    pub fn clean_chunk(&mut self, pos: ChunkPos) {
+        self.dirty_mesh.remove(&pos);
     }
 
     pub fn trace_block(
@@ -194,10 +227,6 @@ impl VoxelWorld {
 
 use collision::Ray3;
 
-fn modulo(a: f64, b: f64) -> f64 {
-    (a % b + b) % b
-}
-
 fn int_bound(ray: Ray3<f64>, axis: usize) -> f64 {
     if ray.direction[axis] < 0.0 {
         let mut new = ray;
@@ -205,7 +234,7 @@ fn int_bound(ray: Ray3<f64>, axis: usize) -> f64 {
         new.direction[axis] *= -1.0;
         int_bound(new, axis)
     } else {
-        (1.0 - modulo(ray.origin[axis], 1.0)) / ray.direction[axis]
+        (1.0 - ::util::modulo(ray.origin[axis], 1.0)) / ray.direction[axis]
     }
 }
 

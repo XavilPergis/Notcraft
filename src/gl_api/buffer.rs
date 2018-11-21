@@ -2,8 +2,29 @@ use super::error::GlResult;
 use gl;
 use gl::types::*;
 use gl_api::context::Context;
-use gl_api::objects::RawBuffer;
+use gl_api::context::BUFFER_DROP_LIST;
 use std::marker::PhantomData;
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct RawBuffer {
+    crate id: u32,
+    crate len: usize,
+}
+
+impl RawBuffer {
+    crate fn new(_ctx: &Context) -> Self {
+        let mut id = 0;
+        gl_call!(assert CreateBuffers(1, &mut id));
+
+        RawBuffer { id, len: 0 }
+    }
+}
+
+impl Drop for RawBuffer {
+    fn drop(&mut self) {
+        BUFFER_DROP_LIST.lock().unwrap().push(self.id);
+    }
+}
 
 // Buffer targets described in section 6.1 of spec
 #[repr(u32)]
@@ -47,33 +68,36 @@ pub enum UsageType {
     DynamicCopy = gl::DYNAMIC_COPY,
 }
 
+/// A handle to GPU-allocated memory. The type itself is shareable, but any useful operation must be performed on
+/// the current opengl thread. This is enforced by every gl-stae-interacting function needing a reference to the
+/// thread-local context.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Buffer<T> {
     crate raw: RawBuffer,
-    length: usize,
-    phantom: PhantomData<*mut T>,
+    _phantom: PhantomData<*const T>,
 }
+
+unsafe impl<T> Send for Buffer<T> {}
+unsafe impl<T> Sync for Buffer<T> {}
 
 impl<T> Buffer<T> {
     pub fn new(ctx: &Context) -> Self {
         Buffer {
             raw: RawBuffer::new(ctx),
-            length: 0,
-            phantom: PhantomData,
+            _phantom: PhantomData,
         }
     }
 
-    pub fn bind(&self, target: BufferTarget) {
+    pub fn bind(&self, _ctx: &Context, target: BufferTarget) {
         gl_call!(debug BindBuffer(target as u32, self.raw.id));
     }
 
     /// Copies data from `data` to the gpu's memory
-    pub fn upload(&mut self, data: &[T], usage_type: UsageType) -> GlResult<()> {
-        self.bind(BufferTarget::Array);
-        self.length = data.len();
+    pub fn upload(&mut self, _ctx: &Context, data: &[T], usage_type: UsageType) -> GlResult<()> {
+        self.raw.len = data.len();
         // Could fail if OOM
-        gl_call!(BufferData(
-            BufferTarget::Array as u32,
+        gl_call!(NamedBufferData(
+            self.raw.id,
             (::std::mem::size_of::<T>() * data.len()) as isize,
             data.as_ptr() as *const _,
             usage_type as GLenum
@@ -81,6 +105,6 @@ impl<T> Buffer<T> {
     }
 
     pub fn len(&self) -> usize {
-        self.length
+        self.raw.len
     }
 }

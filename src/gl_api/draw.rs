@@ -1,6 +1,6 @@
 use gl::{self, types::*};
 
-pub trait BufferIndex: Copy + Sized {
+pub trait BufferIndex: Copy + Sized + Send + Sync + 'static {
     const INDEX_TYPE: GLenum;
     // HACK: Vec needs a usize to be able to index into it, so we need a mechanism to convert the mesh index into a usize
     // There might be other, better, ways to do this, but idk

@@ -14,8 +14,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::rc::Rc;
+use std::sync::Mutex;
 
-struct Entry<'v, V>(
+lazy_static::lazy_static! {
+    pub(crate) static ref BUFFER_DROP_LIST: Mutex<Vec<u32>> = Mutex::new(vec![]);
+    pub(crate) static ref VERTEX_ARRAY_DROP_LIST: Mutex<Vec<u32>> = Mutex::new(vec![]);
+}
+
+crate struct Entry<'v, V>(
     ::std::collections::hash_map::Entry<'v, TypeId, Box<dyn Any>>,
     PhantomData<*const V>,
 );
@@ -30,34 +36,18 @@ impl<'v, V: 'static> Entry<'v, V> {
 }
 
 #[derive(Debug)]
-struct VaoMap {
+crate struct VaoMap {
     table: HashMap<TypeId, Box<dyn Any>>,
 }
 
 impl VaoMap {
-    pub fn new() -> Self {
+    crate fn new() -> Self {
         VaoMap {
             table: HashMap::new(),
         }
     }
 
-    // pub fn insert<V: Any>(&mut self, val: VertexArray<V>) -> Option<VertexArray<V>> {
-    //     self.table
-    //         .insert(TypeId::of::<V>(), Box::new(val))
-    //         .map(|any| *any.downcast::<VertexArray<V>>().unwrap())
-    // }
-
-    // pub fn get<V: Any>(&self) -> Option<&VertexArray<V>> {
-    //     self.table
-    //         .get(&TypeId::of::<V>())
-    //         .map(|any| any.downcast_ref::<VertexArray<V>>().unwrap())
-    // }
-
-    // pub fn contains_type<K: Any>(&self) -> bool {
-    //     self.table.contains_key(&TypeId::of::<K>())
-    // }
-
-    pub fn entry<'v, V: Any>(&'v mut self) -> Entry<'v, V> {
+    crate fn entry<'v, V: Any>(&'v mut self) -> Entry<'v, V> {
         Entry(self.table.entry(TypeId::of::<V>()), PhantomData)
     }
 }
@@ -107,10 +97,10 @@ pub struct ContextInner {
     // Make sure this isn't Send or Sync
     _marker: ::std::marker::PhantomData<*mut ()>,
 
-    limits: Limits,
-    viewport: Cell<ViewportRect>,
+    crate limits: Limits,
+    crate viewport: Cell<ViewportRect>,
 
-    format_cache: RefCell<VaoMap>,
+    crate format_cache: RefCell<VaoMap>,
 }
 
 impl Context {
@@ -129,8 +119,14 @@ impl Context {
         }))
     }
 
+    pub fn drop_deleted(&self) {
+        for id in BUFFER_DROP_LIST.lock().unwrap().drain(..) {
+            gl_call!(debug DeleteBuffers(1, &id));
+        }
+    }
+
     // self.ctx.draw_elements(gl::TRIANGLES, &self.vertices, &self.indices);
-    pub fn draw_elements<V: Layout + 'static, I: BufferIndex>(
+    pub fn draw_elements<V: Layout, I: BufferIndex>(
         &self,
         primitive: PrimitiveType,
         program: &LinkedProgram,
@@ -140,15 +136,15 @@ impl Context {
         if vertices.len() > 0 {
             // Find a VAO that describes our vertex format, creating one if it does not exist.
             let mut map = self.0.format_cache.borrow_mut();
-            let vao = map
-                .entry::<V>()
-                .or_insert_with(|| VertexArray::<V>::for_vertex_type(self).with_buffer(vertices));
+            let vao = map.entry::<V>().or_insert_with(|| {
+                VertexArray::<V>::for_vertex_type(self).with_buffer(self, vertices)
+            });
 
             // set the buffer binding the the buffer that was passed in
-            vao.set_buffer(vertices);
+            vao.set_buffer(self, vertices);
 
-            vao.bind();
-            indices.bind(BufferTarget::Element);
+            vao.bind(self);
+            indices.bind(self, BufferTarget::Element);
             program.bind();
 
             gl_call!(assert DrawElements(
@@ -170,14 +166,14 @@ impl Context {
         if vertices.len() > 0 {
             // Find a VAO that describes our vertex format, creating one if it does not exist.
             let mut map = self.0.format_cache.borrow_mut();
-            let vao = map
-                .entry::<V>()
-                .or_insert_with(|| VertexArray::<V>::for_vertex_type(self).with_buffer(vertices));
+            let vao = map.entry::<V>().or_insert_with(|| {
+                VertexArray::<V>::for_vertex_type(self).with_buffer(self, vertices)
+            });
 
             // set the buffer binding the the buffer that was passed in
-            vao.set_buffer(vertices);
+            vao.set_buffer(self, vertices);
 
-            vao.bind();
+            vao.bind(self);
             program.bind();
 
             gl_call!(assert DrawArrays(
@@ -187,12 +183,6 @@ impl Context {
             ));
         }
     }
-
-    // pub fn draw_arrays<D>(&self, source: &D, program: &LinkedProgram) {
-    //     let vao = self.vao_format_cache.get::<D>();
-    //     D::
-    //     gl_call!(DrawArrays(gl::LINES, 0, self.vbo.len() as i32)).unwrap();
-    // }
 
     pub fn limits(&self) -> &Limits {
         &self.0.limits

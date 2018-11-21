@@ -5,43 +5,43 @@ use gl_api::layout::Layout;
 use gl_api::shader::program::LinkedProgram;
 use gl_api::BufferIndex;
 use gl_api::PrimitiveType;
+use specs::prelude::*;
 
-#[derive(Debug)]
-pub struct GlMesh<V: Layout, I: BufferIndex> {
-    ctx: Context,
-    vertices: Buffer<V>,
+#[derive(Debug, Eq, PartialEq)]
+pub struct GpuMesh<V, I> {
+    verts: Buffer<V>,
     indices: Buffer<I>,
 }
 
-impl<V: Layout, I: BufferIndex> GlMesh<V, I> {
+impl<V: Layout, I: BufferIndex> GpuMesh<V, I> {
     pub fn new(ctx: &Context) -> GlResult<Self> {
         let vbo = Buffer::new(ctx);
         let ibo = Buffer::new(ctx);
 
-        Ok(GlMesh {
+        Ok(GpuMesh {
             indices: ibo,
-            vertices: vbo,
-            ctx: ctx.clone(),
+            verts: vbo,
         })
     }
 
     pub fn upload<IV: AsRef<[V]>, II: AsRef<[I]>>(
         &mut self,
-        vertices: IV,
+        ctx: &Context,
+        verts: IV,
         indices: II,
         usage_type: UsageType,
     ) -> GlResult<()> {
-        self.vertices.upload(vertices.as_ref(), usage_type)?;
-        self.indices.upload(indices.as_ref(), usage_type)?;
+        self.verts.upload(ctx, verts.as_ref(), usage_type)?;
+        self.indices.upload(ctx, indices.as_ref(), usage_type)?;
 
         Ok(())
     }
 
-    pub fn draw_with(&self, program: &LinkedProgram) {
-        self.ctx.draw_elements(
+    pub fn draw_with(&self, ctx: &Context, program: &LinkedProgram) {
+        ctx.draw_elements(
             PrimitiveType::Triangles,
             program,
-            &self.vertices,
+            &self.verts,
             &self.indices,
         );
     }
@@ -67,10 +67,16 @@ pub struct TriangleRef<'m, V: 'm, I: BufferIndex> {
     pub vertices: (&'m V, &'m V, &'m V),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Mesh<V, I: BufferIndex> {
     crate vertices: Vec<V>,
     crate indices: Vec<I>,
+    crate dirty: bool,
+    crate gpu_mesh: Option<GpuMesh<V, I>>,
+}
+
+impl<V: Send + Sync + 'static, I: BufferIndex> Component for Mesh<V, I> {
+    type Storage = HashMapStorage<Self>;
 }
 
 impl<V, I: BufferIndex> Default for Mesh<V, I> {
@@ -78,6 +84,8 @@ impl<V, I: BufferIndex> Default for Mesh<V, I> {
         Mesh {
             vertices: Vec::new(),
             indices: Vec::new(),
+            dirty: false,
+            gpu_mesh: None,
         }
     }
 }
@@ -87,6 +95,7 @@ impl<V, I: BufferIndex> Mesh<V, I> {
         Mesh {
             vertices: Vec::with_capacity(verts_cap),
             indices: Vec::with_capacity(indices_cap),
+            ..Default::default()
         }
     }
 
@@ -117,14 +126,20 @@ impl<V, I: BufferIndex> Mesh<V, I> {
     pub fn triangles(&self) -> impl Iterator<Item = TriangleRef<'_, V, I>> {
         TriangleIter { mesh: self, num: 0 }
     }
+
+    pub fn needs_new_gpu_mesh(&self) -> bool {
+        self.gpu_mesh.is_none() || self.dirty
+    }
 }
 
 impl<V: Layout, I: BufferIndex> Mesh<V, I> {
-    /// Creates the GPU buffers for this mesh and uploads the data in this mesh to it. Note that this has to clone the data
-    pub fn to_gl_mesh(&self, ctx: &Context, usage_type: UsageType) -> GlResult<GlMesh<V, I>> {
-        let mut mesh = GlMesh::new(ctx)?;
-        mesh.upload(&self.vertices[..], &self.indices[..], usage_type)?;
-        Ok(mesh)
+    /// Creates the GPU buffers for this mesh and uploads the data in this mesh to it. Note that this has to clone the mesh data
+    pub fn upload(&mut self, ctx: &Context, usage_type: UsageType) -> GlResult<()> {
+        let mut mesh = GpuMesh::new(ctx)?;
+        mesh.upload(ctx, &self.vertices[..], &self.indices[..], usage_type)?;
+        self.gpu_mesh = Some(mesh);
+
+        Ok(())
     }
 }
 

@@ -1,9 +1,9 @@
 use collision::{prelude::*, Aabb3};
-use engine::prelude::*;
-use engine::systems::debug_render::DebugAccumulator;
-use engine::systems::debug_render::DebugSection;
-use engine::systems::debug_render::Shape;
-use engine::world::VoxelWorld;
+use engine::{
+    prelude::*,
+    render::debug::{DebugAccumulator, DebugSection, Shape},
+    world::VoxelWorld,
+};
 
 pub struct Physics;
 
@@ -34,7 +34,8 @@ fn collidable_blocks_in_aabb(world: &VoxelWorld, aabb: Aabb3<f64>) -> Vec<BlockP
     found
 }
 
-// take two ranges (like an aabb projected down to a single axis) and find how far `a` needs to move so that the ranges do not overlap
+// take two ranges (like an aabb projected down to a single axis) and find how
+// far `a` needs to move so that the ranges do not overlap
 fn resolve_collision(a: Aabb3<f64>, b: Aabb3<f64>, axis: usize) -> f64 {
     // the ranges are already disjoint, no resolution needs to be applied.
     if !a.intersects(&b) {
@@ -112,7 +113,9 @@ fn physics_step_x(ctx: &mut PhysicsStepContext, debug: &mut DebugSection) {
 }
 fn physics_step_y(ctx: &mut PhysicsStepContext, debug: &mut DebugSection) {
     // Apply step along the Y axis
-    ctx.body.velocity.y *= 1.0 / (1.0 + ctx.body.drag.y * ctx.dt);
+    ctx.body.velocity.y -= 25.0 * ctx.dt;
+    ctx.body.velocity.y = ctx.body.velocity.y.min(50.0).max(-50.0);
+    // ctx.body.velocity.y *= 1.0 / (1.0 + ctx.body.drag.y * ctx.dt);
     ctx.transform.position.y += ctx.body.velocity.y * ctx.dt;
 
     // get the possible collisions

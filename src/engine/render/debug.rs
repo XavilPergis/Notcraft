@@ -260,7 +260,9 @@ impl<'a> System<'a> for DebugRenderer {
             self.program.set_uniform("projection", &projection);
 
             for (weight, geom) in &self.geometry {
-                self.vbo.upload(geom, UsageType::DynamicDraw).unwrap();
+                self.vbo
+                    .upload(&self.ctx, geom, UsageType::DynamicDraw)
+                    .unwrap();
 
                 gl_call!(LineWidth(weight.0 as f32)).unwrap();
                 self.ctx

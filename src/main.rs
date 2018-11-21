@@ -35,105 +35,21 @@ pub mod engine;
 pub mod handle;
 pub mod util;
 
-use cgmath::{Deg, Matrix4, Point3, Vector3};
+use cgmath::{Deg, Point3, Vector3};
 use collision::Aabb3;
-use engine::components as comp;
-use engine::mesh::{GlMesh, Mesh};
-use engine::resources as res;
-use engine::systems::mesher::{BlockVertex, ChunkMesher};
-use engine::world::VoxelWorld;
+use engine::{
+    components as comp, render::mesher::ChunkMesher, resources as res, world::VoxelWorld,
+};
 use gl_api::context::Context;
-use gl_api::context::Context as DrawContext;
-use gl_api::misc;
-use gl_api::shader::program::LinkedProgram;
-use gl_api::shader::shader::ShaderError;
-use gl_api::shader::*;
-use glutin::dpi::*;
-use glutin::GlContext;
-use glutin::GlWindow;
-use handle::{Handle, LocalPool};
+
+use gl_api::{
+    misc,
+    shader::{shader::ShaderError, *},
+};
+use glutin::{dpi::*, GlContext, GlWindow};
 use shrev::EventChannel;
 use specs::prelude::*;
-use specs::shred::PanicHandler;
-use std::rc::Rc;
 use std::time::Duration;
-
-impl Component for Handle<GlMesh<BlockVertex, u32>> {
-    type Storage = DenseVecStorage<Self>;
-}
-
-pub struct TerrainRenderSystem {
-    ctx: DrawContext,
-    pool: Rc<LocalPool<GlMesh<BlockVertex, u32>>>,
-    program: LinkedProgram,
-    mesh_recv: ReaderId<(Entity, Mesh<BlockVertex, u32>)>,
-}
-
-impl<'a> System<'a> for TerrainRenderSystem {
-    type SystemData = (
-        WriteStorage<'a, Handle<GlMesh<BlockVertex, u32>>>,
-        ReadStorage<'a, comp::Transform>,
-        ReadStorage<'a, comp::Player>,
-        ReadStorage<'a, comp::ClientControlled>,
-        ReadExpect<'a, GlWindow>,
-        Read<'a, res::ViewFrustum, PanicHandler>,
-        Read<'a, EventChannel<(Entity, Mesh<BlockVertex, u32>)>>,
-    );
-
-    fn run(
-        &mut self,
-        (
-            mut meshes,
-            transforms,
-            player_marker,
-            client_controlled_marker,
-            window,
-            frustum,
-            new_meshes,
-        ): Self::SystemData,
-    ) {
-        let player_transform = (&player_marker, &client_controlled_marker, &transforms)
-            .join()
-            .map(|(_, _, tfm)| tfm)
-            .next();
-
-        use gl_api::buffer::UsageType;
-
-        for (entity, mesh) in new_meshes.read(&mut self.mesh_recv) {
-            trace!("Inserted new mesh for entity #{:?}", entity);
-            meshes
-                .insert(
-                    *entity,
-                    self.pool
-                        .insert(mesh.to_gl_mesh(&self.ctx, UsageType::StaticDraw).unwrap()),
-                )
-                .unwrap();
-        }
-
-        if let Some(player_transform) = player_transform {
-            let aspect_ratio = ::util::aspect_ratio(&window).unwrap() as f32;
-            let projection = ::cgmath::perspective(
-                Deg(frustum.fov.0 as f32),
-                aspect_ratio,
-                frustum.near_plane as f32,
-                frustum.far_plane as f32,
-            );
-            self.program.set_uniform("u_Projection", &projection);
-            self.program.set_uniform(
-                "u_CameraPosition",
-                &player_transform.position.cast::<f32>().unwrap(),
-            );
-            for (mesh, tfm) in (&meshes, &transforms).join() {
-                let mesh = self.pool.fetch(mesh);
-                let tfm: Matrix4<f32> = tfm.as_matrix().cast::<f32>().unwrap();
-                let view_matrix: Matrix4<f32> = player_transform.as_matrix().cast::<f32>().unwrap();
-                self.program.set_uniform("u_View", &view_matrix);
-                self.program.set_uniform("u_Transform", &tfm);
-                mesh.draw_with(&self.program);
-            }
-        }
-    }
-}
 
 fn main() {
     simple_logger::init_with_level(log::Level::Debug).unwrap();
@@ -155,16 +71,6 @@ fn main() {
     let ctx = Context::load(|symbol| gl_window.get_proc_address(symbol));
     println!("Context created!");
 
-    let mut program = match simple_pipeline("resources/terrain.vs", "resources/terrain.fs") {
-        Ok(prog) => prog,
-        Err(msg) => match msg {
-            PipelineError::Shader(ShaderError::Shader(msg)) => {
-                println!("{}", msg);
-                panic!()
-            }
-            _ => panic!("Other error"),
-        },
-    };
     let mut debug_program = match simple_pipeline("resources/debug.vs", "resources/debug.fs") {
         Ok(prog) => prog,
         Err(msg) => match msg {
@@ -185,26 +91,12 @@ fn main() {
 
     let mut window_events = shrev::EventChannel::new();
 
-    use gl_api::texture::*;
-    let texture = Texture2D::new();
-    texture.source_from_image("resources/textures.png").unwrap();
-    texture.min_filter(MinimizationFilter::Nearest);
-    texture.mag_filter(MagnificationFilter::Nearest);
-    texture.texture_wrap_behavior(TextureAxis::R, WrapMode::Repeat);
-    texture.texture_wrap_behavior(TextureAxis::S, WrapMode::Repeat);
-    texture.set_texture_bank(0);
-
     let projection = ::cgmath::perspective(Deg(70.0), 600.0 / 600.0, 0.1, 1000.0f32);
-    program.set_uniform("u_Time", &0.0f32);
-    program.set_uniform("u_LightAmbient", &Vector3::<f32>::new(0.8, 0.8, 0.8));
-    program.set_uniform("u_CameraPosition", &Vector3::new(0.0f32, 10.0, 0.0));
-    program.set_uniform("u_TextureMap", &texture);
-
     debug_program.set_uniform("projection", &projection);
 
     let mut world = World::default();
 
-    world.register::<Handle<GlMesh<BlockVertex, u32>>>();
+    // world.register::<Handle<::engine::render::terrain::GpuChunkMesh>>();
     world.register::<comp::Transform>();
     world.register::<comp::LookTarget>();
     world.register::<comp::ClientControlled>();
@@ -217,7 +109,6 @@ fn main() {
     let registry = BlockRegistry::new().with_defaults();
     let voxel_world = VoxelWorld::new(registry);
 
-    let pool = Rc::new(LocalPool::default());
     let player_tfm = comp::Transform::default();
     world
         .create_entity()
@@ -225,7 +116,7 @@ fn main() {
         .with(comp::Player)
         .with(player_tfm)
         .with(comp::Collidable {
-            aabb: Aabb3::new(Point3::new(-0.4, -1.8, -0.4), Point3::new(0.4, 0.2, 0.4)),
+            aabb: Aabb3::new(Point3::new(-0.4, -1.6, -0.4), Point3::new(0.4, 0.2, 0.4)),
         })
         .with(comp::RigidBody {
             mass: 100.0,
@@ -235,17 +126,22 @@ fn main() {
         .with(comp::LookTarget::default())
         .build();
 
-    let mut mesh_channel = EventChannel::<(Entity, Mesh<BlockVertex, u32>)>::new();
-    let terrain_renderer = TerrainRenderSystem {
-        ctx: ctx.clone(),
-        pool,
-        program,
-        mesh_recv: mesh_channel.register_reader(),
+    use engine::{
+        render::{debug::*, terrain::*},
+        systems::*,
+        world::gen::*,
     };
 
-    use engine::systems::debug_render::*;
-    use engine::systems::terrain_gen::*;
-    use engine::systems::*;
+    // let mut mesh_channel = EventChannel::<(ChunkPos, CpuChunkMesh)>::new();
+
+    // let terrain_renderer = TerrainRenderSystem {
+    //     ctx: ctx.clone(),
+    //     pool,
+    //     program,
+    //     mesh_recv: mesh_channel.register_reader(),
+    // };
+
+    let terrain_renderer = TerrainRenderer::new(&ctx);
 
     let (debug_rendering_system, debug_accumulator) = DebugRenderer::new(&ctx);
 
@@ -275,7 +171,7 @@ fn main() {
 
     world.add_resource(debug_accumulator);
     world.add_resource(res::ActiveDirections::default());
-    world.add_resource(mesh_channel);
+    // world.add_resource(mesh_channel);
     world.add_resource(res::StopGameLoop(false));
     world.add_resource(window_events);
     world.add_resource(res::Dt(Duration::from_secs(1)));
@@ -300,6 +196,11 @@ fn main() {
 
     while !world.res.fetch::<res::StopGameLoop>().0 {
         let frame_start = Instant::now();
+
+        // The way I programmed objects allows the types to be send and sync, but I need
+        // to do some funky stuff in the drop impl so we don't leak gpu resources. I
+        // also need to call this every frame for the same reason.
+        ctx.drop_deleted();
 
         // Update viewport dimensions if the window has been resized.
         world.exec(|window: WriteExpect<'_, GlWindow>| {

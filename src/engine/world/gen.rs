@@ -1,5 +1,4 @@
-use engine::systems::debug_render::DebugAccumulator;
-use engine::systems::debug_render::Shape;
+use engine::render::debug::{DebugAccumulator, Shape};
 use noise::{Fbm, MultiFractal, NoiseFn, SuperSimplex};
 use specs::world::EntitiesRes;
 use std::collections::HashSet;
@@ -164,7 +163,6 @@ impl<'a> System<'a> for TerrainGenerator {
             self.queue.remove(&pos);
             lazy.create_entity(&entity_res)
                 .with(comp::ChunkId(pos))
-                .with(comp::DirtyMesh)
                 .with(comp::Transform::default())
                 .build();
         }

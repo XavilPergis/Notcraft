@@ -26,7 +26,7 @@ void main()
     vec4 tex_color = texture(u_TextureMap, tex_coords);
     // return ((n-start1)/(stop1-start1))*(stop2-start2)+start2;
     float ao = pow(v_Ao, 1.0 / AO_CURVE) * (1.0 - MIN_AO) + MIN_AO;
-    vec4 col = ao * tex_color * vec4(u_LightAmbient, 1.0);
+    vec4 col = vec4(v_FaceScalar, 1.0) * ao * tex_color * vec4(u_LightAmbient, 1.0);
 
     color = mix(vec4(0.729411765, 0.907843137, 0.981568627, 1.0), col, fog);
 }

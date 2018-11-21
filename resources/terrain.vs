@@ -28,11 +28,7 @@ void main()
     v_Tile = Tile;
     v_Ao = Ao;
 
-    switch (Face)
-    {
-        case 0: v_FaceScalar = vec3(1.0, 0.0, 0.0); break;
-        case 1: v_FaceScalar = vec3(0.0, 0.0, 1.0); break;
-        case 2: v_FaceScalar = vec3(0.0, 1.0, 0.0); break;
-        default: v_FaceScalar = vec3(1.0, 1.0, 1.0);
-    }
+    if (Normal.y == 1.0) v_FaceScalar = vec3(1.0);
+    if (Normal.y == -1.0) v_FaceScalar = vec3(0.5);
+    if (abs(Normal.x) == 1.0 || abs(Normal.z) == 1.0) v_FaceScalar = vec3(0.75);
 }

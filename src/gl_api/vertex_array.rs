@@ -1,16 +1,39 @@
 use gl_api::buffer::Buffer;
 use gl_api::context::Context;
+use gl_api::context::VERTEX_ARRAY_DROP_LIST;
 use gl_api::layout::{AttributeFormat, Layout};
-use gl_api::objects::RawVertexArray;
 use std::marker::PhantomData;
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct RawVertexArray {
+    crate id: u32,
+}
+
+impl RawVertexArray {
+    crate fn new(_ctx: &Context) -> Self {
+        let mut id = 0;
+        gl_call!(assert CreateVertexArrays(1, &mut id));
+
+        RawVertexArray { id }
+    }
+}
+
+impl Drop for RawVertexArray {
+    fn drop(&mut self) {
+        VERTEX_ARRAY_DROP_LIST.lock().unwrap().push(self.id);
+    }
+}
 
 // NOTE: this vertex array type only supports one vertex buffer bound at binding index 0 (for now at least)
 #[derive(Debug, Eq, PartialEq)]
 pub struct VertexArray<V> {
     crate raw: RawVertexArray,
     attribs: Vec<AttributeFormat>,
-    _marker: PhantomData<V>,
+    _marker: PhantomData<*const V>,
 }
+
+unsafe impl<V> Send for VertexArray<V> {}
+unsafe impl<V> Sync for VertexArray<V> {}
 
 impl<V: Layout> VertexArray<V> {
     pub fn for_vertex_type(ctx: &Context) -> Self {
@@ -48,19 +71,19 @@ impl<V: Layout> VertexArray<V> {
         }
     }
 
-    pub fn bind(&self) {
+    pub fn bind(&self, _ctx: &Context) {
         // UNWRAP: our ID should always be valid
         gl_call!(debug BindVertexArray(self.raw.id));
     }
 
-    pub fn set_buffer(&mut self, buffer: &Buffer<V>) {
+    pub fn set_buffer(&mut self, _ctx: &Context, buffer: &Buffer<V>) {
         // all of our attributes are on binding index 0 (second param)
         // the data will start at the first element of the buffer (fourth param)
         gl_call!(assert VertexArrayVertexBuffer(self.raw.id, 0, buffer.raw.id, 0, ::std::mem::size_of::<V>() as i32));
     }
 
-    pub fn with_buffer(mut self, buffer: &Buffer<V>) -> Self {
-        self.set_buffer(buffer);
+    pub fn with_buffer(mut self, ctx: &Context, buffer: &Buffer<V>) -> Self {
+        self.set_buffer(ctx, buffer);
         self
     }
 }

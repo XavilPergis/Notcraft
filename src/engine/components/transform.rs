@@ -1,7 +1,5 @@
-use cgmath::Point3;
-use cgmath::{Deg, Matrix3, Matrix4, Vector2, Vector3, Vector4};
+use cgmath::{Deg, Matrix3, Matrix4, Point3, Vector2, Vector3, Vector4};
 use collision::Ray3;
-use engine::systems::debug_render::{DebugSection, Shape};
 use engine::world::WorldPos;
 use specs::prelude::*;
 
@@ -52,21 +50,5 @@ impl Transform {
         forward.z *= -1.0;
 
         Ray3::new(self.position, forward)
-    }
-
-    pub fn debug(&self, section: &mut DebugSection) {
-        let basis = self.basis_vectors();
-        section.draw(Shape::Line(
-            5.0,
-            WorldPos(self.position - Vector3::unit_y()),
-            basis.0,
-            Vector4::new(1.0, 0.0, 0.0, 1.0),
-        ));
-        section.draw(Shape::Line(
-            5.0,
-            WorldPos(self.position - Vector3::unit_y()),
-            basis.1,
-            Vector4::new(0.0, 0.0, 1.0, 1.0),
-        ));
     }
 }

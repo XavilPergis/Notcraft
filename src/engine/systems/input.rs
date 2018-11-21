@@ -1,6 +1,6 @@
 use cgmath::Deg;
 use engine::prelude::*;
-use engine::systems::debug_render::DebugAccumulator;
+use engine::render::debug::{DebugAccumulator, Shape};
 use glutin::{ElementState, Event, KeyboardInput, ModifiersState, VirtualKeyCode, WindowEvent};
 use shrev::EventChannel;
 use specs::shred::PanicHandler;
@@ -343,8 +343,6 @@ impl BlockInteraction {
     }
 }
 
-use engine::systems::debug_render::Shape;
-
 impl<'a> System<'a> for BlockInteraction {
     type SystemData = (
         Read<'a, EventChannel<Event>>,
@@ -357,7 +355,6 @@ impl<'a> System<'a> for BlockInteraction {
         let mut section = debug.section("interaction");
         let transform = player.get_transform().unwrap();
         let ray = transform.camera_ray();
-        transform.debug(&mut section);
         section.draw(Shape::Ray(10.0, ray, Vector4::new(1.0, 0.0, 0.0, 1.0)));
         if let Some((block, normal)) = world.trace_block(transform.camera_ray(), 10.0, &mut section)
         {

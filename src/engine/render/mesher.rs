@@ -1,14 +1,13 @@
-use cgmath::{Point3, Vector2, Vector3, Vector4};
-use engine::components as comp;
-use engine::mesh::Mesh;
-use engine::systems::debug_render::DebugAccumulator;
-use engine::systems::debug_render::Shape;
-use engine::world::chunk::SIZE;
-use engine::world::BlockPos;
-use engine::world::ChunkPos;
-use engine::world::VoxelWorld;
-use engine::Side;
-use shrev::EventChannel;
+use cgmath::{Vector2, Vector3, Vector4};
+use engine::{
+    components as comp,
+    render::{
+        debug::{DebugAccumulator, Shape},
+        terrain::{BlockVertex, ChunkMesh},
+    },
+    world::{chunk::SIZE, BlockPos, ChunkPos, VoxelWorld},
+    Side,
+};
 use specs::prelude::*;
 
 pub struct ChunkMesher;
@@ -21,39 +20,26 @@ impl ChunkMesher {
 
 impl<'a> System<'a> for ChunkMesher {
     type SystemData = (
-        WriteStorage<'a, comp::DirtyMesh>,
         ReadStorage<'a, comp::ChunkId>,
-        ReadExpect<'a, VoxelWorld>,
-        Write<'a, EventChannel<(Entity, Mesh<BlockVertex, u32>)>>,
+        WriteExpect<'a, VoxelWorld>,
+        WriteStorage<'a, ChunkMesh>,
         ReadExpect<'a, DebugAccumulator>,
         Entities<'a>,
     );
 
-    fn run(
-        &mut self,
-        (mut dirty_markers, chunk_ids, world, mut mesh_channel, debug, entities): Self::SystemData,
-    ) {
-        for (_, &comp::ChunkId(pos), entity) in (&dirty_markers, &chunk_ids, &*entities).join() {
-            let mut section = debug.section("mesher");
+    fn run(&mut self, (chunk_ids, mut world, mut meshes, debug, entities): Self::SystemData) {
+        let mut section = debug.section("mesher");
+        if let Some(pos) = world.get_dirty_chunk() {
             section.draw(Shape::Chunk(2.0, pos, Vector4::new(0.5, 0.5, 1.0, 1.0)));
-            // Ensure that the surrounding volume of chunks exist before meshing this one.
-            let mut surrounded = true;
-            for x in -1..=1 {
-                for y in -1..=1 {
-                    for z in -1..=1 {
-                        surrounded &= world.chunk_exists(pos.offset((x, y, z)));
-                    }
-                }
-            }
-
-            if surrounded {
-                section.draw(Shape::Chunk(2.0, pos, Vector4::new(1.0, 0.0, 1.0, 1.0)));
-                trace!("Chunk {:?} is ready for meshing", pos);
-                let mut mesher = CullMesher::new(pos, &world);
-                mesher.mesh();
-                mesh_channel.single_write((entity, mesher.mesh_constructor.mesh));
-                dirty_markers.remove(entity);
-                break;
+            trace!("Chunk {:?} is ready for meshing", pos);
+            let mut mesher = CullMesher::new(pos, &world);
+            mesher.mesh();
+            if let Some((_, entity)) = (&chunk_ids, &entities)
+                .join()
+                .find(|(&comp::ChunkId(cpos), _)| cpos == pos)
+            {
+                let _ = meshes.insert(entity, mesher.mesh_constructor.mesh);
+                world.clean_chunk(pos);
             }
         }
     }
@@ -138,17 +124,6 @@ impl<'w> CullMesher<'w> {
     }
 }
 
-vertex! {
-    vertex BlockVertex {
-        pos: Point3<f32>,
-        normal: Vector3<f32>,
-        face: i32,
-        tile_offset: Vector2<f32>,
-        uv: Vector2<f32>,
-        ao: f32,
-    }
-}
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 struct FaceAo(u8);
 
@@ -163,10 +138,10 @@ impl FaceAo {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct MeshConstructor<'w> {
     index: u32,
-    mesh: Mesh<BlockVertex, u32>,
+    mesh: ChunkMesh,
     world: &'w VoxelWorld,
 }
 

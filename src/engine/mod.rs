@@ -1,11 +1,11 @@
 use cgmath::{One, Vector3, Zero};
 use std::ops::Neg;
 
-pub mod mesh;
 pub mod world;
 
 pub mod components;
 pub mod job;
+pub mod render;
 pub mod resources;
 pub mod systems;
 
@@ -16,7 +16,9 @@ pub mod prelude {
     pub use super::world::{
         block, block::BlockId, chunk, BlockPos, Chunk, ChunkPos, VoxelWorld, WorldPos,
     };
-    pub use cgmath::{prelude::*, Point1, Point2, Point3, Vector2, Vector3, Vector4};
+    pub use cgmath::{
+        prelude::*, Deg, Matrix3, Matrix4, Point1, Point2, Point3, Vector2, Vector3, Vector4,
+    };
     pub use shrev::EventChannel;
     pub use specs::prelude::*;
 }
