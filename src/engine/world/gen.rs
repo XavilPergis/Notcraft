@@ -22,16 +22,13 @@ impl NoiseGenerator {
         let WorldPos(Point3 { x, y, z }) = pos;
 
         let noise = 100.0 * self.noise.get([x, z]);
-        let block_noise = self.biome_noise.get([x / 32.0, y / 32.0, z / 32.0]);
 
-        if noise > y {
-            if block_noise > 0.33 {
-                block::GRASS
-            } else if block_noise > -0.33 {
-                block::DIRT
-            } else {
-                block::STONE
-            }
+        if noise - 2.0 > y {
+            block::STONE
+        } else if noise - 1.0 > y {
+            block::DIRT
+        } else if noise > y {
+            block::GRASS
         } else {
             block::AIR
         }

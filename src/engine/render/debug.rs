@@ -1,17 +1,18 @@
 use cgmath::Deg;
-use collision::Aabb3;
-use collision::Ray3;
-use engine::prelude::*;
-use engine::world::chunk::SIZE;
-use gl_api::buffer::{Buffer, UsageType};
-use gl_api::context::Context;
-use gl_api::shader::{program::LinkedProgram, simple_pipeline};
-use gl_api::PrimitiveType;
+use collision::{Aabb3, Ray3};
+use engine::{prelude::*, world::chunk::SIZE};
+use gl_api::{
+    buffer::{Buffer, UsageType},
+    context::Context,
+    shader::{program::LinkedProgram, simple_pipeline},
+    PrimitiveType,
+};
 use ordered_float::OrderedFloat;
 use specs::shred::PanicHandler;
-use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
-use std::sync::MutexGuard;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Mutex, MutexGuard},
+};
 
 vertex! {
     vertex DebugVertex {
@@ -256,8 +257,10 @@ impl<'a> System<'a> for DebugRenderer {
                 frustum.near_plane as f32,
                 frustum.far_plane as f32,
             );
-            self.program.set_uniform("view", &view_matrix);
-            self.program.set_uniform("projection", &projection);
+            self.program
+                .set_uniform(&mut self.ctx, "view", &view_matrix);
+            self.program
+                .set_uniform(&mut self.ctx, "projection", &projection);
 
             for (weight, geom) in &self.geometry {
                 self.vbo

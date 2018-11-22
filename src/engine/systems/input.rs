@@ -1,6 +1,8 @@
 use cgmath::Deg;
-use engine::prelude::*;
-use engine::render::debug::{DebugAccumulator, Shape};
+use engine::{
+    prelude::*,
+    render::debug::{DebugAccumulator, Shape},
+};
 use glutin::{ElementState, Event, KeyboardInput, ModifiersState, VirtualKeyCode, WindowEvent};
 use shrev::EventChannel;
 use specs::shred::PanicHandler;
@@ -253,8 +255,9 @@ impl<'a> System<'a> for InputHandler {
                             view_distance.0 -= Vector3::new(1, 1, 1);
                         }
 
-                        // TODO: I don't like having arbitrary strings in my program like this, maybe I can find
-                        // a cleaner way to do debug sections later, but it's fine for now.
+                        // TODO: I don't like having arbitrary strings in my program like this,
+                        // maybe I can find a cleaner way to do debug
+                        // sections later, but it's fine for now.
                         for &(key, section) in &[
                             (VirtualKeyCode::C, "chunk grid"),
                             (VirtualKeyCode::T, "terrain generation"),
@@ -322,8 +325,10 @@ impl<'a> System<'a> for InputHandler {
                         }
                     }
 
-                    // Event::Key(Key::F3, _, Action::Press, _) => { self.capture_mouse = !self.capture_mouse; set_mouse_capture(&mut *self.window.lock().unwrap(), self.capture_mouse) },
-                    // Event::Key(Key::RightBracket, _, Action::Press, _) => { view_distance.0 += Vector3::new(1, 1, 1); },
+                    // Event::Key(Key::F3, _, Action::Press, _) => { self.capture_mouse =
+                    // !self.capture_mouse; set_mouse_capture(&mut *self.window.lock().unwrap(),
+                    // self.capture_mouse) }, Event::Key(Key::RightBracket, _,
+                    // Action::Press, _) => { view_distance.0 += Vector3::new(1, 1, 1); },
                     _ => {}
                 }
             }
@@ -378,7 +383,13 @@ impl<'a> System<'a> for BlockInteraction {
                             world.set_block_id(block, ::engine::world::block::AIR);
                         }
                     }
-                    3 => {}
+                    3 => {
+                        if let Some((block, Some(normal))) =
+                            world.trace_block(transform.camera_ray(), 10.0, &mut section)
+                        {
+                            world.set_block_id(block.offset(normal), ::engine::world::block::STONE);
+                        }
+                    }
                     _ => {}
                 },
 
@@ -416,9 +427,11 @@ impl<'a> System<'a> for LockCursor {
                     ..
                 } => {
                     for target in (&mut look_targets).join() {
-                        // Ok, I know this looks weird, but `target` describes which *axis* should be rotated around.
-                        // It just so happens that the Y coordinate of the mouse corresponds to a rotation around the X axis
-                        // So that's why we add the change in x to the y component of the look target.
+                        // Ok, I know this looks weird, but `target` describes which *axis* should
+                        // be rotated around. It just so happens that the Y
+                        // coordinate of the mouse corresponds to a rotation around the X axis
+                        // So that's why we add the change in x to the y component of the look
+                        // target.
                         target.x = Deg(::util::clamp(target.x.0 + dy, -90.0, 90.0));
                         target.y += Deg(dx);
                     }

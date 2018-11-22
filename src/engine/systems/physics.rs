@@ -22,8 +22,8 @@ fn collidable_blocks_in_aabb(world: &VoxelWorld, aabb: Aabb3<f64>) -> Vec<BlockP
         for y in min.0.y..=max.0.y {
             for z in min.0.z..=max.0.z {
                 let pos = BlockPos(Point3::new(x, y, z));
-                if let Some(props) = world.get_block_properties(pos) {
-                    if props.collidable {
+                if let Some(props) = world.registry(pos) {
+                    if props.collidable() {
                         found.push(pos);
                     }
                 }

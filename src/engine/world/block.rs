@@ -8,126 +8,194 @@ pub const DIRT: BlockId = BlockId(2);
 pub const GRASS: BlockId = BlockId(3);
 pub const WATER: BlockId = BlockId(4);
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
+pub struct BlockFaces<T> {
+    pub top: T,
+    pub bottom: T,
+    pub left: T,
+    pub right: T,
+    pub front: T,
+    pub back: T,
+}
+
+impl<T> BlockFaces<T> {
+    fn map<U, F>(self, mut func: F) -> BlockFaces<U>
+    where
+        F: FnMut(T) -> U,
+    {
+        BlockFaces {
+            top: func(self.top),
+            bottom: func(self.bottom),
+            left: func(self.left),
+            right: func(self.right),
+            front: func(self.front),
+            back: func(self.back),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct BlockId(usize);
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct BlockProperties {
-    pub collidable: bool,
-    pub opaque: bool,
-    pub texture_offsets: [Vector2<f32>; 6],
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub struct BlockRegistryBuilder {
+    // per-block
+    names: Vec<String>,
+    opaque: Vec<bool>,
+    collidable: Vec<bool>,
+    texture_indices: Vec<Option<BlockFaces<usize>>>,
+
+    // other
+    textures: Vec<String>,
 }
 
-impl BlockProperties {
-    pub fn get_texture_offset(&self, side: Side) -> Vector2<f32> {
-        self.texture_offsets[match side {
-            Side::Right => 0,
-            Side::Top => 1,
-            Side::Front => 2,
-            Side::Left => 3,
-            Side::Bottom => 4,
-            Side::Back => 5,
-        }]
+fn get_or_insert_texture(textures: &mut Vec<String>, val: String) -> usize {
+    textures
+        .iter()
+        .position(|item| item == &val)
+        .unwrap_or_else(|| {
+            textures.push(val);
+            textures.len() - 1
+        })
+}
+
+impl BlockRegistryBuilder {
+    pub fn register(
+        &mut self,
+        name: String,
+        opaque: bool,
+        collidable: bool,
+        textures: Option<BlockFaces<String>>,
+    ) {
+        self.names.push(name);
+        self.opaque.push(opaque);
+        self.collidable.push(collidable);
+
+        if let Some(textures) = textures {
+            let texture_vec = &mut self.textures;
+            self.texture_indices.push(Some(
+                textures.map(|name| get_or_insert_texture(texture_vec, name)),
+            ));
+        } else {
+            self.texture_indices.push(None);
+        }
+    }
+
+    pub fn build(self) -> (BlockRegistry, Vec<String>) {
+        let mut registry = BlockRegistry::default();
+
+        registry.name_map = self
+            .names
+            .into_iter()
+            .enumerate()
+            .map(|(a, b)| (b, BlockId(a)))
+            .collect();
+
+        registry.opaque = self.opaque;
+        registry.collidable = self.collidable;
+        registry.texture_indices = self.texture_indices;
+
+        (registry, self.textures)
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct BlockRegistry {
-    current_id: BlockId,
     name_map: HashMap<String, BlockId>,
-    map: HashMap<BlockId, BlockProperties>,
+    opaque: Vec<bool>,
+    collidable: Vec<bool>,
+    texture_indices: Vec<Option<BlockFaces<usize>>>,
 }
 
 impl BlockRegistry {
-    pub fn new() -> Self {
-        BlockRegistry {
-            current_id: BlockId(0),
-            name_map: HashMap::default(),
-            map: HashMap::default(),
-        }
+    // pub fn with_defaults(mut self) -> Self {
+    //     macro_rules! proto {
+    //         ($opaque:expr, $solid:expr, [$($x:expr, $y:expr);*]) => {
+    //             BlockProperties {
+    //                 opaque: $opaque,
+    //                 collidable: $solid,
+    //                 texture_offsets: [$(Vector2::new($x as f32, $y as f32)),*]
+    //             }
+    //         };
+    //     }
+
+    //     self.register(
+    //         "air",
+    //         proto! { false, false, [0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0,
+    // 0.0; 0.0, 0.0] },         Some(AIR),
+    //     );
+    //     self.register(
+    //         "stone",
+    //         proto! { true,  true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0,
+    // 0.0; 1.0, 0.0] },         Some(STONE),
+    //     );
+    //     self.register(
+    //         "dirt",
+    //         proto! { true,  true,  [2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0,
+    // 0.0; 2.0, 0.0] },         Some(DIRT),
+    //     );
+    //     self.register(
+    //         "grass",
+    //         proto! { true,  true,  [0.0, 1.0; 0.0, 0.0; 0.0, 1.0; 0.0, 1.0; 2.0,
+    // 0.0; 0.0, 1.0] },         Some(GRASS),
+    //     );
+    //     self.register(
+    //         "water",
+    //         proto! { true,  true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0,
+    // 0.0; 1.0, 0.0] },         Some(WATER),
+    //     );
+
+    //     self
+    // }
+    pub fn opaque(&self, id: BlockId) -> bool {
+        self.opaque[id.0]
     }
 
-    pub fn with_defaults(mut self) -> Self {
-        macro_rules! proto {
-            ($opaque:expr, $solid:expr, [$($x:expr, $y:expr);*]) => {
-                BlockProperties {
-                    opaque: $opaque,
-                    collidable: $solid,
-                    texture_offsets: [$(Vector2::new($x as f32, $y as f32)),*]
-                }
-            };
-        }
-
-        self.register(
-            "air",
-            proto! { false, false, [0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0] },
-            Some(AIR),
-        );
-        self.register(
-            "stone",
-            proto! { true,  true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0] },
-            Some(STONE),
-        );
-        self.register(
-            "dirt",
-            proto! { true,  true,  [2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0] },
-            Some(DIRT),
-        );
-        self.register(
-            "grass",
-            proto! { true,  true,  [0.0, 1.0; 0.0, 0.0; 0.0, 1.0; 0.0, 1.0; 2.0, 0.0; 0.0, 1.0] },
-            Some(GRASS),
-        );
-        self.register(
-            "water",
-            proto! { true,  true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0] },
-            Some(WATER),
-        );
-
-        self
+    pub fn collidable(&self, id: BlockId) -> bool {
+        self.collidable[id.0]
     }
 
-    /// Register a block renderer prototype and return its ID
-    pub fn register(
-        &mut self,
-        name: impl Into<String>,
-        render_prototype: BlockProperties,
-        id: Option<BlockId>,
-    ) -> BlockId {
-        // Force this item to have a particular ID, and panic if one already exists
-        if let Some(force_id) = id {
-            // Don't overwrite any previous items
-            debug_assert!(!self.map.contains_key(&force_id));
-            self.name_map.insert(name.into(), force_id);
-            self.map.insert(force_id, render_prototype);
-            force_id
-        } else {
-            // Since we can register anything anywhere, we step over the items that are already
-            // registered. We just keep trying the next item until we find a free slot.
-            while self.map.contains_key(&self.current_id) {
-                self.current_id.0 += 1;
-            }
-            self.name_map.insert(name.into(), self.current_id);
-            self.map.insert(self.current_id, render_prototype);
-            self.current_id
-        }
+    pub fn block_textures(&self, id: BlockId) -> &Option<BlockFaces<usize>> {
+        &self.texture_indices[id.0]
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &BlockProperties> {
-        self.map.iter().map(|(_, v)| v)
-    }
-
-    pub fn len(&self) -> usize {
-        self.map.len()
+    pub fn get_ref(&self, id: BlockId) -> RegistryRef {
+        RegistryRef { registry: self, id }
     }
 }
 
-use std::ops::Index;
+pub struct RegistryRef<'r> {
+    registry: &'r BlockRegistry,
+    id: BlockId,
+}
 
-impl Index<BlockId> for BlockRegistry {
-    type Output = BlockProperties;
+impl<'r> RegistryRef<'r> {
+    #[inline(always)]
+    pub fn opaque(&self) -> bool {
+        self.registry.opaque[self.id.0]
+    }
 
-    fn index(&self, index: BlockId) -> &BlockProperties {
-        &self.map[&index]
+    #[inline(always)]
+    pub fn collidable(&self) -> bool {
+        self.registry.collidable[self.id.0]
+    }
+
+    #[inline(always)]
+    pub fn block_textures(&self) -> &Option<BlockFaces<usize>> {
+        &self.registry.texture_indices[self.id.0]
+    }
+
+    #[inline(always)]
+    pub fn block_texture(&self, side: Side) -> Option<usize> {
+        self.registry.texture_indices[self.id.0]
+            .as_ref()
+            .map(|faces| match side {
+                Side::Top => faces.top,
+                Side::Right => faces.right,
+                Side::Front => faces.front,
+                Side::Left => faces.left,
+                Side::Bottom => faces.bottom,
+                Side::Back => faces.back,
+            })
     }
 }

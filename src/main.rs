@@ -24,6 +24,9 @@ extern crate log;
 extern crate specs_derive;
 #[macro_use]
 extern crate shred_derive;
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
 extern crate simple_logger;
 
 // need this due to weird quirk of shred_derive
@@ -38,11 +41,16 @@ pub mod util;
 use cgmath::{Deg, Point3, Vector3};
 use collision::Aabb3;
 use engine::{
-    components as comp, render::mesher::ChunkMesher, resources as res, world::VoxelWorld,
+    components as comp,
+    render::mesher::ChunkMesher,
+    resources as res,
+    world::{
+        block::{BlockFaces, BlockRegistryBuilder},
+        VoxelWorld,
+    },
 };
-use gl_api::context::Context;
-
 use gl_api::{
+    context::Context,
     misc,
     shader::{shader::ShaderError, *},
 };
@@ -68,7 +76,7 @@ fn main() {
 
     // Load OpenGL function pointers.
     // good *god* this function takes a long time fo compile
-    let ctx = Context::load(|symbol| gl_window.get_proc_address(symbol));
+    let mut ctx = Context::load(|symbol| gl_window.get_proc_address(symbol));
     println!("Context created!");
 
     let mut debug_program = match simple_pipeline("resources/debug.vs", "resources/debug.fs") {
@@ -92,7 +100,7 @@ fn main() {
     let mut window_events = shrev::EventChannel::new();
 
     let projection = ::cgmath::perspective(Deg(70.0), 600.0 / 600.0, 0.1, 1000.0f32);
-    debug_program.set_uniform("projection", &projection);
+    debug_program.set_uniform(&mut ctx, "projection", &projection);
 
     let mut world = World::default();
 
@@ -106,7 +114,69 @@ fn main() {
     world.register::<comp::DirtyMesh>();
     world.register::<comp::Collidable>();
 
-    let registry = BlockRegistry::new().with_defaults();
+    let mut registry_builder = BlockRegistryBuilder::default();
+
+    // name: String,
+    // opaque: bool,
+    // collidable: bool,
+    // textures: [String; 6],
+
+    // pub const AIR: BlockId = BlockId(0);
+    // pub const STONE: BlockId = BlockId(1);
+    // pub const DIRT: BlockId = BlockId(2);
+    // pub const GRASS: BlockId = BlockId(3);
+    // pub const WATER: BlockId = BlockId(4);
+
+    let stone = String::from("stone");
+    let dirt = String::from("dirt");
+    let grass_side = String::from("grass_side");
+    let grass_top = String::from("grass_top");
+
+    registry_builder.register("air".into(), false, false, None);
+
+    registry_builder.register(
+        "air".into(),
+        true,
+        true,
+        Some(BlockFaces {
+            top: stone.clone(),
+            bottom: stone.clone(),
+            left: stone.clone(),
+            right: stone.clone(),
+            front: stone.clone(),
+            back: stone.clone(),
+        }),
+    );
+
+    registry_builder.register(
+        "dirt".into(),
+        true,
+        true,
+        Some(BlockFaces {
+            top: dirt.clone(),
+            bottom: dirt.clone(),
+            left: dirt.clone(),
+            right: dirt.clone(),
+            front: dirt.clone(),
+            back: dirt.clone(),
+        }),
+    );
+
+    registry_builder.register(
+        "grass".into(),
+        true,
+        true,
+        Some(BlockFaces {
+            top: grass_top.clone(),
+            bottom: dirt.clone(),
+            left: grass_side.clone(),
+            right: grass_side.clone(),
+            front: grass_side.clone(),
+            back: grass_side.clone(),
+        }),
+    );
+
+    let (registry, tex_names) = registry_builder.build();
     let voxel_world = VoxelWorld::new(registry);
 
     let player_tfm = comp::Transform::default();
@@ -141,7 +211,7 @@ fn main() {
     //     mesh_recv: mesh_channel.register_reader(),
     // };
 
-    let terrain_renderer = TerrainRenderer::new(&ctx);
+    let terrain_renderer = TerrainRenderer::new(&mut ctx, tex_names);
 
     let (debug_rendering_system, debug_accumulator) = DebugRenderer::new(&ctx);
 

@@ -29,17 +29,21 @@ impl<'a> System<'a> for ChunkMesher {
 
     fn run(&mut self, (chunk_ids, mut world, mut meshes, debug, entities): Self::SystemData) {
         let mut section = debug.section("mesher");
-        if let Some(pos) = world.get_dirty_chunk() {
-            section.draw(Shape::Chunk(2.0, pos, Vector4::new(0.5, 0.5, 1.0, 1.0)));
-            trace!("Chunk {:?} is ready for meshing", pos);
-            let mut mesher = CullMesher::new(pos, &world);
-            mesher.mesh();
-            if let Some((_, entity)) = (&chunk_ids, &entities)
-                .join()
-                .find(|(&comp::ChunkId(cpos), _)| cpos == pos)
-            {
-                let _ = meshes.insert(entity, mesher.mesh_constructor.mesh);
-                world.clean_chunk(pos);
+        for _ in 0..4 {
+            if let Some(pos) = world.get_dirty_chunk() {
+                section.draw(Shape::Chunk(2.0, pos, Vector4::new(0.5, 0.5, 1.0, 1.0)));
+                trace!("Chunk {:?} is ready for meshing", pos);
+                let mut mesher = CullMesher::new(pos, &world);
+                mesher.mesh();
+                if let Some((_, entity)) = (&chunk_ids, &entities)
+                    .join()
+                    .find(|(&comp::ChunkId(cpos), _)| cpos == pos)
+                {
+                    let _ = meshes.insert(entity, mesher.mesh_constructor.mesh);
+                    world.clean_chunk(pos);
+                }
+            } else {
+                break;
             }
         }
     }
@@ -65,7 +69,7 @@ impl<'w> CullMesher<'w> {
     }
 
     fn face_ao(&self, pos: BlockPos, side: Side) -> FaceAo {
-        let is_opaque = |pos| self.world.get_block_properties(pos).unwrap().opaque;
+        let is_opaque = |pos| self.world.registry(pos).unwrap().opaque();
 
         let neg_neg = is_opaque(pos.offset(side.uvl_to_xyz(-1, -1, 1)));
         let neg_cen = is_opaque(pos.offset(side.uvl_to_xyz(-1, 0, 1)));
@@ -90,10 +94,10 @@ impl<'w> CullMesher<'w> {
     }
 
     fn is_not_occluded(&self, pos: BlockPos, offset: Vector3<i32>) -> bool {
-        let cur = self.world.get_block_properties(pos).unwrap();
-        let other = self.world.get_block_properties(pos.offset(offset)).unwrap();
+        let cur = self.world.registry(pos).unwrap();
+        let other = self.world.registry(pos.offset(offset)).unwrap();
 
-        cur.opaque && !other.opaque
+        cur.opaque() && !other.opaque()
     }
 
     fn mesh(&mut self) {
@@ -128,10 +132,10 @@ impl<'w> CullMesher<'w> {
 struct FaceAo(u8);
 
 impl FaceAo {
-    const AO_POS_POS: u8 = 6;
-    const AO_POS_NEG: u8 = 4;
     const AO_NEG_NEG: u8 = 2;
     const AO_NEG_POS: u8 = 0;
+    const AO_POS_NEG: u8 = 4;
+    const AO_POS_POS: u8 = 6;
 
     fn corner_ao(&self, bits: u8) -> u8 {
         (self.0 & (3 << bits)) >> bits
@@ -189,11 +193,12 @@ impl<'w> MeshConstructor<'w> {
 
         let normal = side.normal();
 
-        let tile_offset = self
+        let tex_id = self
             .world
-            .get_block_properties(pos)
+            .registry(pos)
             .unwrap()
-            .get_texture_offset(side);
+            .block_texture(side)
+            .unwrap() as i32;
 
         let base = pos.base().0.cast::<f32>().unwrap();
         let mut push_vertex = |offset, uv, ao| {
@@ -202,8 +207,7 @@ impl<'w> MeshConstructor<'w> {
                 uv,
                 ao,
                 normal,
-                tile_offset,
-                face: 0,
+                tex_id,
             })
         };
 

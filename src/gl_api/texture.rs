@@ -1,11 +1,10 @@
-use gl;
-use gl::types::*;
-use gl_api::uniform::{Uniform, UniformLocation};
-use image::ImageError;
-use image::{self, DynamicImage, ImageBuffer, Pixel};
-use std::cell::Cell;
-use std::ops::Deref;
-use std::path::Path;
+use gl::{self, types::*};
+use gl_api::{
+    context::Context,
+    uniform::{Uniform, UniformLocation},
+};
+use image::{self, DynamicImage, ImageBuffer, ImageError, Pixel};
+use std::{cell::Cell, ops::Deref, path::Path};
 
 pub type TextureResult<T> = Result<T, TextureError>;
 #[derive(Debug)]
@@ -183,7 +182,7 @@ impl Drop for Texture2D {
 
 impl Uniform for Texture2D {
     #[inline(always)]
-    fn set_uniform(&self, location: UniformLocation) {
+    fn set_uniform(&self, ctx: &mut Context, location: UniformLocation) {
         gl_call!(assert Uniform1i(location, self.texture_slot.get() as i32));
     }
 }

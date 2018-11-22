@@ -1,8 +1,6 @@
-use super::super::error::GlError;
-use super::shader::CompiledShader;
-use gl;
-use gl::types::*;
-use gl_api::uniform::*;
+use super::{super::error::GlError, shader::CompiledShader};
+use gl::{self, types::*};
+use gl_api::{context::Context, uniform::*};
 use std::collections::HashMap;
 
 pub struct Program {
@@ -48,15 +46,18 @@ pub struct LinkedProgram {
 }
 
 impl LinkedProgram {
-    pub fn set_uniform<U: Uniform>(&mut self, name: &str, uniform: &U) {
+    pub fn set_uniform<U: Uniform>(&mut self, ctx: &mut Context, name: &str, uniform: &U) {
         self.program.bind();
-        uniform.set_uniform(if let Some(location) = self.uniform_cache.get(name) {
-            *location
-        } else {
-            let location = self.get_uniform_location(name);
-            self.uniform_cache.insert(name.into(), location);
-            location
-        });
+        uniform.set_uniform(
+            ctx,
+            if let Some(location) = self.uniform_cache.get(name) {
+                *location
+            } else {
+                let location = self.get_uniform_location(name);
+                self.uniform_cache.insert(name.into(), location);
+                location
+            },
+        );
     }
 
     pub fn bind(&self) {

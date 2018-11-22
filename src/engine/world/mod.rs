@@ -7,7 +7,10 @@ use engine::{
     },
     world::block::BlockRegistry,
 };
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    f64::INFINITY,
+};
 
 use self::block::BlockId;
 pub use self::chunk::Chunk;
@@ -158,7 +161,8 @@ impl VoxelWorld {
         self.chunks.contains_key(&pos)
     }
 
-    /// Tries to replace the block at `pos`, returning the block that was replaced if it was found
+    /// Tries to replace the block at `pos`, returning the block that was
+    /// replaced if it was found
     pub fn set_block_id(&mut self, pos: BlockPos, block: BlockId) -> Option<BlockId> {
         let (chunk_pos, block_pos) = pos.chunk_pos_offset();
         self.dirty_mesh.insert(chunk_pos);
@@ -172,11 +176,8 @@ impl VoxelWorld {
         self.chunks.get(&chunk_pos).map(|chunk| chunk[block_pos])
     }
 
-    pub fn get_block_properties(&self, pos: BlockPos) -> Option<&block::BlockProperties> {
-        let (chunk_pos, block_pos) = pos.chunk_pos_offset();
-        self.chunks
-            .get(&chunk_pos)
-            .map(|chunk| &self.registry[chunk[block_pos]])
+    pub fn registry(&self, pos: BlockPos) -> Option<block::RegistryRef> {
+        self.get_block_id(pos).map(|id| self.registry.get_ref(id))
     }
 
     pub fn get_dirty_chunk(&mut self) -> Option<ChunkPos> {
@@ -214,8 +215,8 @@ impl VoxelWorld {
             ret_pos = pos;
             ret_norm = norm;
             debug.draw(Shape::Block(1.0, pos, Vector4::new(1.0, 0.0, 1.0, 1.0)));
-            self.get_block_properties(pos)
-                .map(|props| props.opaque)
+            self.registry(pos)
+                .map(|props| props.opaque())
                 .unwrap_or(false)
         }) {
             Some((ret_pos, ret_norm))
@@ -248,6 +249,16 @@ fn sign(n: f64) -> f64 {
     }
 }
 
+fn inf_div(a: f64, b: f64) -> f64 {
+    let res = a / b;
+
+    if res.is_nan() {
+        a.signum() * INFINITY
+    } else {
+        res
+    }
+}
+
 fn trace_ray<F>(ray: Ray3<f64>, radius: f64, mut func: F) -> bool
 where
     F: FnMut(BlockPos, Option<Vector3<i32>>) -> bool,
@@ -255,9 +266,9 @@ where
     // init phase
     let origin: BlockPos = WorldPos(ray.origin).into();
     let mut current = origin.0;
-    let step_x = sign(ray.direction.x);
-    let step_y = sign(ray.direction.y);
-    let step_z = sign(ray.direction.z);
+    let step_x = ray.direction.x.signum();
+    let step_y = ray.direction.y.signum();
+    let step_z = ray.direction.z.signum();
 
     let mut t_max_x = int_bound(ray, 0);
     let mut t_max_y = int_bound(ray, 1);
