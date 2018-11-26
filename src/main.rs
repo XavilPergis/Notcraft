@@ -33,6 +33,7 @@ extern crate serde_derive;
 extern crate crossbeam;
 extern crate int_hash;
 extern crate rodio;
+extern crate serde_json;
 extern crate simple_logger;
 extern crate test;
 
@@ -75,11 +76,6 @@ use shrev::EventChannel;
 use specs::prelude::*;
 use std::time::Duration;
 
-use std::alloc::System as SystemAlloc;
-
-#[global_allocator]
-static GLOBAL: SystemAlloc = SystemAlloc;
-
 pub fn default_registry() -> BlockRegistryBuilder {
     let mut registry_builder = BlockRegistryBuilder::default();
 
@@ -91,7 +87,7 @@ pub fn default_registry() -> BlockRegistryBuilder {
     registry_builder.register("air".into(), false, false, None);
 
     registry_builder.register(
-        "air".into(),
+        "stone".into(),
         true,
         true,
         Some(BlockFaces {
@@ -168,7 +164,7 @@ fn main() {
     let window = glutin::WindowBuilder::new()
         .with_title("Hello, world!")
         .with_dimensions(LogicalSize::new(1024.0, 768.0));
-    let context = glutin::ContextBuilder::new();
+    let context = glutin::ContextBuilder::new().with_vsync(true);
     let gl_window = glutin::GlWindow::new(window, context, &events_loop).unwrap();
 
     gl_window.grab_cursor(true).unwrap();
@@ -218,7 +214,7 @@ fn main() {
     world.register::<comp::DirtyMesh>();
     world.register::<comp::Collidable>();
 
-    let (registry, tex_names) = default_registry().build();
+    let (registry, tex_names) = BlockRegistry::load_from_file("resources/blocks.json").unwrap();
     let voxel_world = VoxelWorld::new(registry);
 
     let player_tfm = comp::Transform::default();
@@ -284,11 +280,11 @@ fn main() {
                 let len = self.samples.len() as f64;
                 let sum: f64 = self.samples.drain(..).map(duration_as_ms).sum();
 
-                // debug!(
-                //     "Timing: System \"{}\" took {} ms on average",
-                //     self.name,
-                //     sum / len
-                // );
+                debug!(
+                    "Timing: Took {} ms on average for system \"{}\" ",
+                    sum / len,
+                    self.name,
+                );
             }
 
             let before = Instant::now();

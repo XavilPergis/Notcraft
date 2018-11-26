@@ -1,0 +1,36 @@
+[
+    {
+        "name": "air",
+        "collidable": false,
+        "opaque": false,
+        "textures": null
+    },
+    {
+        "name": "stone",
+        "collidable": true,
+        "opaque": true,
+        "textures": {
+            "same": "stone.png"
+        }
+    },
+    {
+        "name": "dirt",
+        "collidable": true,
+        "opaque": true,
+        "textures": {
+            "same": "dirt.png"
+        }
+    },
+    {
+        "name": "grass",
+        "collidable": true,
+        "opaque": true,
+        "textures": {
+            "top_bottom": {
+                "top": "stone.png",
+                "bottom": "dirt.png",
+                "side": "grass_side.png"
+            }
+        }
+    }
+]

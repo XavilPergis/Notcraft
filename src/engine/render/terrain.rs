@@ -30,8 +30,8 @@ impl TerrainRenderer {
         let images: Result<Vec<_>, _> = names
             .into_iter()
             .map(|name| {
-                info!("trying to open resources/textures/{}.png", &name);
-                image::open(format!("resources/textures/{}.png", name))
+                info!("trying to open resources/textures/{}", &name);
+                image::open(format!("resources/textures/{}", name))
             })
             .collect();
         // FIXME: omg propogate this error plz

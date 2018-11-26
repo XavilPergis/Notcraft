@@ -1,12 +1,90 @@
 use cgmath::Vector2;
 use engine::Side;
-use std::collections::HashMap;
+use std::{collections::HashMap, error::Error, io, path::Path};
 
 pub const AIR: BlockId = BlockId(0);
 pub const STONE: BlockId = BlockId(1);
 pub const DIRT: BlockId = BlockId(2);
 pub const GRASS: BlockId = BlockId(3);
 pub const WATER: BlockId = BlockId(4);
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+enum BlockTextures {
+    /// The textures for all the faces are all the same
+    #[serde(rename = "same")]
+    AllSame(String),
+
+    /// The textures for the sides are all the same, but the top and the bottom
+    /// are different, like a grass block
+    #[serde(rename = "top_bottom")]
+    TopBottom {
+        top: String,
+        bottom: String,
+        side: String,
+    },
+
+    /// The texture for each face is different
+    #[serde(rename = "different")]
+    AllDifferent {
+        top: String,
+        bottom: String,
+        left: String,
+        right: String,
+        front: String,
+        back: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct BlockRegistryEntry {
+    name: String,
+    collidable: bool,
+    opaque: bool,
+    textures: Option<BlockTextures>,
+}
+
+impl BlockTextures {
+    fn expand(self) -> BlockFaces<String> {
+        match self {
+            BlockTextures::AllSame(val) => BlockFaces {
+                top: val.clone(),
+                bottom: val.clone(),
+                left: val.clone(),
+                right: val.clone(),
+                front: val.clone(),
+                back: val,
+            },
+            BlockTextures::TopBottom { top, bottom, side } => BlockFaces {
+                top,
+                bottom,
+                left: side.clone(),
+                right: side.clone(),
+                front: side.clone(),
+                back: side,
+            },
+            BlockTextures::AllDifferent {
+                top,
+                bottom,
+                left,
+                right,
+                front,
+                back,
+            } => BlockFaces {
+                top,
+                bottom,
+                left,
+                right,
+                front,
+                back,
+            },
+        }
+    }
+}
+
+pub enum RegistryFileError {
+    Io(io::Error),
+    Serde(()),
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
 pub struct BlockFaces<T> {
@@ -147,6 +225,24 @@ impl BlockRegistry {
 
     //     self
     // }
+
+    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<(Self, Vec<String>), Box<Error>> {
+        let entries: Vec<BlockRegistryEntry> =
+            serde_json::from_reader(::std::fs::File::open(path)?)?;
+        let mut builder = BlockRegistryBuilder::default();
+
+        for entry in entries {
+            builder.register(
+                entry.name,
+                entry.opaque,
+                entry.collidable,
+                entry.textures.map(BlockTextures::expand),
+            );
+        }
+
+        Ok(builder.build())
+    }
+
     pub fn opaque(&self, id: BlockId) -> bool {
         self.opaque[id.0]
     }
