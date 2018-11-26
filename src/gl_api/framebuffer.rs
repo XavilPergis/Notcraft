@@ -1,8 +1,18 @@
-// #[derive(Debug)]
-// pub struct Framebuffer {
-//     crate raw: RawFramebuffer,
-// }
+trait GlObject {
+    unsafe fn create(ctx: &Context) -> Self;
+}
 
-// impl Framebuffer {
+// ctx.create::<Framebuffer>()
 
-// }
+pub struct RawFramebuffer {
+    id: u32,
+}
+
+impl RawFramebuffer {}
+
+#[derive(Debug)]
+pub struct Framebuffer {
+    crate raw: RawFramebuffer,
+}
+
+impl Framebuffer {}

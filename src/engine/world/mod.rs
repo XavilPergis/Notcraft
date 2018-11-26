@@ -100,6 +100,15 @@ impl WorldPos {
     }
 }
 
+#[inline(always)]
+fn chunk_id(pos: ChunkPos) -> u64 {
+    let mut id = 0;
+    id |= pos.0.x as u64 & 0xFFFF;
+    id |= (pos.0.y as u64 & 0xFFFF) << 16;
+    id |= (pos.0.z as u64 & 0xFFFF) << 32;
+    id
+}
+
 #[derive(Debug)]
 pub struct VoxelWorld {
     chunks: HashMap<ChunkPos, Chunk>,
@@ -108,28 +117,38 @@ pub struct VoxelWorld {
     registry: BlockRegistry,
 }
 
-use std::ops::{Index, IndexMut};
-impl Index<BlockPos> for VoxelWorld {
-    type Output = BlockId;
+// use std::ops::{Index, IndexMut};
+// impl Index<BlockPos> for VoxelWorld {
+//     type Output = BlockId;
 
-    fn index(&self, idx: BlockPos) -> &Self::Output {
-        let (chunk_pos, block_pos) = idx.chunk_pos_offset();
-        match self.chunks.get(&chunk_pos).map(|chunk| &chunk[block_pos]) {
-            Some(v) => v,
-            _ => panic!("Block requested at {:?} was not found.", idx),
-        }
-    }
-}
-impl IndexMut<BlockPos> for VoxelWorld {
-    fn index_mut(&mut self, idx: BlockPos) -> &mut Self::Output {
-        let (chunk_pos, block_pos) = idx.chunk_pos_offset();
-        match self
-            .chunks
-            .get_mut(&chunk_pos)
-            .map(|chunk| &mut chunk[block_pos])
-        {
-            Some(v) => v,
-            _ => panic!("Block requested at {:?} was not found.", idx),
+//     fn index(&self, idx: BlockPos) -> &Self::Output {
+//         let (chunk_pos, block_pos) = idx.chunk_pos_offset();
+//         match self.chunks.get(&chunk_pos).map(|chunk| &chunk[block_pos]) {
+//             Some(v) => v,
+//             _ => panic!("Block requested at {:?} was not found.", idx),
+//         }
+//     }
+// }
+// impl IndexMut<BlockPos> for VoxelWorld {
+//     fn index_mut(&mut self, idx: BlockPos) -> &mut Self::Output {
+//         let (chunk_pos, block_pos) = idx.chunk_pos_offset();
+//         match self
+//             .chunks
+//             .get_mut(&chunk_pos)
+//             .map(|chunk| &mut chunk[block_pos])
+//         {
+//             Some(v) => v,
+//             _ => panic!("Block requested at {:?} was not found.", idx),
+//         }
+//     }
+// }
+
+fn iter_pos(start: BlockPos, end: BlockPos, mut func: impl FnMut(BlockPos)) {
+    for x in start.0.x..=end.0.x {
+        for y in start.0.y..=end.0.y {
+            for z in start.0.z..=end.0.z {
+                func(BlockPos(Point3::new(x, y, z)));
+            }
         }
     }
 }
@@ -142,6 +161,10 @@ impl VoxelWorld {
             dirty_mesh: Default::default(),
             registry,
         }
+    }
+
+    pub fn get_registry(&self) -> &BlockRegistry {
+        &self.registry
     }
 
     pub fn unload_chunk(&mut self, pos: ChunkPos) {
@@ -161,11 +184,19 @@ impl VoxelWorld {
         self.chunks.contains_key(&pos)
     }
 
+    fn mark_neighborhood_dirty(&mut self, pos: BlockPos) {
+        iter_pos(pos.offset((-1, -1, -1)), pos.offset((1, 1, 1)), |pos| {
+            self.dirty_mesh.insert(pos.into());
+        });
+    }
+
     /// Tries to replace the block at `pos`, returning the block that was
     /// replaced if it was found
     pub fn set_block_id(&mut self, pos: BlockPos, block: BlockId) -> Option<BlockId> {
         let (chunk_pos, block_pos) = pos.chunk_pos_offset();
-        self.dirty_mesh.insert(chunk_pos);
+
+        self.mark_neighborhood_dirty(pos);
+
         self.chunks
             .get_mut(&chunk_pos)
             .map(|chunk| ::std::mem::replace(&mut chunk[block_pos], block))
@@ -226,6 +257,26 @@ impl VoxelWorld {
     }
 }
 
+mod benches {
+    use super::*;
+    use test::Bencher;
+
+    #[bench]
+    fn bench_world_get(b: &mut Bencher) {
+        let mut world = VoxelWorld::new(::default_registry().build().0);
+        world.set_chunk(ChunkPos(Point3::new(0, 0, 0)), super::gen::get_test_chunk());
+        b.iter(|| {
+            for x in -2..34 {
+                for y in -2..34 {
+                    for z in -2..34 {
+                        ::test::black_box(world.get_block_id(BlockPos(Point3::new(x, y, z))));
+                    }
+                }
+            }
+        });
+    }
+}
+
 use collision::Ray3;
 
 fn int_bound(ray: Ray3<f64>, axis: usize) -> f64 {
@@ -236,26 +287,6 @@ fn int_bound(ray: Ray3<f64>, axis: usize) -> f64 {
         int_bound(new, axis)
     } else {
         (1.0 - ::util::modulo(ray.origin[axis], 1.0)) / ray.direction[axis]
-    }
-}
-
-fn sign(n: f64) -> f64 {
-    if n > 0.0 {
-        1.0
-    } else if n < 0.0 {
-        -1.0
-    } else {
-        0.0
-    }
-}
-
-fn inf_div(a: f64, b: f64) -> f64 {
-    let res = a / b;
-
-    if res.is_nan() {
-        a.signum() * INFINITY
-    } else {
-        res
     }
 }
 

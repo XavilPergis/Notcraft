@@ -1,6 +1,7 @@
 use gl;
 use gl_api::{
-    uniform::{Uniform, UniformLocation},
+    shader::uniform::{Uniform, UniformLocation},
+    texture::{load_texture_defaults, RawTexture, TextureType},
     Context,
 };
 use std::ops::Deref;
@@ -10,37 +11,7 @@ use std::ops::Deref;
 // GL_TEXTURE_CUBE_MAP, GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_BUFFER,
 // GL_TEXTURE_2D_MULTISAMPLE or GL_TEXTURE_2D_MULTISAMPLE_ARRAY.
 
-#[repr(u32)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum TextureType {
-    Texture1D = gl::TEXTURE_1D,
-    Texture2D = gl::TEXTURE_2D,
-    Texture3D = gl::TEXTURE_3D,
-    Texture1DArray = gl::TEXTURE_1D_ARRAY,
-    Texture2DArray = gl::TEXTURE_2D_ARRAY,
-    TextureRectangle = gl::TEXTURE_RECTANGLE,
-    TextureCubeMap = gl::TEXTURE_CUBE_MAP,
-    TextureCubeMapArray = gl::TEXTURE_CUBE_MAP_ARRAY,
-    TextureBuffer = gl::TEXTURE_BUFFER,
-    Texture2DMultisample = gl::TEXTURE_2D_MULTISAMPLE,
-    Texture2DMultisampleArray = gl::TEXTURE_2D_MULTISAMPLE_ARRAY,
-}
-
-pub struct RawTexture {
-    crate id: u32,
-    crate texture_type: TextureType,
-}
-
-impl RawTexture {
-    pub fn new(_ctx: &Context, texture_type: TextureType) -> Self {
-        let mut id = 0;
-        gl_call!(assert CreateTextures(texture_type as u32, 1, &mut id));
-
-        RawTexture { id, texture_type }
-    }
-}
-
-pub struct TextureArray2D {
+pub struct TextureArray2d {
     crate raw: RawTexture,
 }
 
@@ -113,18 +84,14 @@ fn sub_image_slice<P, C>(
     ));
 }
 
-impl TextureArray2D {
+impl TextureArray2d {
     pub fn new(ctx: &Context, width: usize, height: usize, layers: usize) -> Self {
         let raw = RawTexture::new(ctx, TextureType::Texture2DArray);
 
         gl_call!(assert TextureStorage3D(raw.id, 1, gl::RGBA8, width as i32, height as i32, layers as i32));
-        gl_call!(assert TextureParameteri(raw.id, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32));
-        gl_call!(assert TextureParameteri(raw.id, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32));
-        gl_call!(assert TextureParameteri(raw.id, gl::TEXTURE_WRAP_S, gl::REPEAT as i32));
-        gl_call!(assert TextureParameteri(raw.id, gl::TEXTURE_WRAP_T, gl::REPEAT as i32));
-        gl_call!(assert TextureParameteri(raw.id, gl::TEXTURE_WRAP_R, gl::REPEAT as i32));
+        load_texture_defaults(&raw);
 
-        TextureArray2D { raw }
+        TextureArray2d { raw }
     }
 
     pub fn upload_textures<P, C, I>(&self, _ctx: &Context, iter: I)
@@ -149,9 +116,9 @@ impl TextureArray2D {
     }
 }
 
-impl Uniform for TextureArray2D {
+impl Uniform for TextureArray2d {
     #[inline(always)]
-    fn set_uniform(&self, ctx: &mut Context, location: UniformLocation) {
+    fn set_uniform(&self, ctx: &Context, location: UniformLocation) {
         gl_call!(assert BindTexture(gl::TEXTURE_2D_ARRAY, self.raw.id));
         gl_call!(assert ActiveTexture(gl::TEXTURE0));
         gl_call!(assert Uniform1i(location, 0));

@@ -1,24 +1,28 @@
 use gl;
-use gl_api::buffer::Buffer;
-use gl_api::buffer::BufferTarget;
-use gl_api::layout::Layout;
-use gl_api::limits::Limits;
-use gl_api::shader::program::LinkedProgram;
-use gl_api::vertex_array::VertexArray;
-use gl_api::{BufferIndex, PrimitiveType};
+use gl_api::{
+    buffer::{Buffer, BufferTarget},
+    layout::Layout,
+    limits::Limits,
+    shader::program::Program,
+    vertex_array::VertexArray,
+    BufferIndex, PrimitiveType,
+};
 use glutin::GlWindow;
-use std::any::Any;
-use std::any::TypeId;
-use std::cell::Cell;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::marker::PhantomData;
-use std::rc::Rc;
-use std::sync::Mutex;
+use std::{
+    any::{Any, TypeId},
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    marker::PhantomData,
+    rc::Rc,
+    sync::Mutex,
+};
 
 lazy_static::lazy_static! {
     pub(crate) static ref BUFFER_DROP_LIST: Mutex<Vec<u32>> = Mutex::new(vec![]);
     pub(crate) static ref VERTEX_ARRAY_DROP_LIST: Mutex<Vec<u32>> = Mutex::new(vec![]);
+    pub(crate) static ref TEXTURE_DROP_LIST: Mutex<Vec<u32>> = Mutex::new(vec![]);
+    pub(crate) static ref PROGRAM_DROP_LIST: Mutex<Vec<u32>> = Mutex::new(vec![]);
+    pub(crate) static ref SHADER_DROP_LIST: Mutex<Vec<u32>> = Mutex::new(vec![]);
 }
 
 crate struct Entry<'v, V>(
@@ -123,18 +127,33 @@ impl Context {
         for id in BUFFER_DROP_LIST.lock().unwrap().drain(..) {
             gl_call!(debug DeleteBuffers(1, &id));
         }
+        for id in VERTEX_ARRAY_DROP_LIST.lock().unwrap().drain(..) {
+            gl_call!(debug DeleteVertexArrays(1, &id));
+        }
+        for id in TEXTURE_DROP_LIST.lock().unwrap().drain(..) {
+            gl_call!(debug DeleteTextures(1, &id));
+        }
+        for id in PROGRAM_DROP_LIST.lock().unwrap().drain(..) {
+            gl_call!(debug DeleteProgram(id));
+        }
+        for id in SHADER_DROP_LIST.lock().unwrap().drain(..) {
+            gl_call!(debug DeleteShader(id));
+        }
     }
 
     // self.ctx.draw_elements(gl::TRIANGLES, &self.vertices, &self.indices);
     pub fn draw_elements<V: Layout, I: BufferIndex>(
-        &self,
+        &mut self,
         primitive: PrimitiveType,
-        program: &LinkedProgram,
+        program: &Program,
         vertices: &Buffer<V>,
         indices: &Buffer<I>,
     ) {
         if vertices.len() > 0 {
-            // Find a VAO that describes our vertex format, creating one if it does not exist.
+            program.bind(self);
+
+            // Find a VAO that describes our vertex format, creating one if it does not
+            // exist.
             let mut map = self.0.format_cache.borrow_mut();
             let vao = map.entry::<V>().or_insert_with(|| {
                 VertexArray::<V>::for_vertex_type(self).with_buffer(self, vertices)
@@ -142,10 +161,8 @@ impl Context {
 
             // set the buffer binding the the buffer that was passed in
             vao.set_buffer(self, vertices);
-
             vao.bind(self);
             indices.bind(self, BufferTarget::Element);
-            program.bind();
 
             gl_call!(assert DrawElements(
                 primitive as u32,
@@ -158,13 +175,16 @@ impl Context {
 
     // self.ctx.draw_elements(gl::TRIANGLES, &shader, &self.vertices);
     pub fn draw_arrays<V: Layout>(
-        &self,
+        &mut self,
         primitive: PrimitiveType,
-        program: &LinkedProgram,
+        program: &Program,
         vertices: &Buffer<V>,
     ) {
         if vertices.len() > 0 {
-            // Find a VAO that describes our vertex format, creating one if it does not exist.
+            program.bind(self);
+
+            // Find a VAO that describes our vertex format, creating one if it does not
+            // exist.
             let mut map = self.0.format_cache.borrow_mut();
             let vao = map.entry::<V>().or_insert_with(|| {
                 VertexArray::<V>::for_vertex_type(self).with_buffer(self, vertices)
@@ -172,9 +192,7 @@ impl Context {
 
             // set the buffer binding the the buffer that was passed in
             vao.set_buffer(self, vertices);
-
             vao.bind(self);
-            program.bind();
 
             gl_call!(assert DrawArrays(
                 primitive as u32,

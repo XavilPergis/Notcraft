@@ -1,8 +1,9 @@
-use std::io;
-use std::path::Path;
+use gl_api::context::Context;
+use std::{io, path::Path};
 
 pub mod program;
 pub mod shader;
+pub mod uniform;
 
 use program::*;
 use shader::*;
@@ -26,11 +27,15 @@ impl From<io::Error> for PipelineError {
     }
 }
 
-pub fn load_shader<P1: AsRef<Path>, P2: AsRef<Path>>(vert: P1, frag: P2) -> LinkedProgram {
-    match simple_pipeline(vert, frag) {
+pub fn load_shader<P1: AsRef<Path>, P2: AsRef<Path>>(ctx: &Context, vert: P1, frag: P2) -> Program {
+    match simple_pipeline(ctx, vert, frag) {
         Ok(program) => program,
         Err(PipelineError::Shader(ShaderError::Shader(msg))) => {
             println!("Shader compilation error: {}", msg);
+            panic!();
+        }
+        Err(PipelineError::Io(err)) | Err(PipelineError::Shader(ShaderError::Io(err))) => {
+            println!("Shader compilation error: I/O {:?}", err);
             panic!();
         }
         Err(other) => panic!(other),
@@ -38,10 +43,11 @@ pub fn load_shader<P1: AsRef<Path>, P2: AsRef<Path>>(vert: P1, frag: P2) -> Link
 }
 
 pub fn simple_pipeline<P1: AsRef<Path>, P2: AsRef<Path>>(
+    ctx: &Context,
     vert: P1,
     frag: P2,
-) -> Result<LinkedProgram, PipelineError> {
-    let program = Program::new().ok_or(PipelineError::ProgramCreation)?;
+) -> Result<Program, PipelineError> {
+    let program = ProgramBuilder::new(ctx);
     let vert_shader = Shader::new(ShaderType::Vertex)?;
     let frag_shader = Shader::new(ShaderType::Fragment)?;
 

@@ -1,6 +1,9 @@
-use std::collections::VecDeque;
-use std::sync::mpsc;
-use std::thread;
+use crossbeam::deque::{self, Steal};
+use std::{
+    collections::VecDeque,
+    sync::{mpsc, Arc, Mutex},
+    thread,
+};
 
 pub trait Worker: Send + 'static {
     type Input: Send + 'static;
@@ -9,54 +12,62 @@ pub trait Worker: Send + 'static {
     fn compute(&mut self, input: &Self::Input) -> Self::Output;
 }
 
-pub struct WorkerHandle<W: Worker> {
+pub struct WorkerHandle {
     working: bool,
-    sender: mpsc::Sender<W::Input>,
     _handle: thread::JoinHandle<()>,
 }
 
-impl<W: Worker> WorkerHandle<W> {
-    pub fn new(
-        name: String,
-        id: usize,
-        worker_tx: mpsc::Sender<(usize, W::Input, W::Output)>,
-        mut worker: W,
-    ) -> WorkerHandle<W> {
-        let (sender, rx) = mpsc::channel();
-        let thread = thread::Builder::new()
-            .name(name)
-            .spawn(move || {
-                while let Ok(request) = rx.recv() {
+fn spawn_worker<W: Worker>(
+    name: String,
+    inputs: &deque::Stealer<W::Input>,
+    tx: &mpsc::Sender<(W::Input, W::Output)>,
+    mut worker: W,
+) -> thread::JoinHandle<()> {
+    let inputs = inputs.clone();
+    let tx = tx.clone();
+    thread::Builder::new()
+        .name(name)
+        .spawn(move || loop {
+            match inputs.steal() {
+                // either the queue is empty and we want to wait for more work to do, so we retry,
+                // or we are forced to retry
+                Steal::Empty | Steal::Retry => thread::yield_now(),
+
+                // We got the data! not process the request and send it
+                Steal::Data(request) => {
                     let res = worker.compute(&request);
-                    match worker_tx.send((id, request, res)) {
+                    match tx.send((request, res)) {
+                        // We get an error if the recv side has shut down, and it will only shut
+                        // down when we're done with the sericde anyways, so if we get an error, we
+                        // exit the loop/thread
                         Err(_) => break,
                         _ => (),
                     }
                 }
-            })
-            .unwrap();
-
-        WorkerHandle {
-            working: false,
-            _handle: thread,
-            sender,
-        }
-    }
-
-    fn submit(&mut self, value: W::Input) {
-        self.working = true;
-        self.sender
-            .send(value)
-            .expect("worker thread unexpectedly shut down")
-    }
+            }
+        })
+        .unwrap()
 }
 
+/*
+
+Service<I, O>:
+    - request(I)
+    - cancel(I)
+    - gather() -> [O]
+
+    + DequeTx<I>
+    + Rx<O>
+
+Workers:
+    + DequeRx<I>
+    + Tx<O>
+
+*/
+
 pub struct Service<W: Worker> {
-    workers: Vec<WorkerHandle<W>>,
-    _worker_tx: mpsc::Sender<(usize, W::Input, W::Output)>,
-    service_rx: mpsc::Receiver<(usize, W::Input, W::Output)>,
-    work_queue: VecDeque<W::Input>,
-    finished_queue: Vec<(W::Input, W::Output)>,
+    requester: deque::Worker<W::Input>,
+    receiver: mpsc::Receiver<(W::Input, W::Output)>,
 }
 
 impl<W: Worker> Service<W> {
@@ -64,24 +75,17 @@ impl<W: Worker> Service<W> {
     where
         I: IntoIterator<Item = W>,
     {
-        let (worker_tx, service_rx) = mpsc::channel();
+        let (request_inserter, request_stealer) = deque::fifo();
+        let (response_tx, response_rx) = mpsc::channel();
 
-        let workers = workers
-            .into_iter()
-            .enumerate()
-            .map(|(thread_num, worker)| {
-                let thread_name = format!("{} (Worker #{})", name, thread_num);
-                let worker_tx = worker_tx.clone();
-                WorkerHandle::new(thread_name, thread_num, worker_tx, worker)
-            })
-            .collect::<Vec<_>>();
+        for (num, worker) in workers.into_iter().enumerate() {
+            let thread_name = format!("{} (Worker #{})", name, num);
+            spawn_worker(thread_name, &request_stealer, &response_tx, worker);
+        }
 
         Service {
-            workers,
-            _worker_tx: worker_tx,
-            service_rx,
-            work_queue: VecDeque::new(),
-            finished_queue: Vec::new(),
+            requester: request_inserter,
+            receiver: response_rx,
         }
     }
 
@@ -93,33 +97,13 @@ impl<W: Worker> Service<W> {
         Self::from_iter(name, iter::repeat(worker).take(num_workers))
     }
 
-    pub fn dispatch(&mut self, request: W::Input) {
-        if let Some(worker) = self.workers.iter_mut().find(|item| !item.working) {
-            // TODO: remove shut-down thread from pool
-            worker.submit(request)
-        } else {
-            self.work_queue.push_back(request);
-        }
+    pub fn request(&mut self, request: W::Input) {
+        self.requester.push(request);
     }
 
-    pub fn update(&mut self) {
-        for (id, tx, rx) in self.service_rx.try_iter() {
-            self.workers[id].working = false;
-            self.finished_queue.push((tx, rx));
-        }
+    // pub fn cancel(&mut self, request: &W::Input) {}
 
-        for worker in self
-            .workers
-            .iter_mut()
-            .filter(|worker| !worker.working)
-            .take(self.work_queue.len())
-        {
-            // we can unwrap here because we will never iterate more times than there are items in the list
-            worker.submit(self.work_queue.pop_front().unwrap());
-        }
-    }
-
-    pub fn poll(&mut self) -> impl Iterator<Item = (W::Input, W::Output)> + '_ {
-        self.finished_queue.drain(..)
+    pub fn gather(&mut self) -> impl Iterator<Item = (W::Input, W::Output)> + '_ {
+        self.receiver.try_iter()
     }
 }

@@ -1,9 +1,8 @@
-use engine::{prelude::*, render::mesh::Mesh};
+use engine::{camera::Camera, prelude::*, render::mesh::Mesh};
 use gl_api::{
     context::Context,
-    shader::{load_shader, program::LinkedProgram},
-    texture::*,
-    texture_array::TextureArray2D,
+    shader::{load_shader, program::Program},
+    texture_array::TextureArray2d,
 };
 use glutin::GlWindow;
 
@@ -21,13 +20,13 @@ pub type ChunkMesh = Mesh<BlockVertex, u32>;
 
 pub struct TerrainRenderer {
     ctx: Context,
-    program: LinkedProgram,
-    textures: TextureArray2D,
+    program: Program,
+    textures: TextureArray2d,
 }
 
 impl TerrainRenderer {
     pub fn new(ctx: &mut Context, names: Vec<String>) -> Self {
-        let textures = TextureArray2D::new(ctx, 16, 16, 4);
+        let textures = TextureArray2d::new(ctx, 16, 16, 4);
         let images: Result<Vec<_>, _> = names
             .into_iter()
             .map(|name| {
@@ -47,11 +46,11 @@ impl TerrainRenderer {
         // textures.texture_wrap_behavior(TextureAxis::S, WrapMode::Repeat);
         // textures.set_texture_bank(0);
 
-        let mut program = load_shader("resources/terrain.vs", "resources/terrain.fs");
-        program.set_uniform(ctx, "u_Time", &0.0f32);
-        program.set_uniform(ctx, "u_LightAmbient", &Vector3::<f32>::new(0.8, 0.8, 0.8));
-        program.set_uniform(ctx, "u_CameraPosition", &Vector3::new(0.0f32, 10.0, 0.0));
-        program.set_uniform(ctx, "u_TextureMap", &textures);
+        let mut program = load_shader(ctx, "resources/terrain.vs", "resources/terrain.fs");
+        program.set_uniform(ctx, "time", &0.0f32);
+        program.set_uniform(ctx, "ambient_light", &Vector3::<f32>::new(0.8, 0.8, 0.8));
+        program.set_uniform(ctx, "camera_position", &Vector3::new(0.0f32, 10.0, 0.0));
+        program.set_uniform(ctx, "texture_map", &textures);
 
         TerrainRenderer {
             ctx: ctx.clone(),
@@ -65,28 +64,10 @@ impl<'a> System<'a> for TerrainRenderer {
     type SystemData = (
         WriteStorage<'a, ChunkMesh>,
         ReadStorage<'a, comp::Transform>,
-        ReadStorage<'a, comp::Player>,
-        ReadStorage<'a, comp::ClientControlled>,
-        ReadExpect<'a, GlWindow>,
-        ReadExpect<'a, res::ViewFrustum>,
+        ReadExpect<'a, Camera>,
     );
 
-    fn run(
-        &mut self,
-        (
-            mut meshes,
-            transforms,
-            player_marker,
-            client_controlled_marker,
-            window,
-            frustum,
-        ): Self::SystemData,
-    ) {
-        let player_transform = (&player_marker, &client_controlled_marker, &transforms)
-            .join()
-            .map(|(_, _, tfm)| tfm)
-            .next();
-
+    fn run(&mut self, (mut meshes, transforms, camera): Self::SystemData) {
         use gl_api::buffer::UsageType;
 
         for mesh in (&mut meshes).join() {
@@ -95,30 +76,23 @@ impl<'a> System<'a> for TerrainRenderer {
             }
         }
 
-        if let Some(player_transform) = player_transform {
-            let aspect_ratio = ::util::aspect_ratio(&window).unwrap() as f32;
-            let projection = ::cgmath::perspective(
-                Deg(frustum.fov.0 as f32),
-                aspect_ratio,
-                frustum.near_plane as f32,
-                frustum.far_plane as f32,
-            );
+        let projection = camera.projection_matrix().cast::<f32>().unwrap();
+        self.program
+            .set_uniform(&mut self.ctx, "projection_matrix", &projection);
+        self.program.set_uniform(
+            &mut self.ctx,
+            "camera_position",
+            &camera.position.cast::<f32>().unwrap(),
+        );
+        for (mesh, tfm) in (&meshes, &transforms).join() {
+            let tfm: Matrix4<f32> = tfm.model_matrix().cast::<f32>().unwrap();
+            let view_matrix: Matrix4<f32> = camera.view_matrix().cast().unwrap();
             self.program
-                .set_uniform(&mut self.ctx, "u_Projection", &projection);
-            self.program.set_uniform(
-                &mut self.ctx,
-                "u_CameraPosition",
-                &player_transform.position.cast::<f32>().unwrap(),
-            );
-            for (mesh, tfm) in (&meshes, &transforms).join() {
-                let tfm: Matrix4<f32> = tfm.as_matrix().cast::<f32>().unwrap();
-                let view_matrix: Matrix4<f32> = player_transform.as_matrix().cast::<f32>().unwrap();
-                self.program
-                    .set_uniform(&mut self.ctx, "u_View", &view_matrix);
-                self.program.set_uniform(&mut self.ctx, "u_Transform", &tfm);
-                if let Some(mesh) = mesh.gpu_mesh.as_ref() {
-                    mesh.draw_with(&self.ctx, &self.program);
-                }
+                .set_uniform(&mut self.ctx, "view_matrix", &view_matrix);
+            self.program
+                .set_uniform(&mut self.ctx, "model_matrix", &tfm);
+            if let Some(mesh) = mesh.gpu_mesh.as_ref() {
+                mesh.draw_with(&mut self.ctx, &self.program);
             }
         }
     }

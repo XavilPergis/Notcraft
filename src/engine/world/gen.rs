@@ -13,14 +13,12 @@ pub struct NoiseGenerator {
 
 impl NoiseGenerator {
     pub fn new_default() -> Self {
-        let noise = Fbm::default().set_frequency(0.001).set_persistence(0.8);
+        let noise = Fbm::default().set_frequency(0.01).set_persistence(0.3);
         let biome_noise = SuperSimplex::new();
         NoiseGenerator { noise, biome_noise }
     }
 
-    fn block_at(&self, pos: WorldPos) -> BlockId {
-        let WorldPos(Point3 { x, y, z }) = pos;
-
+    fn block_at(&self, x: f64, y: f64, z: f64) -> BlockId {
         let noise = 100.0 * self.noise.get([x, z]);
 
         if noise - 2.0 > y {
@@ -40,11 +38,27 @@ impl job::Worker for NoiseGenerator {
     type Output = Chunk;
 
     fn compute(&mut self, pos: &Self::Input) -> Self::Output {
-        Chunk::new(::nd::Array3::from_shape_fn(
-            (chunk::SIZE, chunk::SIZE, chunk::SIZE),
-            |(x, y, z)| self.block_at(pos.base().offset((x as i32, y as i32, z as i32)).center()),
-        ))
+        let size = chunk::SIZE as i32;
+        let mut vec = Vec::with_capacity(chunk::VOLUME);
+        let base = pos.base().0;
+        for x in 0..size {
+            for y in 0..size {
+                for z in 0..size {
+                    let pos = base + Vector3::new(x, y, z);
+
+                    vec.push(self.block_at(pos.x as f64, pos.y as f64, pos.z as f64));
+                }
+            }
+        }
+        Chunk::new(vec)
     }
+}
+
+use self::job::Worker;
+
+crate fn get_test_chunk() -> Chunk {
+    let mut gen = NoiseGenerator::new_default();
+    gen.compute(&ChunkPos(Point3::new(0, 0, 0)))
 }
 
 pub struct ChunkUnloader {
@@ -114,6 +128,25 @@ impl TerrainGenerator {
             queue: HashSet::default(),
         }
     }
+
+    pub fn enqueue_radius(&mut self, world: &VoxelWorld, center: ChunkPos, radius: usize) {
+        let radius = radius as i32;
+        for xo in -radius..=radius {
+            for yo in -radius..=radius {
+                for zo in -radius..=radius {
+                    let pos = center.offset((xo, yo, zo));
+                    if !world.chunk_exists(pos) && !self.queue.contains(&pos) {
+                        self.queue.insert(pos);
+                        self.service.request(pos);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn drain_finished_chunks(&mut self) -> impl Iterator<Item = (ChunkPos, Chunk)> + '_ {
+        self.service.gather()
+    }
 }
 
 impl<'a> System<'a> for TerrainGenerator {
@@ -131,22 +164,13 @@ impl<'a> System<'a> for TerrainGenerator {
         &mut self,
         (mut voxel_world, players, transforms, view_distance, lazy, entity_res, debug): Self::SystemData,
     ) {
-        self.service.update();
-
         let dist = view_distance.0;
         for (_, transform) in (&players, &transforms).join() {
-            let base_pos: ChunkPos = WorldPos(transform.position).into();
-            for xo in -dist.x..=dist.x {
-                for yo in -dist.y..=dist.y {
-                    for zo in -dist.z..=dist.z {
-                        let pos = base_pos.offset((xo, yo, zo));
-                        if !voxel_world.chunk_exists(pos) && !self.queue.contains(&pos) {
-                            self.queue.insert(pos);
-                            self.service.dispatch(pos);
-                        }
-                    }
-                }
-            }
+            self.enqueue_radius(
+                &voxel_world,
+                WorldPos(transform.position).into(),
+                dist.x as usize,
+            );
         }
 
         let mut section = debug.section("terrain generation");
@@ -154,13 +178,13 @@ impl<'a> System<'a> for TerrainGenerator {
             section.draw(Shape::Chunk(2.0, *item, Vector4::new(1.0, 0.0, 0.0, 1.0)));
         }
 
-        for (pos, chunk) in self.service.poll() {
+        for (pos, chunk) in self.service.gather() {
             section.draw(Shape::Chunk(2.0, pos, Vector4::new(0.0, 1.0, 0.0, 1.0)));
             voxel_world.set_chunk(pos, chunk);
             self.queue.remove(&pos);
             lazy.create_entity(&entity_res)
                 .with(comp::ChunkId(pos))
-                .with(comp::Transform::default())
+                .with(comp::Transform::default().with_position(pos.base().base().0))
                 .build();
         }
     }

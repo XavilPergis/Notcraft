@@ -1,11 +1,15 @@
-use cgmath::{Vector2, Vector3, Vector4};
+use cgmath::{Point3, Vector2, Vector3, Vector4};
 use engine::{
     components as comp,
     render::{
         debug::{DebugAccumulator, Shape},
         terrain::{BlockVertex, ChunkMesh},
     },
-    world::{chunk::SIZE, BlockPos, ChunkPos, VoxelWorld},
+    world::{
+        block::{BlockId, BlockRegistry},
+        chunk::{Chunk, PaddedChunk, SIZE},
+        BlockPos, ChunkPos, VoxelWorld,
+    },
     Side,
 };
 use specs::prelude::*;
@@ -29,7 +33,7 @@ impl<'a> System<'a> for ChunkMesher {
 
     fn run(&mut self, (chunk_ids, mut world, mut meshes, debug, entities): Self::SystemData) {
         let mut section = debug.section("mesher");
-        for _ in 0..4 {
+        for _ in 0..1 {
             if let Some(pos) = world.get_dirty_chunk() {
                 section.draw(Shape::Chunk(2.0, pos, Vector4::new(0.5, 0.5, 1.0, 1.0)));
                 trace!("Chunk {:?} is ready for meshing", pos);
@@ -49,36 +53,47 @@ impl<'a> System<'a> for ChunkMesher {
     }
 }
 
-struct CullMesher<'w> {
+// TODO:
+// - emit empty mesh for homogeneous chunk of non-opaque blocks
+// - reduce (max) number of world lookups from 60 to 27
+// - cache chunk neighborhood
+// - maybe make the AO function not suck as bad? ie just make it take 8 inputs
+//   or something
+//   - AO function probably isn't called that much relative to other stuff
+//     anyways
+
+pub struct CullMesher<'w> {
     pos: ChunkPos,
-    world: &'w VoxelWorld,
+    registry: &'w BlockRegistry,
+    center: PaddedChunk,
     mesh_constructor: MeshConstructor<'w>,
 }
 
 impl<'w> CullMesher<'w> {
-    fn new(pos: ChunkPos, world: &'w VoxelWorld) -> Self {
+    pub fn new(pos: ChunkPos, world: &'w VoxelWorld) -> Self {
         CullMesher {
             pos,
-            world,
+            registry: world.get_registry(),
+            center: ::engine::world::chunk::make_padded(world, pos).unwrap(),
             mesh_constructor: MeshConstructor {
                 index: 0,
                 mesh: Default::default(),
-                world,
+                registry: world.get_registry(),
             },
         }
     }
 
-    fn face_ao(&self, pos: BlockPos, side: Side) -> FaceAo {
-        let is_opaque = |pos| self.world.registry(pos).unwrap().opaque();
+    fn face_ao(&self, pos: Point3<i32>, side: Side) -> FaceAo {
+        let is_opaque = |pos| self.registry.opaque(self.center[pos]);
 
-        let neg_neg = is_opaque(pos.offset(side.uvl_to_xyz(-1, -1, 1)));
-        let neg_cen = is_opaque(pos.offset(side.uvl_to_xyz(-1, 0, 1)));
-        let neg_pos = is_opaque(pos.offset(side.uvl_to_xyz(-1, 1, 1)));
-        let pos_neg = is_opaque(pos.offset(side.uvl_to_xyz(1, -1, 1)));
-        let pos_cen = is_opaque(pos.offset(side.uvl_to_xyz(1, 0, 1)));
-        let pos_pos = is_opaque(pos.offset(side.uvl_to_xyz(1, 1, 1)));
-        let cen_neg = is_opaque(pos.offset(side.uvl_to_xyz(0, -1, 1)));
-        let cen_pos = is_opaque(pos.offset(side.uvl_to_xyz(0, 1, 1)));
+        let neg_neg = is_opaque(pos + side.uvl_to_xyz(-1, -1, 1));
+        let neg_cen = is_opaque(pos + side.uvl_to_xyz(-1, 0, 1));
+        let neg_pos = is_opaque(pos + side.uvl_to_xyz(-1, 1, 1));
+        let pos_neg = is_opaque(pos + side.uvl_to_xyz(1, -1, 1));
+        let pos_cen = is_opaque(pos + side.uvl_to_xyz(1, 0, 1));
+        let pos_pos = is_opaque(pos + side.uvl_to_xyz(1, 1, 1));
+        let cen_neg = is_opaque(pos + side.uvl_to_xyz(0, -1, 1));
+        let cen_pos = is_opaque(pos + side.uvl_to_xyz(0, 1, 1));
 
         let face_pos_pos = ao_value(cen_pos, pos_pos, pos_cen); // c+ ++ +c
         let face_pos_neg = ao_value(pos_cen, pos_neg, cen_neg); // +c +- c-
@@ -93,20 +108,22 @@ impl<'w> CullMesher<'w> {
         )
     }
 
-    fn is_not_occluded(&self, pos: BlockPos, offset: Vector3<i32>) -> bool {
-        let cur = self.world.registry(pos).unwrap();
-        let other = self.world.registry(pos.offset(offset)).unwrap();
+    fn is_not_occluded(&self, pos: Point3<i32>, offset: Vector3<i32>) -> bool {
+        let cur = self.registry.opaque(self.center[pos]);
+        let other = self.registry.opaque(self.center[pos + offset]);
 
-        cur.opaque() && !other.opaque()
+        // cur
+        cur && !other
     }
 
-    fn mesh(&mut self) {
+    // gap when at the top of a chunk?
+    pub fn mesh(&mut self) {
         let size = SIZE as i32;
-        let base = self.pos.base();
-        for x in 0..size {
-            for y in 0..size {
-                for z in 0..size {
-                    let pos = base.offset((x, y, z));
+        for x in 1..=size {
+            for y in 1..=size {
+                for z in 1..=size {
+                    let pos = Point3::new(x, y, z);
+                    let id = self.center[pos];
                     // let block = self.world.get_block(pos);
 
                     for side in &[
@@ -118,8 +135,14 @@ impl<'w> CullMesher<'w> {
                         Side::Back,
                     ] {
                         if self.is_not_occluded(pos, side.normal()) {
-                            self.mesh_constructor
-                                .add(self.face_ao(pos, *side), *side, pos)
+                            // assert!(x != 0 || y != 0 || z != 0);
+                            // assert!(x != size || y != size || z != size);
+                            self.mesh_constructor.add(
+                                id,
+                                self.face_ao(pos, *side),
+                                *side,
+                                pos - Vector3::new(1, 1, 1),
+                            )
                         }
                     }
                 }
@@ -146,11 +169,11 @@ impl FaceAo {
 struct MeshConstructor<'w> {
     index: u32,
     mesh: ChunkMesh,
-    world: &'w VoxelWorld,
+    registry: &'w BlockRegistry,
 }
 
 impl<'w> MeshConstructor<'w> {
-    fn add(&mut self, ao: FaceAo, side: Side, pos: BlockPos) {
+    fn add(&mut self, id: BlockId, ao: FaceAo, side: Side, pos: Point3<i32>) {
         const FLIPPED_QUAD_CW: &'static [u32] = &[0, 1, 2, 3, 2, 1];
         const FLIPPED_QUAD_CCW: &'static [u32] = &[2, 1, 0, 1, 2, 3];
         const NORMAL_QUAD_CW: &'static [u32] = &[3, 2, 0, 0, 1, 3];
@@ -193,14 +216,9 @@ impl<'w> MeshConstructor<'w> {
 
         let normal = side.normal();
 
-        let tex_id = self
-            .world
-            .registry(pos)
-            .unwrap()
-            .block_texture(side)
-            .unwrap() as i32;
+        let tex_id = self.registry.block_texture(id, side).unwrap() as i32;
 
-        let base = pos.base().0.cast::<f32>().unwrap();
+        let base = pos.cast::<f32>().unwrap();
         let mut push_vertex = |offset, uv, ao| {
             self.mesh.vertices.push(BlockVertex {
                 pos: (base + offset),

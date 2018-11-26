@@ -11,7 +11,6 @@ pub mod misc;
 pub mod shader;
 pub mod texture;
 pub mod texture_array;
-pub mod uniform;
 pub mod vertex_array;
 
 pub use self::{

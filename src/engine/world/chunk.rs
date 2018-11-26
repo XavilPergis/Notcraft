@@ -1,8 +1,12 @@
 use cgmath::{Point3, Vector3};
-use engine::world::block::BlockId;
+use engine::world::{block::BlockId, ChunkPos, VoxelWorld};
 use nd::Array3;
 
-pub const SIZE: usize = 32;
+// The width of the chunk is `2 ^ SIZE_BITS`
+pub const SIZE_BITS: usize = 5;
+pub const SIZE_BITS_2: usize = SIZE_BITS * 2;
+pub const SIZE: usize = 1 << SIZE_BITS;
+
 pub const AREA: usize = SIZE * SIZE;
 pub const VOLUME: usize = SIZE * SIZE * SIZE;
 
@@ -11,18 +15,63 @@ pub fn in_chunk_bounds(pos: Point3<i32>) -> bool {
     pos.x < SIZEI && pos.y < SIZEI && pos.z < SIZEI && pos.x >= 0 && pos.y >= 0 && pos.z >= 0
 }
 
+const fn index_for_coord(x: usize, y: usize, z: usize) -> usize {
+    (x << SIZE_BITS_2) + (y << SIZE_BITS) + z
+}
+
+const fn index_for_coord_size(size: usize, x: usize, y: usize, z: usize) -> usize {
+    x * size * size + y * size + z
+}
+
+pub struct PaddedChunk {
+    data: Box<[BlockId]>,
+}
+
+pub fn make_padded(world: &VoxelWorld, pos: ChunkPos) -> Option<PaddedChunk> {
+    let padded_size = SIZE + 2;
+
+    let mut data = Vec::with_capacity(padded_size * padded_size * padded_size);
+
+    let base = pos.base();
+
+    for x in 0..padded_size {
+        for y in 0..padded_size {
+            for z in 0..padded_size {
+                let block =
+                    world.get_block_id(base.offset((x as i32 - 1, y as i32 - 1, z as i32 - 1)))?;
+                data.push(block);
+            }
+        }
+    }
+
+    // // back
+    // for x in 0..SIZE {
+    //     let dest_base_x = padded_size * padded_size * (x + 1);
+    //     let src_base_x = SIZE * SIZE * x;
+    //     for y in 0..SIZE {
+    //         let dest_base_y = padded_size * (y + 1);
+    //         let src_base_y = SIZE * y;
+    //         data[dest_base_x + dest_base_y + dest_base_z] =
+    //             chunk.data[src_base_x + src_base_y + src_base_z];
+    //     }
+    // }
+    // data[]
+
+    Some(PaddedChunk { data: data.into() })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Chunk {
-    data: Array3<BlockId>,
+    data: Box<[BlockId]>,
     homogeneous: bool,
 }
 
 impl Chunk {
-    pub fn new(voxels: Array3<BlockId>) -> Self {
-        let first = voxels.iter().next().unwrap();
-        let homogeneous = voxels.iter().all(|item| item == first);
+    pub fn new(voxels: Vec<BlockId>) -> Self {
+        let first = voxels[0];
+        let homogeneous = voxels.iter().all(|item| *item == first);
         Chunk {
-            data: voxels,
+            data: voxels.into_boxed_slice(),
             homogeneous,
         }
     }
@@ -62,11 +111,12 @@ macro_rules! gen_index {
     ($name:ident : $type:ty => $x:expr, $y:expr, $z:expr) => {
         impl Index<$type> for Chunk {
             type Output = BlockId;
+
             fn index(&self, $name: $type) -> &BlockId {
                 debug_assert!(in_chunk_bounds(Point3::new(
                     $x as i32, $y as i32, $z as i32
                 )));
-                &self.data[($x, $y, $z)]
+                &self.data[index_for_coord($x, $y, $z)]
             }
         }
 
@@ -75,7 +125,26 @@ macro_rules! gen_index {
                 debug_assert!(in_chunk_bounds(Point3::new(
                     $x as i32, $y as i32, $z as i32
                 )));
-                &mut self.data[($x, $y, $z)]
+                &mut self.data[index_for_coord($x, $y, $z)]
+            }
+        }
+        impl Index<$type> for PaddedChunk {
+            type Output = BlockId;
+
+            fn index(&self, $name: $type) -> &BlockId {
+                debug_assert!(in_chunk_bounds(Point3::new(
+                    $x as i32, $y as i32, $z as i32
+                )));
+                &self.data[index_for_coord_size(34, $x, $y, $z)]
+            }
+        }
+
+        impl IndexMut<$type> for PaddedChunk {
+            fn index_mut(&mut self, $name: $type) -> &mut BlockId {
+                debug_assert!(in_chunk_bounds(Point3::new(
+                    $x as i32, $y as i32, $z as i32
+                )));
+                &mut self.data[index_for_coord_size(34, $x, $y, $z)]
             }
         }
     };

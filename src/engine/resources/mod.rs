@@ -1,4 +1,5 @@
-use cgmath::{Deg, Vector3};
+use cgmath::{Deg, Matrix3, Matrix4, PerspectiveFov, Point3, Vector2, Vector3};
+use collision::Ray3;
 use std::time::Duration;
 
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
@@ -9,13 +10,6 @@ pub struct CursorPos {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct StopGameLoop(pub bool);
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ViewFrustum {
-    pub fov: Deg<f64>,
-    pub near_plane: f64,
-    pub far_plane: f64,
-}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ViewDistance(pub Vector3<i32>);

@@ -3,7 +3,10 @@
     trace_macros,
     nll,
     optin_builtin_traits,
-    crate_visibility_modifier
+    crate_visibility_modifier,
+    duration_float,
+    transpose_result,
+    test
 )]
 
 extern crate cgmath;
@@ -27,9 +30,14 @@ extern crate shred_derive;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
+extern crate crossbeam;
+extern crate int_hash;
+extern crate rodio;
 extern crate simple_logger;
+extern crate test;
 
 // need this due to weird quirk of shred_derive
+use engine::world::ChunkPos;
 pub use specs::shred;
 
 #[macro_use]
@@ -41,11 +49,19 @@ pub mod util;
 use cgmath::{Deg, Point3, Vector3};
 use collision::Aabb3;
 use engine::{
+    audio::AudioManager,
+    camera::Camera,
     components as comp,
-    render::mesher::ChunkMesher,
+    job::Worker,
+    render::{
+        mesher::{ChunkMesher, CullMesher},
+        ui::DrawCrosshair,
+    },
     resources as res,
+    systems::CameraUpdater,
     world::{
         block::{BlockFaces, BlockRegistryBuilder},
+        gen::NoiseGenerator,
         VoxelWorld,
     },
 };
@@ -59,73 +75,13 @@ use shrev::EventChannel;
 use specs::prelude::*;
 use std::time::Duration;
 
-fn main() {
-    simple_logger::init_with_level(log::Level::Debug).unwrap();
-    let mut events_loop = glutin::EventsLoop::new();
-    let window = glutin::WindowBuilder::new()
-        .with_title("Hello, world!")
-        .with_dimensions(LogicalSize::new(1024.0, 768.0));
-    let context = glutin::ContextBuilder::new().with_vsync(true);
-    let gl_window = glutin::GlWindow::new(window, context, &events_loop).unwrap();
+use std::alloc::System as SystemAlloc;
 
-    // gl_window.grab_cursor(true).unwrap();
+#[global_allocator]
+static GLOBAL: SystemAlloc = SystemAlloc;
 
-    unsafe {
-        gl_window.make_current().unwrap();
-    }
-
-    // Load OpenGL function pointers.
-    // good *god* this function takes a long time fo compile
-    let mut ctx = Context::load(|symbol| gl_window.get_proc_address(symbol));
-    println!("Context created!");
-
-    let mut debug_program = match simple_pipeline("resources/debug.vs", "resources/debug.fs") {
-        Ok(prog) => prog,
-        Err(msg) => match msg {
-            PipelineError::Shader(ShaderError::Shader(msg)) => {
-                println!("{}", msg);
-                panic!()
-            }
-            _ => panic!("Other error"),
-        },
-    };
-
-    gl_call!(assert Disable(gl::MULTISAMPLE));
-    gl_call!(assert Enable(gl::DEPTH_TEST));
-    gl_call!(assert DepthFunc(gl::LESS));
-    gl_call!(assert Enable(gl::CULL_FACE));
-    gl_call!(assert FrontFace(gl::CW));
-    gl_call!(assert CullFace(gl::BACK));
-
-    let mut window_events = shrev::EventChannel::new();
-
-    let projection = ::cgmath::perspective(Deg(70.0), 600.0 / 600.0, 0.1, 1000.0f32);
-    debug_program.set_uniform(&mut ctx, "projection", &projection);
-
-    let mut world = World::default();
-
-    // world.register::<Handle<::engine::render::terrain::GpuChunkMesh>>();
-    world.register::<comp::Transform>();
-    world.register::<comp::LookTarget>();
-    world.register::<comp::ClientControlled>();
-    world.register::<comp::Player>();
-    world.register::<comp::RigidBody>();
-    world.register::<comp::ChunkId>();
-    world.register::<comp::DirtyMesh>();
-    world.register::<comp::Collidable>();
-
+pub fn default_registry() -> BlockRegistryBuilder {
     let mut registry_builder = BlockRegistryBuilder::default();
-
-    // name: String,
-    // opaque: bool,
-    // collidable: bool,
-    // textures: [String; 6],
-
-    // pub const AIR: BlockId = BlockId(0);
-    // pub const STONE: BlockId = BlockId(1);
-    // pub const DIRT: BlockId = BlockId(2);
-    // pub const GRASS: BlockId = BlockId(3);
-    // pub const WATER: BlockId = BlockId(4);
 
     let stone = String::from("stone");
     let dirt = String::from("dirt");
@@ -176,7 +132,93 @@ fn main() {
         }),
     );
 
-    let (registry, tex_names) = registry_builder.build();
+    registry_builder
+}
+
+mod benches {
+    use super::*;
+    use test::Bencher;
+
+    #[bench]
+    fn bench_mesher(bencher: &mut Bencher) {
+        let (registry, _) = default_registry().build();
+        let mut world = VoxelWorld::new(registry);
+        let mut gen = NoiseGenerator::new_default();
+
+        for x in -1..=1 {
+            for y in -1..=1 {
+                for z in -1..=1 {
+                    let pos = ChunkPos(Point3::new(x, y, z));
+                    world.set_chunk(pos, gen.compute(&pos));
+                }
+            }
+        }
+
+        bencher.iter(|| {
+            let mut mesher = CullMesher::new(ChunkPos(Point3::new(0, 0, 0)), &world);
+            mesher.mesh();
+        });
+    }
+
+}
+
+fn main() {
+    simple_logger::init_with_level(log::Level::Debug).unwrap();
+    let mut events_loop = glutin::EventsLoop::new();
+    let window = glutin::WindowBuilder::new()
+        .with_title("Hello, world!")
+        .with_dimensions(LogicalSize::new(1024.0, 768.0));
+    let context = glutin::ContextBuilder::new();
+    let gl_window = glutin::GlWindow::new(window, context, &events_loop).unwrap();
+
+    gl_window.grab_cursor(true).unwrap();
+
+    unsafe {
+        gl_window.make_current().unwrap();
+    }
+
+    // Load OpenGL function pointers.
+    // good *god* this function takes a long time fo compile
+    let mut ctx = Context::load(|symbol| gl_window.get_proc_address(symbol));
+    println!("Context created!");
+
+    let mut debug_program =
+        match simple_pipeline(&mut ctx, "resources/debug.vs", "resources/debug.fs") {
+            Ok(prog) => prog,
+            Err(msg) => match msg {
+                PipelineError::Shader(ShaderError::Shader(msg)) => {
+                    println!("{}", msg);
+                    panic!()
+                }
+                _ => panic!("Other error"),
+            },
+        };
+
+    gl_call!(assert Disable(gl::MULTISAMPLE));
+    gl_call!(assert Enable(gl::DEPTH_TEST));
+    gl_call!(assert DepthFunc(gl::LESS));
+    gl_call!(assert Enable(gl::CULL_FACE));
+    gl_call!(assert FrontFace(gl::CW));
+    gl_call!(assert CullFace(gl::BACK));
+
+    let mut window_events = shrev::EventChannel::new();
+
+    let projection = ::cgmath::perspective(Deg(70.0), 600.0 / 600.0, 0.1, 1000.0f32);
+    debug_program.set_uniform(&mut ctx, "projection", &projection);
+
+    let mut world = World::default();
+
+    // world.register::<Handle<::engine::render::terrain::GpuChunkMesh>>();
+    world.register::<comp::Transform>();
+    world.register::<comp::LookTarget>();
+    world.register::<comp::ClientControlled>();
+    world.register::<comp::Player>();
+    world.register::<comp::RigidBody>();
+    world.register::<comp::ChunkId>();
+    world.register::<comp::DirtyMesh>();
+    world.register::<comp::Collidable>();
+
+    let (registry, tex_names) = default_registry().build();
     let voxel_world = VoxelWorld::new(registry);
 
     let player_tfm = comp::Transform::default();
@@ -211,31 +253,115 @@ fn main() {
     //     mesh_recv: mesh_channel.register_reader(),
     // };
 
+    fn duration_as_ms(duration: Duration) -> f64 {
+        (duration.as_secs() as f64 + duration.subsec_nanos() as f64 * 1e-9) * 1000.0
+    }
+
+    struct TraceSystem<S> {
+        inner: S,
+        name: &'static str,
+        samples: Vec<Duration>,
+    }
+
+    impl<S> TraceSystem<S> {
+        fn new(inner: S, name: &'static str) -> Self {
+            TraceSystem {
+                inner,
+                name,
+                samples: Vec::new(),
+            }
+        }
+    }
+
+    impl<'a, S> System<'a> for TraceSystem<S>
+    where
+        S: System<'a>,
+    {
+        type SystemData = S::SystemData;
+
+        fn run(&mut self, data: Self::SystemData) {
+            if self.samples.len() >= 100 {
+                let len = self.samples.len() as f64;
+                let sum: f64 = self.samples.drain(..).map(duration_as_ms).sum();
+
+                // debug!(
+                //     "Timing: System \"{}\" took {} ms on average",
+                //     self.name,
+                //     sum / len
+                // );
+            }
+
+            let before = Instant::now();
+            self.inner.run(data);
+            let after = Instant::now();
+
+            self.samples.push(after - before);
+        }
+    }
+
     let terrain_renderer = TerrainRenderer::new(&mut ctx, tex_names);
 
-    let (debug_rendering_system, debug_accumulator) = DebugRenderer::new(&ctx);
+    let (debug_rendering_system, debug_accumulator) = DebugRenderer::new(&mut ctx);
 
-    let mut dispatcher = DispatcherBuilder::new()
-        .with(ChunkUnloader::default(), "chunk unloader", &[])
-        .with(
-            LockCursor::new(&mut window_events),
-            "cursor input handler",
-            &[],
-        )
-        .with(PlayerController, "player controller", &[])
-        .with(SmoothCamera, "smooth camera", &[])
-        .with(Physics::new(), "physics", &[])
-        .with(
-            BlockInteraction::new(&mut window_events),
-            "block interactions",
-            &["physics"],
-        )
-        .with(TerrainGenerator::new(), "terrain generator", &[])
-        .with(ChunkMesher::new(), "chunk mesher", &["terrain generator"])
-        .with_thread_local(InputHandler::new(&mut window_events))
-        .with_thread_local(terrain_renderer)
-        .with_thread_local(debug_rendering_system)
-        .build();
+    fn attach_system<'a, 'b, T>(
+        builder: DispatcherBuilder<'a, 'b>,
+        sys: T,
+        name: &'static str,
+        deps: &[&str],
+    ) -> DispatcherBuilder<'a, 'b>
+    where
+        T: for<'c> System<'c> + Send + 'a,
+    {
+        builder.with(TraceSystem::new(sys, name), name, deps)
+    }
+
+    fn attach_system_sync<'a, 'b, T>(
+        builder: DispatcherBuilder<'a, 'b>,
+        sys: T,
+        name: &'static str,
+    ) -> DispatcherBuilder<'a, 'b>
+    where
+        T: for<'c> System<'c> + 'b,
+    {
+        builder.with_thread_local(TraceSystem::new(sys, name))
+    }
+
+    let mut builder = DispatcherBuilder::new();
+    builder = attach_system(builder, CameraUpdater::default(), "camera updater", &[]);
+    builder = attach_system(builder, ChunkUnloader::default(), "chunk unloader", &[]);
+    builder = attach_system(builder, AudioManager::new(), "audio manager", &[]);
+    builder = attach_system(
+        builder,
+        CameraRotationUpdater::new(&mut window_events),
+        "cursor input handler",
+        &[],
+    );
+    builder = attach_system(builder, PlayerController, "player controller", &[]);
+    builder = attach_system(builder, Physics::new(), "physics", &[]);
+    builder = attach_system(
+        builder,
+        BlockInteraction::new(&mut window_events),
+        "block interactions",
+        &["physics"],
+    );
+    builder = attach_system(builder, TerrainGenerator::new(), "terrain generator", &[]);
+    builder = attach_system(
+        builder,
+        ChunkMesher::new(),
+        "chunk mesher",
+        &["terrain generator"],
+    );
+
+    builder = attach_system_sync(
+        builder,
+        InputHandler::new(&mut window_events),
+        "input handler",
+    );
+    builder = attach_system_sync(builder, terrain_renderer, "terrain renderer");
+    builder = attach_system_sync(builder, debug_rendering_system, "debug renderer");
+    builder = attach_system_sync(builder, DrawCrosshair::new(&ctx), "crosshair renderer");
+
+    let mut dispatcher = builder.build();
 
     dispatcher.setup(&mut world.res);
 
@@ -245,11 +371,7 @@ fn main() {
     world.add_resource(res::StopGameLoop(false));
     world.add_resource(window_events);
     world.add_resource(res::Dt(Duration::from_secs(1)));
-    world.add_resource(res::ViewFrustum {
-        fov: Deg(80.0),
-        near_plane: 0.01,
-        far_plane: 1000.0,
-    });
+    world.add_resource(Camera::default());
 
     world.add_resource(voxel_world);
     world.add_resource(gl_window);
@@ -263,6 +385,8 @@ fn main() {
         world.exec(|window: WriteExpect<'_, GlWindow>| window.get_inner_size().unwrap());
 
     world.exec(|window: WriteExpect<'_, GlWindow>| window.hide_cursor(true));
+
+    let mut samples = vec![];
 
     while !world.res.fetch::<res::StopGameLoop>().0 {
         let frame_start = Instant::now();
@@ -299,11 +423,25 @@ fn main() {
         world.maintain();
         world.res.insert(res::StopGameLoop(false));
         dispatcher.dispatch(&world.res);
+        let processing_end = Instant::now();
 
         // Swap the backbuffer
         world.exec(|window: WriteExpect<'_, GlWindow>| window.swap_buffers().unwrap());
         let frame_end = Instant::now();
         let dt = frame_end - frame_start;
         *world.write_resource::<res::Dt>() = res::Dt(dt);
+
+        samples.push(processing_end - frame_start);
+
+        if samples.len() >= 100 {
+            let len = samples.len() as f64;
+            let sum: f64 = samples.drain(..).map(duration_as_ms).sum();
+
+            debug!(
+                "Frame took {} ms on average ({} fps)",
+                sum / len,
+                1000.0 * len / sum
+            );
+        }
     }
 }

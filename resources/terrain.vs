@@ -1,34 +1,35 @@
 #version 330 core
 
-layout (location = 0) in vec3 Pos;
-layout (location = 1) in vec3 Normal;
-layout (location = 2) in vec2 Uv;
-layout (location = 3) in int TexID;
-layout (location = 4) in float Ao;
+layout (location = 0) in vec3 pos;
+layout (location = 1) in vec3 normal;
+layout (location = 2) in vec2 uv;
+layout (location = 3) in int tex_id;
+layout (location = 4) in float ao;
 
-uniform float u_Time;
-uniform mat4 u_Transform;
-uniform mat4 u_Projection;
-uniform mat4 u_View;
+uniform float time;
 
-out vec3 v_Normal;
-out vec3 v_Pos;
-out vec3 v_FaceScalar;
-out vec2 v_Uv;
-flat out int v_TexID;
-out float v_Ao;
+uniform mat4 model_matrix;
+uniform mat4 projection_matrix;
+uniform mat4 view_matrix;
+
+out vec3 v_normal;
+out vec3 v_pos;
+out vec3 v_face_scalar;
+out vec2 v_uv;
+flat out int v_tex_id;
+out float v_ao;
 
 void main()
 {
-    gl_Position = u_Projection * u_View * u_Transform * vec4(Pos, 1.0);
-    v_Pos = vec3(u_Transform * vec4(Pos, 1.0));
-    v_Normal = Normal;
-    v_Uv = Uv;
-    v_TexID = TexID;
-    v_Ao = Ao;
+    gl_Position = projection_matrix * view_matrix * model_matrix * vec4(pos, 1.0);
+    v_pos = vec3(model_matrix * vec4(pos, 1.0));
+    v_normal = normal;
+    v_uv = uv;
+    v_tex_id = tex_id;
+    v_ao = ao;
 
-    if (Normal.y == 1.0) v_FaceScalar = vec3(1.0);
-    if (Normal.y == -1.0) v_FaceScalar = vec3(0.5);
-    if (abs(Normal.x) == 1.0) v_FaceScalar = vec3(0.70);
-    if (abs(Normal.z) == 1.0) v_FaceScalar = vec3(0.80);
+    if (normal.y == 1.0) v_face_scalar = vec3(1.0);
+    if (normal.y == -1.0) v_face_scalar = vec3(0.5);
+    if (abs(normal.x) == 1.0) v_face_scalar = vec3(0.70);
+    if (abs(normal.z) == 1.0) v_face_scalar = vec3(0.80);
 }

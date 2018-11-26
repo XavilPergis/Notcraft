@@ -1,75 +1,73 @@
 use super::{super::error::GlError, shader::CompiledShader};
 use gl::{self, types::*};
-use gl_api::{context::Context, uniform::*};
+use gl_api::{context::Context, shader::uniform::*};
 use std::collections::HashMap;
 
-pub struct Program {
-    id: GLuint,
+pub struct RawProgram {
+    id: u32,
 }
 
-impl !Send for Program {}
-impl !Sync for Program {}
-
-impl Program {
-    pub fn new() -> Option<Self> {
-        // UNWRAP: this function never sets an error state
+impl RawProgram {
+    pub fn new(_ctx: &Context) -> Self {
         let id = gl_call!(assert CreateProgram());
-        match id {
-            0 => None,
-            id => Some(Program { id }),
+        assert!(id > 0);
+        RawProgram { id }
+    }
+}
+
+pub struct ProgramBuilder {
+    raw: RawProgram,
+}
+
+impl ProgramBuilder {
+    pub fn new(ctx: &Context) -> Self {
+        ProgramBuilder {
+            raw: RawProgram::new(ctx),
         }
     }
 
-    pub fn bind(&self) {
-        gl_call!(assert UseProgram(self.id));
-    }
-
     pub fn attach_shader(&self, shader: CompiledShader) {
-        gl_call!(assert AttachShader(self.id, shader.shader.id));
+        gl_call!(assert AttachShader(self.raw.id, shader.shader.id));
     }
 
-    pub fn link(self) -> Result<LinkedProgram, LinkError> {
-        gl_call!(LinkProgram(self.id))?;
-        check_program_status(self.id, gl::LINK_STATUS)?;
-        gl_call!(ValidateProgram(self.id))?;
-        check_program_status(self.id, gl::VALIDATE_STATUS)?;
-        Ok(LinkedProgram {
-            program: self,
+    pub fn link(self) -> Result<Program, LinkError> {
+        gl_call!(LinkProgram(self.raw.id))?;
+        check_program_status(self.raw.id, gl::LINK_STATUS)?;
+        gl_call!(ValidateProgram(self.raw.id))?;
+        check_program_status(self.raw.id, gl::VALIDATE_STATUS)?;
+        Ok(Program {
+            raw: self.raw,
             uniform_cache: HashMap::new(),
         })
     }
 }
 
-pub struct LinkedProgram {
-    program: Program,
+pub struct Program {
+    raw: RawProgram,
     uniform_cache: HashMap<String, UniformLocation>,
 }
 
-impl LinkedProgram {
-    pub fn set_uniform<U: Uniform>(&mut self, ctx: &mut Context, name: &str, uniform: &U) {
-        self.program.bind();
-        uniform.set_uniform(
-            ctx,
-            if let Some(location) = self.uniform_cache.get(name) {
-                *location
-            } else {
-                let location = self.get_uniform_location(name);
-                self.uniform_cache.insert(name.into(), location);
-                location
-            },
-        );
+impl Program {
+    pub fn set_uniform<U: Uniform>(&mut self, ctx: &Context, name: &str, uniform: &U) {
+        self.bind(ctx);
+        if let Some(&location) = self.uniform_cache.get(name) {
+            uniform.set_uniform(ctx, location);
+        } else {
+            let location = self.get_uniform_location(ctx, name);
+            self.uniform_cache.insert(name.into(), location);
+            uniform.set_uniform(ctx, location);
+        }
     }
 
-    pub fn bind(&self) {
-        self.program.bind();
+    pub fn bind(&self, ctx: &Context) {
+        gl_call!(assert UseProgram(self.raw.id));
     }
 
-    fn get_uniform_location(&self, name: &str) -> UniformLocation {
-        self.program.bind();
+    fn get_uniform_location(&self, ctx: &Context, name: &str) -> UniformLocation {
         use std::ffi::CString;
         let c_string = CString::new(name).unwrap();
         // UNWRAP: program ID is valid, and the program has been successfully linked
-        gl_call!(assert GetUniformLocation(self.program.id, c_string.as_ptr()))
+        gl_call!(assert GetUniformLocation(self.raw.id, c_string.as_ptr()))
     }
 }
 

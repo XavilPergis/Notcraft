@@ -1,10 +1,10 @@
 use cgmath::Deg;
 use collision::{Aabb3, Ray3};
-use engine::{prelude::*, world::chunk::SIZE};
+use engine::{camera::Camera, prelude::*, world::chunk::SIZE};
 use gl_api::{
     buffer::{Buffer, UsageType},
     context::Context,
-    shader::{program::LinkedProgram, simple_pipeline},
+    shader::{program::Program, simple_pipeline},
     PrimitiveType,
 };
 use ordered_float::OrderedFloat;
@@ -81,14 +81,14 @@ impl DebugAccumulator {
 
 pub struct DebugRenderer {
     ctx: Context,
-    program: LinkedProgram,
+    program: Program,
     vbo: Buffer<DebugVertex>,
     geometry: HashMap<OrderedFloat<f64>, Vec<DebugVertex>>,
 }
 
 impl DebugRenderer {
-    pub fn new(ctx: &Context) -> (Self, DebugAccumulator) {
-        let program = simple_pipeline("resources/debug.vs", "resources/debug.fs").unwrap();
+    pub fn new(ctx: &mut Context) -> (Self, DebugAccumulator) {
+        let program = simple_pipeline(ctx, "resources/debug.vs", "resources/debug.fs").unwrap();
         let vbo = Buffer::new(ctx);
 
         (
@@ -157,14 +157,13 @@ impl<'a> System<'a> for DebugRenderer {
         ReadStorage<'a, comp::Transform>,
         ReadStorage<'a, comp::Player>,
         ReadStorage<'a, comp::ClientControlled>,
-        Read<'a, res::ViewFrustum, PanicHandler>,
-        ReadExpect<'a, ::glutin::GlWindow>,
+        ReadExpect<'a, Camera>,
         WriteExpect<'a, DebugAccumulator>,
     );
 
     fn run(
         &mut self,
-        (transforms, player_marker, client_controlled_marker, frustum, window, mut accumulator): Self::SystemData,
+        (transforms, player_marker, client_controlled_marker, camera, mut accumulator): Self::SystemData,
     ) {
         self.geometry.clear();
         for shape in accumulator.shapes_mut().drain(..) {
@@ -249,14 +248,8 @@ impl<'a> System<'a> for DebugRenderer {
             .next();
 
         if let Some(tfm) = player_transform {
-            let aspect_ratio = ::util::aspect_ratio(&window).unwrap() as f32;
-            let view_matrix = tfm.as_matrix().cast::<f32>().unwrap();
-            let projection = ::cgmath::perspective(
-                Deg(frustum.fov.0 as f32),
-                aspect_ratio,
-                frustum.near_plane as f32,
-                frustum.far_plane as f32,
-            );
+            let view_matrix = camera.view_matrix().cast::<f32>().unwrap();
+            let projection: Matrix4<f32> = camera.projection_matrix().cast().unwrap();
             self.program
                 .set_uniform(&mut self.ctx, "view", &view_matrix);
             self.program

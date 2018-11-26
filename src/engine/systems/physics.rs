@@ -76,6 +76,10 @@ fn cube_aabb(pos: BlockPos) -> Aabb3<f64> {
     cube_base.add_v(::util::to_vector(pos.base().0))
 }
 
+// fn physics_step(ctx: &mut PhysicsStepContext, axis: usize, debug: &mut
+// DebugSection) {     ctx.body.velocity[axis]
+// }
+
 fn physics_step_x(ctx: &mut PhysicsStepContext, debug: &mut DebugSection) {
     // Apply step along the X axis
     ctx.body.velocity.x *= 1.0 / (1.0 + ctx.body.drag.x * ctx.dt);
@@ -113,9 +117,9 @@ fn physics_step_x(ctx: &mut PhysicsStepContext, debug: &mut DebugSection) {
 }
 fn physics_step_y(ctx: &mut PhysicsStepContext, debug: &mut DebugSection) {
     // Apply step along the Y axis
-    ctx.body.velocity.y -= 25.0 * ctx.dt;
-    ctx.body.velocity.y = ctx.body.velocity.y.min(50.0).max(-50.0);
-    // ctx.body.velocity.y *= 1.0 / (1.0 + ctx.body.drag.y * ctx.dt);
+    // ctx.body.velocity.y -= 25.0 * ctx.dt;
+    // ctx.body.velocity.y = ctx.body.velocity.y.min(50.0).max(-50.0);
+    ctx.body.velocity.y *= 1.0 / (1.0 + ctx.body.drag.y * ctx.dt);
     ctx.transform.position.y += ctx.body.velocity.y * ctx.dt;
 
     // get the possible collisions

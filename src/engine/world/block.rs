@@ -34,7 +34,7 @@ impl<T> BlockFaces<T> {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct BlockId(usize);
 
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
@@ -157,6 +157,17 @@ impl BlockRegistry {
 
     pub fn block_textures(&self, id: BlockId) -> &Option<BlockFaces<usize>> {
         &self.texture_indices[id.0]
+    }
+
+    pub fn block_texture(&self, id: BlockId, side: Side) -> Option<usize> {
+        self.texture_indices[id.0].as_ref().map(|faces| match side {
+            Side::Top => faces.top,
+            Side::Right => faces.right,
+            Side::Front => faces.front,
+            Side::Left => faces.left,
+            Side::Bottom => faces.bottom,
+            Side::Back => faces.back,
+        })
     }
 
     pub fn get_ref(&self, id: BlockId) -> RegistryRef {

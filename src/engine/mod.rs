@@ -3,6 +3,8 @@ use std::ops::Neg;
 
 pub mod world;
 
+pub mod audio;
+pub mod camera;
 pub mod components;
 pub mod job;
 pub mod render;
@@ -10,11 +12,12 @@ pub mod resources;
 pub mod systems;
 
 pub mod prelude {
-    pub use super::components as comp;
-    pub use super::job;
-    pub use super::resources as res;
-    pub use super::world::{
-        block, block::BlockId, chunk, BlockPos, Chunk, ChunkPos, VoxelWorld, WorldPos,
+    pub use super::{
+        components as comp, job, resources as res,
+        world::{
+            block::{self, BlockId},
+            chunk, BlockPos, Chunk, ChunkPos, VoxelWorld, WorldPos,
+        },
     };
     pub use cgmath::{
         prelude::*, Deg, Matrix3, Matrix4, Point1, Point2, Point3, Vector2, Vector3, Vector4,
@@ -67,7 +70,8 @@ impl Side {
         }
     }
 
-    /// take coordinates (u, v, l) where (u, v) is parallel to this face and convert it to a relative xyz coord
+    /// take coordinates (u, v, l) where (u, v) is parallel to this face and
+    /// convert it to a relative xyz coord
     pub fn uvl_to_xyz(&self, u: i32, v: i32, l: i32) -> Vector3<i32> {
         let mut vec = Vector3::new(0, 0, 0);
         let axis: Axis = (*self).into();

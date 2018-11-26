@@ -1,10 +1,11 @@
-use gl_api::buffer::{Buffer, UsageType};
-use gl_api::context::Context;
-use gl_api::error::GlResult;
-use gl_api::layout::Layout;
-use gl_api::shader::program::LinkedProgram;
-use gl_api::BufferIndex;
-use gl_api::PrimitiveType;
+use gl_api::{
+    buffer::{Buffer, UsageType},
+    context::Context,
+    error::GlResult,
+    layout::Layout,
+    shader::program::Program,
+    BufferIndex, PrimitiveType,
+};
 use specs::prelude::*;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -37,7 +38,7 @@ impl<V: Layout, I: BufferIndex> GpuMesh<V, I> {
         Ok(())
     }
 
-    pub fn draw_with(&self, ctx: &Context, program: &LinkedProgram) {
+    pub fn draw_with(&self, ctx: &mut Context, program: &Program) {
         ctx.draw_elements(
             PrimitiveType::Triangles,
             program,
@@ -133,7 +134,8 @@ impl<V, I: BufferIndex> Mesh<V, I> {
 }
 
 impl<V: Layout, I: BufferIndex> Mesh<V, I> {
-    /// Creates the GPU buffers for this mesh and uploads the data in this mesh to it. Note that this has to clone the mesh data
+    /// Creates the GPU buffers for this mesh and uploads the data in this mesh
+    /// to it. Note that this has to clone the mesh data
     pub fn upload(&mut self, ctx: &Context, usage_type: UsageType) -> GlResult<()> {
         let mut mesh = GpuMesh::new(ctx)?;
         mesh.upload(ctx, &self.vertices[..], &self.indices[..], usage_type)?;
