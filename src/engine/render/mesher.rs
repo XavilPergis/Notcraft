@@ -12,6 +12,7 @@ use engine::{
     },
     Side,
 };
+use rand::prelude::*;
 use specs::prelude::*;
 
 pub struct ChunkMesher;
@@ -216,7 +217,9 @@ impl<'w> MeshConstructor<'w> {
 
         let normal = side.normal();
 
-        let tex_id = self.registry.block_texture(id, side).unwrap() as i32;
+        let face = self.registry.block_texture(id, side).unwrap();
+
+        let tex_id = *face.texture.select() as i32;
 
         let base = pos.cast::<f32>().unwrap();
         let mut push_vertex = |offset, uv, ao| {
@@ -231,25 +234,61 @@ impl<'w> MeshConstructor<'w> {
 
         let h = if top { 1.0 } else { 0.0 };
 
+        const UV_VARIANT_1: &[Vector2<f32>] = &[
+            Vector2 { x: 0.0, y: 0.0 },
+            Vector2 { x: 1.0, y: 0.0 },
+            Vector2 { x: 0.0, y: 1.0 },
+            Vector2 { x: 1.0, y: 1.0 },
+        ];
+
+        const UV_VARIANT_2: &[Vector2<f32>] = &[
+            Vector2 { x: 1.0, y: 0.0 },
+            Vector2 { x: 1.0, y: 1.0 },
+            Vector2 { x: 0.0, y: 0.0 },
+            Vector2 { x: 0.0, y: 1.0 },
+        ];
+
+        const UV_VARIANT_3: &[Vector2<f32>] = &[
+            Vector2 { x: 1.0, y: 1.0 },
+            Vector2 { x: 0.0, y: 1.0 },
+            Vector2 { x: 1.0, y: 0.0 },
+            Vector2 { x: 0.0, y: 0.0 },
+        ];
+
+        const UV_VARIANT_4: &[Vector2<f32>] = &[
+            Vector2 { x: 0.0, y: 1.0 },
+            Vector2 { x: 0.0, y: 0.0 },
+            Vector2 { x: 1.0, y: 1.0 },
+            Vector2 { x: 1.0, y: 0.0 },
+        ];
+
+        let uvs = if face.random_orientation {
+            (&[UV_VARIANT_1, UV_VARIANT_2, UV_VARIANT_3, UV_VARIANT_4])
+                .choose(&mut SmallRng::from_entropy())
+                .unwrap()
+        } else {
+            UV_VARIANT_1
+        };
+
         if side == Side::Left || side == Side::Right {
-            push_vertex(Vector3::new(h, 1.0, 0.0), Vector2::new(0.0, 0.0), ao_pn);
-            push_vertex(Vector3::new(h, 1.0, 1.0), Vector2::new(1.0, 0.0), ao_pp);
-            push_vertex(Vector3::new(h, 0.0, 0.0), Vector2::new(0.0, 1.0), ao_nn);
-            push_vertex(Vector3::new(h, 0.0, 1.0), Vector2::new(1.0, 1.0), ao_np);
+            push_vertex(Vector3::new(h, 1.0, 0.0), uvs[0], ao_pn);
+            push_vertex(Vector3::new(h, 1.0, 1.0), uvs[1], ao_pp);
+            push_vertex(Vector3::new(h, 0.0, 0.0), uvs[2], ao_nn);
+            push_vertex(Vector3::new(h, 0.0, 1.0), uvs[3], ao_np);
         }
 
         if side == Side::Top || side == Side::Bottom {
-            push_vertex(Vector3::new(0.0, h, 1.0), Vector2::new(0.0, 0.0), ao_pn);
-            push_vertex(Vector3::new(1.0, h, 1.0), Vector2::new(1.0, 0.0), ao_pp);
-            push_vertex(Vector3::new(0.0, h, 0.0), Vector2::new(0.0, 1.0), ao_nn);
-            push_vertex(Vector3::new(1.0, h, 0.0), Vector2::new(1.0, 1.0), ao_np);
+            push_vertex(Vector3::new(0.0, h, 1.0), uvs[0], ao_pn);
+            push_vertex(Vector3::new(1.0, h, 1.0), uvs[1], ao_pp);
+            push_vertex(Vector3::new(0.0, h, 0.0), uvs[2], ao_nn);
+            push_vertex(Vector3::new(1.0, h, 0.0), uvs[3], ao_np);
         }
 
         if side == Side::Front || side == Side::Back {
-            push_vertex(Vector3::new(0.0, 1.0, h), Vector2::new(0.0, 0.0), ao_np);
-            push_vertex(Vector3::new(1.0, 1.0, h), Vector2::new(1.0, 0.0), ao_pp);
-            push_vertex(Vector3::new(0.0, 0.0, h), Vector2::new(0.0, 1.0), ao_nn);
-            push_vertex(Vector3::new(1.0, 0.0, h), Vector2::new(1.0, 1.0), ao_pn);
+            push_vertex(Vector3::new(0.0, 1.0, h), uvs[0], ao_np);
+            push_vertex(Vector3::new(1.0, 1.0, h), uvs[1], ao_pp);
+            push_vertex(Vector3::new(0.0, 0.0, h), uvs[2], ao_nn);
+            push_vertex(Vector3::new(1.0, 0.0, h), uvs[3], ao_pn);
         }
     }
 }

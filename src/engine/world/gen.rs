@@ -1,5 +1,5 @@
 use engine::render::debug::{DebugAccumulator, Shape};
-use noise::{Fbm, MultiFractal, NoiseFn, SuperSimplex};
+use noise::{Fbm, MultiFractal, NoiseFn, RidgedMulti, SuperSimplex};
 use specs::world::EntitiesRes;
 use std::collections::HashSet;
 
@@ -7,13 +7,16 @@ use engine::prelude::*;
 
 #[derive(Clone, Debug)]
 pub struct NoiseGenerator {
-    noise: Fbm,
+    noise: RidgedMulti,
     biome_noise: SuperSimplex,
 }
 
 impl NoiseGenerator {
     pub fn new_default() -> Self {
-        let noise = Fbm::default().set_frequency(0.01).set_persistence(0.3);
+        let noise = RidgedMulti::default()
+            .set_frequency(0.001)
+            // .set_attenuation(0.01)
+            .set_persistence(0.7);
         let biome_noise = SuperSimplex::new();
         NoiseGenerator { noise, biome_noise }
     }
@@ -24,9 +27,17 @@ impl NoiseGenerator {
         if noise - 2.0 > y {
             block::STONE
         } else if noise - 1.0 > y {
-            block::DIRT
+            if y < -50.0 {
+                block::SAND
+            } else {
+                block::DIRT
+            }
         } else if noise > y {
-            block::GRASS
+            if y < -50.0 {
+                block::SAND
+            } else {
+                block::GRASS
+            }
         } else {
             block::AIR
         }

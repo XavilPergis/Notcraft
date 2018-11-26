@@ -1,50 +1,95 @@
 use cgmath::Vector2;
 use engine::Side;
+use rand::prelude::*;
 use std::{collections::HashMap, error::Error, io, path::Path};
 
 pub const AIR: BlockId = BlockId(0);
 pub const STONE: BlockId = BlockId(1);
 pub const DIRT: BlockId = BlockId(2);
 pub const GRASS: BlockId = BlockId(3);
-pub const WATER: BlockId = BlockId(4);
+pub const SAND: BlockId = BlockId(4);
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
-enum BlockTextures {
+#[serde(untagged)]
+pub enum FaceTexture<T> {
+    Always(T),
+    Weighted(Vec<(f32, T)>),
+}
+
+fn weighted_select<T>(items: &Vec<(f32, T)>) -> &T {
+    assert!(items.len() > 0);
+
+    let sum: f32 = items.iter().map(|(weight, _)| weight).sum();
+    let mut num = SmallRng::from_entropy().gen_range(1.0, sum);
+
+    for item in items {
+        num -= item.0;
+        if num <= 0.0 {
+            return &item.1;
+        }
+    }
+
+    unreachable!()
+}
+
+impl<T> FaceTexture<T> {
+    fn map<U, F>(self, mut func: F) -> FaceTexture<U>
+    where
+        F: FnMut(T) -> U,
+    {
+        match self {
+            FaceTexture::Always(val) => FaceTexture::Always(func(val)),
+            FaceTexture::Weighted(vec) => FaceTexture::Weighted(
+                vec.into_iter()
+                    .map(|(weight, item)| (weight, func(item)))
+                    .collect(),
+            ),
+        }
+    }
+
+    pub fn select(&self) -> &T {
+        match self {
+            FaceTexture::Always(item) => item,
+            FaceTexture::Weighted(vec) => weighted_select(vec),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct BlockFace<T> {
+    pub random_orientation: bool,
+    pub texture: FaceTexture<T>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub enum BlockTextures {
     /// The textures for all the faces are all the same
     #[serde(rename = "same")]
-    AllSame(String),
+    AllSame(BlockFace<String>),
 
     /// The textures for the sides are all the same, but the top and the bottom
     /// are different, like a grass block
     #[serde(rename = "top_bottom")]
     TopBottom {
-        top: String,
-        bottom: String,
-        side: String,
+        top: BlockFace<String>,
+        bottom: BlockFace<String>,
+        side: BlockFace<String>,
     },
 
     /// The texture for each face is different
     #[serde(rename = "different")]
     AllDifferent {
-        top: String,
-        bottom: String,
-        left: String,
-        right: String,
-        front: String,
-        back: String,
+        top: BlockFace<String>,
+        bottom: BlockFace<String>,
+        left: BlockFace<String>,
+        right: BlockFace<String>,
+        front: BlockFace<String>,
+        back: BlockFace<String>,
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-struct BlockRegistryEntry {
-    name: String,
-    collidable: bool,
-    opaque: bool,
-    textures: Option<BlockTextures>,
-}
-
 impl BlockTextures {
-    fn expand(self) -> BlockFaces<String> {
+    fn expand(self) -> BlockFaces<BlockFace<String>> {
         match self {
             BlockTextures::AllSame(val) => BlockFaces {
                 top: val.clone(),
@@ -81,9 +126,12 @@ impl BlockTextures {
     }
 }
 
-pub enum RegistryFileError {
-    Io(io::Error),
-    Serde(()),
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct BlockRegistryEntry {
+    name: String,
+    collidable: bool,
+    opaque: bool,
+    textures: Option<BlockTextures>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
@@ -115,52 +163,64 @@ impl<T> BlockFaces<T> {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct BlockId(usize);
 
-#[derive(Clone, Debug, Eq, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct BlockRegistryBuilder {
     // per-block
     names: Vec<String>,
     opaque: Vec<bool>,
     collidable: Vec<bool>,
-    texture_indices: Vec<Option<BlockFaces<usize>>>,
+    texture_indices: Vec<Option<BlockFaces<BlockFace<usize>>>>,
 
     // other
     textures: Vec<String>,
 }
 
-fn get_or_insert_texture(textures: &mut Vec<String>, val: String) -> usize {
-    textures
-        .iter()
-        .position(|item| item == &val)
-        .unwrap_or_else(|| {
-            textures.push(val);
-            textures.len() - 1
-        })
-}
-
 impl BlockRegistryBuilder {
-    pub fn register(
-        &mut self,
-        name: String,
-        opaque: bool,
-        collidable: bool,
-        textures: Option<BlockFaces<String>>,
-    ) {
-        self.names.push(name);
-        self.opaque.push(opaque);
-        self.collidable.push(collidable);
+    pub fn register(&mut self, entry: BlockRegistryEntry) {
+        self.names.push(entry.name);
+        self.opaque.push(entry.opaque);
+        self.collidable.push(entry.collidable);
 
-        if let Some(textures) = textures {
-            let texture_vec = &mut self.textures;
-            self.texture_indices.push(Some(
-                textures.map(|name| get_or_insert_texture(texture_vec, name)),
-            ));
+        if let Some(textures) = entry.textures {
+            // expand the face textures into a `BlockFaces`, where all sides are reified
+            // into fields for each face, try to add the face items into the
+            // textures array
+            let faces_ref = textures.expand().map(|face| {
+                let texture = face.texture.map(|name| {
+                    // if the texture was already added to the list, return its index. We pass the
+                    // list of names to the terrain renderer later so it can load the files
+                    // associated with the names. We don't want to load the same thing twice and
+                    // then store the extraneous texture in the texture array.
+                    // TODO: greater than linear time :(
+                    if let Some(idx) = self.get_texture_index(&name) {
+                        idx
+                    } else {
+                        // if the item was not found, push it onto the vec and return its index,
+                        // which will the the index of the last item on the list
+                        self.textures.push(name);
+                        self.textures.len() - 1
+                    }
+                });
+                BlockFace {
+                    texture,
+                    random_orientation: face.random_orientation,
+                }
+            });
+
+            self.texture_indices.push(Some(faces_ref));
         } else {
             self.texture_indices.push(None);
         }
     }
 
+    fn get_texture_index(&self, name: &str) -> Option<usize> {
+        self.textures.iter().position(|item| item == name)
+    }
+
     pub fn build(self) -> (BlockRegistry, Vec<String>) {
         let mut registry = BlockRegistry::default();
+
+        debug!("builder: {:#?}", &self);
 
         registry.name_map = self
             .names
@@ -182,90 +242,51 @@ pub struct BlockRegistry {
     name_map: HashMap<String, BlockId>,
     opaque: Vec<bool>,
     collidable: Vec<bool>,
-    texture_indices: Vec<Option<BlockFaces<usize>>>,
+    texture_indices: Vec<Option<BlockFaces<BlockFace<usize>>>>,
 }
 
 impl BlockRegistry {
-    // pub fn with_defaults(mut self) -> Self {
-    //     macro_rules! proto {
-    //         ($opaque:expr, $solid:expr, [$($x:expr, $y:expr);*]) => {
-    //             BlockProperties {
-    //                 opaque: $opaque,
-    //                 collidable: $solid,
-    //                 texture_offsets: [$(Vector2::new($x as f32, $y as f32)),*]
-    //             }
-    //         };
-    //     }
-
-    //     self.register(
-    //         "air",
-    //         proto! { false, false, [0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0, 0.0; 0.0,
-    // 0.0; 0.0, 0.0] },         Some(AIR),
-    //     );
-    //     self.register(
-    //         "stone",
-    //         proto! { true,  true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0,
-    // 0.0; 1.0, 0.0] },         Some(STONE),
-    //     );
-    //     self.register(
-    //         "dirt",
-    //         proto! { true,  true,  [2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0, 0.0; 2.0,
-    // 0.0; 2.0, 0.0] },         Some(DIRT),
-    //     );
-    //     self.register(
-    //         "grass",
-    //         proto! { true,  true,  [0.0, 1.0; 0.0, 0.0; 0.0, 1.0; 0.0, 1.0; 2.0,
-    // 0.0; 0.0, 1.0] },         Some(GRASS),
-    //     );
-    //     self.register(
-    //         "water",
-    //         proto! { true,  true,  [1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0, 0.0; 1.0,
-    // 0.0; 1.0, 0.0] },         Some(WATER),
-    //     );
-
-    //     self
-    // }
-
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<(Self, Vec<String>), Box<Error>> {
         let entries: Vec<BlockRegistryEntry> =
             serde_json::from_reader(::std::fs::File::open(path)?)?;
         let mut builder = BlockRegistryBuilder::default();
 
+        // could probably use Iterator::fold here for extra cool points :sunglasses:
         for entry in entries {
-            builder.register(
-                entry.name,
-                entry.opaque,
-                entry.collidable,
-                entry.textures.map(BlockTextures::expand),
-            );
+            debug!("Adding {:#?}", entry);
+            builder.register(entry);
         }
 
         Ok(builder.build())
     }
 
+    #[inline(always)]
     pub fn opaque(&self, id: BlockId) -> bool {
         self.opaque[id.0]
     }
 
+    #[inline(always)]
     pub fn collidable(&self, id: BlockId) -> bool {
         self.collidable[id.0]
     }
 
-    pub fn block_textures(&self, id: BlockId) -> &Option<BlockFaces<usize>> {
+    #[inline(always)]
+    pub fn block_textures(&self, id: BlockId) -> &Option<BlockFaces<BlockFace<usize>>> {
         &self.texture_indices[id.0]
     }
 
-    pub fn block_texture(&self, id: BlockId, side: Side) -> Option<usize> {
+    pub fn block_texture(&self, id: BlockId, side: Side) -> Option<&BlockFace<usize>> {
         self.texture_indices[id.0].as_ref().map(|faces| match side {
-            Side::Top => faces.top,
-            Side::Right => faces.right,
-            Side::Front => faces.front,
-            Side::Left => faces.left,
-            Side::Bottom => faces.bottom,
-            Side::Back => faces.back,
+            Side::Top => &faces.top,
+            Side::Right => &faces.right,
+            Side::Front => &faces.front,
+            Side::Left => &faces.left,
+            Side::Bottom => &faces.bottom,
+            Side::Back => &faces.back,
         })
     }
 
+    #[inline(always)]
     pub fn get_ref(&self, id: BlockId) -> RegistryRef {
         RegistryRef { registry: self, id }
     }
@@ -279,30 +300,21 @@ pub struct RegistryRef<'r> {
 impl<'r> RegistryRef<'r> {
     #[inline(always)]
     pub fn opaque(&self) -> bool {
-        self.registry.opaque[self.id.0]
+        self.registry.opaque(self.id)
     }
 
     #[inline(always)]
     pub fn collidable(&self) -> bool {
-        self.registry.collidable[self.id.0]
+        self.registry.collidable(self.id)
     }
 
     #[inline(always)]
-    pub fn block_textures(&self) -> &Option<BlockFaces<usize>> {
-        &self.registry.texture_indices[self.id.0]
+    pub fn block_textures(&self) -> &Option<BlockFaces<BlockFace<usize>>> {
+        self.registry.block_textures(self.id)
     }
 
     #[inline(always)]
-    pub fn block_texture(&self, side: Side) -> Option<usize> {
-        self.registry.texture_indices[self.id.0]
-            .as_ref()
-            .map(|faces| match side {
-                Side::Top => faces.top,
-                Side::Right => faces.right,
-                Side::Front => faces.front,
-                Side::Left => faces.left,
-                Side::Bottom => faces.bottom,
-                Side::Back => faces.back,
-            })
+    pub fn block_texture(&self, side: Side) -> Option<&BlockFace<usize>> {
+        self.registry.block_texture(self.id, side)
     }
 }

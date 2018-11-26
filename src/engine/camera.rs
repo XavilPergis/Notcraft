@@ -48,7 +48,7 @@ impl Default for Camera {
             projection: PerspectiveFov {
                 fovy: Deg(80.0).into(),
                 aspect: 1.0,
-                near: 0.001,
+                near: 0.01,
                 far: 1000.0,
             },
         }

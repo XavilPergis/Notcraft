@@ -106,6 +106,7 @@ impl TextureArray2d {
                 "copying image into layer {} for 2d texture array #{}",
                 layer, self.raw.id
             );
+
             if let Some((format, ty)) = gl_format::<P>() {
                 sub_image_slice(&self.raw, &image, layer, format, ty);
             } else {

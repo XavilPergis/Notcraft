@@ -10,7 +10,10 @@
         "collidable": true,
         "opaque": true,
         "textures": {
-            "same": "stone.png"
+            "same": {
+                "random_orientation": true,
+                "texture": "stone.png"
+            }
         }
     },
     {
@@ -18,7 +21,10 @@
         "collidable": true,
         "opaque": true,
         "textures": {
-            "same": "dirt.png"
+            "same": {
+                "random_orientation": false,
+                "texture": "dirt.png"
+            }
         }
     },
     {
@@ -27,9 +33,42 @@
         "opaque": true,
         "textures": {
             "top_bottom": {
-                "top": "stone.png",
-                "bottom": "dirt.png",
-                "side": "grass_side.png"
+                "top": {
+                    "random_orientation": true,
+                    "texture": [
+                        [
+                            100.0,
+                            "grass_top_1.png"
+                        ],
+                        [
+                            1.0,
+                            "grass_top_2.png"
+                        ],
+                        [
+                            1.0,
+                            "grass_top_3.png"
+                        ]
+                    ]
+                },
+                "bottom": {
+                    "random_orientation": true,
+                    "texture": "dirt.png"
+                },
+                "side": {
+                    "random_orientation": false,
+                    "texture": "grass_side.png"
+                }
+            }
+        }
+    },
+    {
+        "name": "sand",
+        "collidable": true,
+        "opaque": true,
+        "textures": {
+            "same": {
+                "random_orientation": false,
+                "texture": "sand.png"
             }
         }
     }

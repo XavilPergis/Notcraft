@@ -26,7 +26,7 @@ pub struct TerrainRenderer {
 
 impl TerrainRenderer {
     pub fn new(ctx: &mut Context, names: Vec<String>) -> Self {
-        let textures = TextureArray2d::new(ctx, 16, 16, 4);
+        let textures = TextureArray2d::new(ctx, 16, 16, names.len());
         let images: Result<Vec<_>, _> = names
             .into_iter()
             .map(|name| {

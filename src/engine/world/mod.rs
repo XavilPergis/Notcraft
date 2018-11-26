@@ -263,7 +263,11 @@ mod benches {
 
     #[bench]
     fn bench_world_get(b: &mut Bencher) {
-        let mut world = VoxelWorld::new(::default_registry().build().0);
+        let mut world = VoxelWorld::new(
+            BlockRegistry::load_from_file("resources/blocks.json")
+                .unwrap()
+                .0,
+        );
         world.set_chunk(ChunkPos(Point3::new(0, 0, 0)), super::gen::get_test_chunk());
         b.iter(|| {
             for x in -2..34 {

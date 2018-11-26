@@ -61,7 +61,7 @@ use engine::{
     resources as res,
     systems::CameraUpdater,
     world::{
-        block::{BlockFaces, BlockRegistryBuilder},
+        block::{BlockFaces, BlockRegistry},
         gen::NoiseGenerator,
         VoxelWorld,
     },
@@ -76,68 +76,13 @@ use shrev::EventChannel;
 use specs::prelude::*;
 use std::time::Duration;
 
-pub fn default_registry() -> BlockRegistryBuilder {
-    let mut registry_builder = BlockRegistryBuilder::default();
-
-    let stone = String::from("stone");
-    let dirt = String::from("dirt");
-    let grass_side = String::from("grass_side");
-    let grass_top = String::from("grass_top");
-
-    registry_builder.register("air".into(), false, false, None);
-
-    registry_builder.register(
-        "stone".into(),
-        true,
-        true,
-        Some(BlockFaces {
-            top: stone.clone(),
-            bottom: stone.clone(),
-            left: stone.clone(),
-            right: stone.clone(),
-            front: stone.clone(),
-            back: stone.clone(),
-        }),
-    );
-
-    registry_builder.register(
-        "dirt".into(),
-        true,
-        true,
-        Some(BlockFaces {
-            top: dirt.clone(),
-            bottom: dirt.clone(),
-            left: dirt.clone(),
-            right: dirt.clone(),
-            front: dirt.clone(),
-            back: dirt.clone(),
-        }),
-    );
-
-    registry_builder.register(
-        "grass".into(),
-        true,
-        true,
-        Some(BlockFaces {
-            top: grass_top.clone(),
-            bottom: dirt.clone(),
-            left: grass_side.clone(),
-            right: grass_side.clone(),
-            front: grass_side.clone(),
-            back: grass_side.clone(),
-        }),
-    );
-
-    registry_builder
-}
-
 mod benches {
     use super::*;
     use test::Bencher;
 
     #[bench]
     fn bench_mesher(bencher: &mut Bencher) {
-        let (registry, _) = default_registry().build();
+        let (registry, _) = BlockRegistry::load_from_file("resources/blocks.json").unwrap();
         let mut world = VoxelWorld::new(registry);
         let mut gen = NoiseGenerator::new_default();
 
