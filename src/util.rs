@@ -76,3 +76,8 @@ pub fn in_range(pos: Point3<i32>, center: Point3<i32>, radii: Vector3<i32>) -> b
         && pos.z <= center.z + radii.z
         && pos.z >= center.z - radii.z
 }
+
+/// Mathematical mod function
+pub fn modulo(a: f64, b: f64) -> f64 {
+    (a % b + b) % b
+}

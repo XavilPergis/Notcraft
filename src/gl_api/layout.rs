@@ -65,7 +65,7 @@ macro_rules! vertex {
         #[derive(Copy, Clone, Debug)]
         #[repr(C)]
         pub struct $name {
-            $($attrib: $attrib_type),*
+            $(pub $attrib: $attrib_type),*
         }
 
         unsafe impl $crate::gl_api::layout::Layout for $name {

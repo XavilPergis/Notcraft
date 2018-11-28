@@ -1,0 +1,92 @@
+[
+    {
+        "name": "air",
+        "collidable": false,
+        "opaque": false,
+        "liquid": false,
+        "textures": null
+    },
+    {
+        "name": "stone",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "stone.png"
+            }
+        }
+    },
+    {
+        "name": "dirt",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": false,
+                "texture": "dirt.png"
+            }
+        }
+    },
+    {
+        "name": "grass",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "top_bottom": {
+                "top": {
+                    "random_orientation": true,
+                    "texture": [
+                        [
+                            100.0,
+                            "grass_top_1.png"
+                        ],
+                        [
+                            1.0,
+                            "grass_top_2.png"
+                        ],
+                        [
+                            1.0,
+                            "grass_top_3.png"
+                        ]
+                    ]
+                },
+                "bottom": {
+                    "random_orientation": true,
+                    "texture": "dirt.png"
+                },
+                "side": {
+                    "random_orientation": false,
+                    "texture": "grass_side.png"
+                }
+            }
+        }
+    },
+    {
+        "name": "sand",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": false,
+                "texture": "sand.png"
+            }
+        }
+    },
+    {
+        "name": "water",
+        "collidable": false,
+        "opaque": false,
+        "liquid": true,
+        "textures": {
+            "same": {
+                "random_orientation": false,
+                "texture": "water.png"
+            }
+        }
+    }
+]
