@@ -88,7 +88,12 @@ pub struct DebugRenderer {
 
 impl DebugRenderer {
     pub fn new(ctx: &mut Context) -> (Self, DebugAccumulator) {
-        let program = simple_pipeline(ctx, "resources/debug.vs", "resources/debug.fs").unwrap();
+        let program = simple_pipeline(
+            ctx,
+            "resources/shaders/debug.vs",
+            "resources/shaders/debug.fs",
+        )
+        .unwrap();
         let vbo = Buffer::new(ctx);
 
         (

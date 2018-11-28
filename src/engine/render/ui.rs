@@ -31,8 +31,8 @@ impl DrawCrosshair {
 
         let mut program = load_shader(
             ctx,
-            "resources/simple_texture.vs",
-            "resources/simple_texture.fs",
+            "resources/shaders/simple_texture.vs",
+            "resources/shaders/simple_texture.fs",
         );
         program.set_uniform(ctx, "tex", &texture);
 

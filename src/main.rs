@@ -59,9 +59,8 @@ use engine::{
         ui::DrawCrosshair,
     },
     resources as res,
-    systems::CameraUpdater,
     world::{
-        block::{BlockFaces, BlockRegistry},
+        block::{BlockRegistry, Faces},
         gen::NoiseGenerator,
         VoxelWorld,
     },
@@ -123,17 +122,20 @@ fn main() {
     let mut ctx = Context::load(|symbol| gl_window.get_proc_address(symbol));
     println!("Context created!");
 
-    let mut debug_program =
-        match simple_pipeline(&mut ctx, "resources/debug.vs", "resources/debug.fs") {
-            Ok(prog) => prog,
-            Err(msg) => match msg {
-                PipelineError::Shader(ShaderError::Shader(msg)) => {
-                    println!("{}", msg);
-                    panic!()
-                }
-                _ => panic!("Other error"),
-            },
-        };
+    let mut debug_program = match simple_pipeline(
+        &mut ctx,
+        "resources/shaders/debug.vs",
+        "resources/shaders/debug.fs",
+    ) {
+        Ok(prog) => prog,
+        Err(msg) => match msg {
+            PipelineError::Shader(ShaderError::Shader(msg)) => {
+                println!("{}", msg);
+                panic!()
+            }
+            _ => panic!("Other error"),
+        },
+    };
 
     gl_call!(assert Disable(gl::MULTISAMPLE));
     gl_call!(assert Enable(gl::DEPTH_TEST));
@@ -141,6 +143,9 @@ fn main() {
     gl_call!(assert Enable(gl::CULL_FACE));
     gl_call!(assert FrontFace(gl::CW));
     gl_call!(assert CullFace(gl::BACK));
+
+    gl_call!(assert Enable(gl::BLEND));
+    gl_call!(assert BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA));
 
     let mut window_events = shrev::EventChannel::new();
 

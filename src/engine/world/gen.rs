@@ -15,6 +15,7 @@ impl NoiseGenerator {
     pub fn new_default() -> Self {
         let noise = RidgedMulti::default()
             .set_frequency(0.001)
+            .set_lacunarity(4.0)
             // .set_attenuation(0.01)
             .set_persistence(0.7);
         let biome_noise = SuperSimplex::new();
@@ -39,7 +40,11 @@ impl NoiseGenerator {
                 block::GRASS
             }
         } else {
-            block::AIR
+            if y < -52.0 {
+                block::WATER
+            } else {
+                block::AIR
+            }
         }
     }
 }

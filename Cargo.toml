@@ -5,7 +5,6 @@ authors = ["XavilPergis <max.duzen@gmail.com>"]
 
 [profile.release]
 debug = true
-lto = false
 
 [dependencies]
 gl = "0.10.0"

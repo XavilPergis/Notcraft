@@ -1,5 +1,5 @@
 use cgmath::Vector2;
-use engine::Side;
+use engine::{world::block::Faces, Side};
 use rand::prelude::*;
 use std::{collections::HashMap, error::Error, io, path::Path};
 
@@ -8,6 +8,7 @@ pub const STONE: BlockId = BlockId(1);
 pub const DIRT: BlockId = BlockId(2);
 pub const GRASS: BlockId = BlockId(3);
 pub const SAND: BlockId = BlockId(4);
+pub const WATER: BlockId = BlockId(5);
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(untagged)]
@@ -89,9 +90,9 @@ pub enum BlockTextures {
 }
 
 impl BlockTextures {
-    fn expand(self) -> BlockFaces<BlockFace<String>> {
+    fn expand(self) -> Faces<BlockFace<String>> {
         match self {
-            BlockTextures::AllSame(val) => BlockFaces {
+            BlockTextures::AllSame(val) => Faces {
                 top: val.clone(),
                 bottom: val.clone(),
                 left: val.clone(),
@@ -99,7 +100,7 @@ impl BlockTextures {
                 front: val.clone(),
                 back: val,
             },
-            BlockTextures::TopBottom { top, bottom, side } => BlockFaces {
+            BlockTextures::TopBottom { top, bottom, side } => Faces {
                 top,
                 bottom,
                 left: side.clone(),
@@ -114,7 +115,7 @@ impl BlockTextures {
                 right,
                 front,
                 back,
-            } => BlockFaces {
+            } => Faces {
                 top,
                 bottom,
                 left,
@@ -131,33 +132,8 @@ pub struct BlockRegistryEntry {
     name: String,
     collidable: bool,
     opaque: bool,
+    liquid: bool,
     textures: Option<BlockTextures>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
-pub struct BlockFaces<T> {
-    pub top: T,
-    pub bottom: T,
-    pub left: T,
-    pub right: T,
-    pub front: T,
-    pub back: T,
-}
-
-impl<T> BlockFaces<T> {
-    fn map<U, F>(self, mut func: F) -> BlockFaces<U>
-    where
-        F: FnMut(T) -> U,
-    {
-        BlockFaces {
-            top: func(self.top),
-            bottom: func(self.bottom),
-            left: func(self.left),
-            right: func(self.right),
-            front: func(self.front),
-            back: func(self.back),
-        }
-    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
@@ -169,7 +145,8 @@ pub struct BlockRegistryBuilder {
     names: Vec<String>,
     opaque: Vec<bool>,
     collidable: Vec<bool>,
-    texture_indices: Vec<Option<BlockFaces<BlockFace<usize>>>>,
+    liquid: Vec<bool>,
+    texture_indices: Vec<Option<Faces<BlockFace<usize>>>>,
 
     // other
     textures: Vec<String>,
@@ -180,9 +157,10 @@ impl BlockRegistryBuilder {
         self.names.push(entry.name);
         self.opaque.push(entry.opaque);
         self.collidable.push(entry.collidable);
+        self.liquid.push(entry.liquid);
 
         if let Some(textures) = entry.textures {
-            // expand the face textures into a `BlockFaces`, where all sides are reified
+            // expand the face textures into a `Faces`, where all sides are reified
             // into fields for each face, try to add the face items into the
             // textures array
             let faces_ref = textures.expand().map(|face| {
@@ -232,6 +210,7 @@ impl BlockRegistryBuilder {
         registry.opaque = self.opaque;
         registry.collidable = self.collidable;
         registry.texture_indices = self.texture_indices;
+        registry.liquid = self.liquid;
 
         (registry, self.textures)
     }
@@ -242,7 +221,8 @@ pub struct BlockRegistry {
     name_map: HashMap<String, BlockId>,
     opaque: Vec<bool>,
     collidable: Vec<bool>,
-    texture_indices: Vec<Option<BlockFaces<BlockFace<usize>>>>,
+    liquid: Vec<bool>,
+    texture_indices: Vec<Option<Faces<BlockFace<usize>>>>,
 }
 
 impl BlockRegistry {
@@ -271,7 +251,12 @@ impl BlockRegistry {
     }
 
     #[inline(always)]
-    pub fn block_textures(&self, id: BlockId) -> &Option<BlockFaces<BlockFace<usize>>> {
+    pub fn liquid(&self, id: BlockId) -> bool {
+        self.liquid[id.0]
+    }
+
+    #[inline(always)]
+    pub fn block_textures(&self, id: BlockId) -> &Option<Faces<BlockFace<usize>>> {
         &self.texture_indices[id.0]
     }
 
@@ -309,7 +294,12 @@ impl<'r> RegistryRef<'r> {
     }
 
     #[inline(always)]
-    pub fn block_textures(&self) -> &Option<BlockFaces<BlockFace<usize>>> {
+    pub fn liquid(&self) -> bool {
+        self.registry.liquid(self.id)
+    }
+
+    #[inline(always)]
+    pub fn block_textures(&self) -> &Option<Faces<BlockFace<usize>>> {
         self.registry.block_textures(self.id)
     }
 

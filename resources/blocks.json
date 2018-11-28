@@ -3,12 +3,14 @@
         "name": "air",
         "collidable": false,
         "opaque": false,
+        "liquid": false,
         "textures": null
     },
     {
         "name": "stone",
         "collidable": true,
         "opaque": true,
+        "liquid": false,
         "textures": {
             "same": {
                 "random_orientation": true,
@@ -20,6 +22,7 @@
         "name": "dirt",
         "collidable": true,
         "opaque": true,
+        "liquid": false,
         "textures": {
             "same": {
                 "random_orientation": false,
@@ -31,6 +34,7 @@
         "name": "grass",
         "collidable": true,
         "opaque": true,
+        "liquid": false,
         "textures": {
             "top_bottom": {
                 "top": {
@@ -65,10 +69,23 @@
         "name": "sand",
         "collidable": true,
         "opaque": true,
+        "liquid": false,
         "textures": {
             "same": {
                 "random_orientation": false,
                 "texture": "sand.png"
+            }
+        }
+    },
+    {
+        "name": "water",
+        "collidable": false,
+        "opaque": false,
+        "liquid": true,
+        "textures": {
+            "same": {
+                "random_orientation": false,
+                "texture": "water.png"
             }
         }
     }

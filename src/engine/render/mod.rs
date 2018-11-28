@@ -1,4 +1,9 @@
 use cgmath::{Vector2, Vector3};
+use engine::render::{
+    mesh::Mesh,
+    terrain::{BlockVertex, LiquidVertex},
+};
+use specs::prelude::*;
 
 pub mod debug;
 pub mod mesh;
@@ -54,16 +59,9 @@ pub mod verts {
     ];
 }
 
-type Quad = [Vector3<f64>; 4];
-
-#[derive(Copy, Clone, Debug, PartialEq, Deserialize)]
-pub struct BlockQuad {
-    positions: Quad,
-    /// index into the model's name vec.
-    texture_index: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct BlockModel {
-    texture_names: Vec<String>,
+#[derive(Debug, Default, Component)]
+#[storage(DenseVecStorage)]
+pub struct TerrainMeshes {
+    pub terrain: Mesh<BlockVertex, u32>,
+    pub liquid: Mesh<LiquidVertex, u32>,
 }

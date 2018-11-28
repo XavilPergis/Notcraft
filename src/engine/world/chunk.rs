@@ -152,6 +152,8 @@ macro_rules! gen_index {
 
 gen_index!(point: Point3<usize> => point.x, point.y, point.z);
 gen_index!(point: Point3<i32> => point.x as usize, point.y as usize, point.z as usize);
+gen_index!(point: Point3<isize> => point.x as usize, point.y as usize, point.z as usize);
 gen_index!(point: Vector3<usize> => point.x, point.y, point.z);
 gen_index!(point: Vector3<i32> => point.x as usize, point.y as usize, point.z as usize);
+gen_index!(point: Vector3<isize> => point.x as usize, point.y as usize, point.z as usize);
 gen_index!(point: (usize, usize, usize) => point.0, point.1, point.2);

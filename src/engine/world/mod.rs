@@ -1,16 +1,10 @@
 use cgmath::{Point3, Vector3, Vector4};
 use collision::{Aabb, Aabb3};
 use engine::{
-    render::{
-        debug::{DebugSection, Shape},
-        terrain::ChunkMesh,
-    },
+    render::debug::{DebugSection, Shape},
     world::block::BlockRegistry,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    f64::INFINITY,
-};
+use std::collections::{HashMap, HashSet};
 
 use self::block::BlockId;
 pub use self::chunk::Chunk;
@@ -112,7 +106,6 @@ fn chunk_id(pos: ChunkPos) -> u64 {
 #[derive(Debug)]
 pub struct VoxelWorld {
     chunks: HashMap<ChunkPos, Chunk>,
-    meshes: HashMap<ChunkPos, ChunkMesh>,
     dirty_mesh: HashSet<ChunkPos>,
     registry: BlockRegistry,
 }
@@ -157,7 +150,6 @@ impl VoxelWorld {
     pub fn new(registry: BlockRegistry) -> Self {
         VoxelWorld {
             chunks: Default::default(),
-            meshes: Default::default(),
             dirty_mesh: Default::default(),
             registry,
         }
