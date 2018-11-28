@@ -7,8 +7,8 @@ use engine::{
         TerrainMeshes,
     },
     world::{
-        block::{BlockId, BlockRegistry},
-        chunk::{Chunk, PaddedChunk, SIZE},
+        block::{self, BlockId, BlockRegistry},
+        chunk::{Chunk, ChunkType, PaddedChunk, SIZE},
         BlockPos, ChunkPos, VoxelWorld,
     },
     Side,
@@ -27,32 +27,61 @@ impl ChunkMesher {
 impl<'a> System<'a> for ChunkMesher {
     type SystemData = (
         ReadStorage<'a, comp::ChunkId>,
-        WriteExpect<'a, VoxelWorld>,
         WriteStorage<'a, TerrainMeshes>,
-        ReadExpect<'a, DebugAccumulator>,
         Entities<'a>,
+        WriteExpect<'a, VoxelWorld>,
+        ReadExpect<'a, DebugAccumulator>,
     );
 
-    fn run(&mut self, (chunk_ids, mut world, mut meshes, debug, entities): Self::SystemData) {
+    fn run(&mut self, (chunk_ids, mut meshes, entities, mut world, debug): Self::SystemData) {
         let mut section = debug.section("mesher");
-        for _ in 0..1 {
+        loop {
             if let Some(pos) = world.get_dirty_chunk() {
-                section.draw(Shape::Chunk(2.0, pos, Vector4::new(0.5, 0.5, 1.0, 1.0)));
-                trace!("Chunk {:?} is ready for meshing", pos);
-                let mut mesher = CullMesher::new(pos, &world);
-                mesher.mesh();
-                if let Some((_, entity)) = (&chunk_ids, &entities)
-                    .join()
-                    .find(|(&comp::ChunkId(cpos), _)| cpos == pos)
-                {
-                    let _ = meshes.insert(entity, mesher.mesh_constructor.mesh);
-                    world.clean_chunk(pos);
+                // if self.c % 100 == 0 {
+                //     debug!("");
+                // }
+                match world.chunk(pos) {
+                    Some(ChunkType::Homogeneous(id)) => {
+                        if !world.get_registry().opaque(*id) {
+                            // Don't do anything lole
+                        }
+
+                        // TODO: we can get some pretty weird inconsistencies here if we don't mesh
+                        // homogeneous solid chunks. could we just generate one big cube or smth?
+                        world.clean_chunk(pos);
+
+                        section.draw(Shape::Chunk(5.0, pos, Vector4::new(0.0, 1.0, 0.0, 1.0)));
+                    }
+
+                    Some(ChunkType::Array(_)) => {
+                        let entity = (&chunk_ids, &entities)
+                            .join()
+                            .find(|(&comp::ChunkId(id), _)| id == pos)
+                            .map(|(_, a)| a);
+
+                        if let Some(entity) = entity {
+                            let _ = meshes.insert(entity, mesh_chunk(pos, &world));
+                            world.clean_chunk(pos);
+                        }
+
+                        section.draw(Shape::Chunk(5.0, pos, Vector4::new(1.0, 0.0, 1.0, 1.0)));
+                        break;
+                    }
+
+                    // wat
+                    _ => (),
                 }
             } else {
                 break;
             }
         }
     }
+}
+
+fn mesh_chunk(pos: ChunkPos, world: &VoxelWorld) -> TerrainMeshes {
+    let mut mesher = CullMesher::new(pos, world);
+    mesher.mesh();
+    mesher.mesh_constructor.mesh
 }
 
 // TODO:
@@ -91,7 +120,6 @@ struct VoxelFace {
 }
 
 pub struct CullMesher<'w> {
-    pos: ChunkPos,
     registry: &'w BlockRegistry,
     center: PaddedChunk,
     mesh_constructor: MeshConstructor<'w>,
@@ -105,7 +133,6 @@ const fn idx(u: usize, v: usize) -> usize {
 impl<'w> CullMesher<'w> {
     pub fn new(pos: ChunkPos, world: &'w VoxelWorld) -> Self {
         CullMesher {
-            pos,
             registry: world.get_registry(),
             center: ::engine::world::chunk::make_padded(world, pos).unwrap(),
             slice: vec![VoxelFace::default(); ::engine::world::chunk::AREA],

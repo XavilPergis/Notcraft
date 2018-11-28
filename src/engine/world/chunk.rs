@@ -1,5 +1,8 @@
 use cgmath::{Point3, Vector3};
-use engine::world::{block::BlockId, ChunkPos, VoxelWorld};
+use engine::world::{
+    block::{self, BlockId},
+    ChunkPos, VoxelWorld,
+};
 use nd::Array3;
 
 // The width of the chunk is `2 ^ SIZE_BITS`
@@ -61,27 +64,49 @@ pub fn make_padded(world: &VoxelWorld, pos: ChunkPos) -> Option<PaddedChunk> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum ChunkType {
+    Homogeneous(BlockId),
+    Array(Chunk),
+}
+
+impl ChunkType {
+    pub fn is_homogeneous(&self) -> bool {
+        match self {
+            ChunkType::Homogeneous(_) => true,
+            _ => false,
+        }
+    }
+}
+
+impl From<Chunk> for ChunkType {
+    fn from(chunk: Chunk) -> ChunkType {
+        if chunk.data.iter().all(|&item| item == chunk[0]) {
+            ChunkType::Homogeneous(chunk[0])
+        } else {
+            ChunkType::Array(chunk)
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Chunk {
     data: Box<[BlockId]>,
-    homogeneous: bool,
 }
 
 impl Chunk {
     pub fn new(voxels: Vec<BlockId>) -> Self {
-        let first = voxels[0];
-        let homogeneous = voxels.iter().all(|item| *item == first);
         Chunk {
-            data: voxels.into_boxed_slice(),
-            homogeneous,
+            data: voxels.into(),
         }
     }
 
-    pub fn is_homogeneous(&self) -> bool {
-        self.homogeneous
+    /// An UNCOMPRESSED empty chunk. This is probably not what you want.
+    pub fn empty() -> Self {
+        Chunk {
+            data: vec![block::AIR; VOLUME].into(),
+        }
     }
-}
 
-impl Chunk {
     pub fn get(&self, pos: Point3<i32>) -> Option<&BlockId> {
         if in_chunk_bounds(pos) {
             let pos: Point3<usize> = pos.cast().unwrap();
@@ -148,6 +173,20 @@ macro_rules! gen_index {
             }
         }
     };
+}
+
+impl Index<usize> for Chunk {
+    type Output = BlockId;
+
+    fn index(&self, idx: usize) -> &BlockId {
+        &self.data[idx]
+    }
+}
+
+impl IndexMut<usize> for Chunk {
+    fn index_mut(&mut self, idx: usize) -> &mut BlockId {
+        &mut self.data[idx]
+    }
 }
 
 gen_index!(point: Point3<usize> => point.x, point.y, point.z);

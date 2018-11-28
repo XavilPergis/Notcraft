@@ -2,7 +2,7 @@ use cgmath::{Point3, Vector3, Vector4};
 use collision::{Aabb, Aabb3};
 use engine::{
     render::debug::{DebugSection, Shape},
-    world::block::BlockRegistry,
+    world::{block::BlockRegistry, chunk::ChunkType},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -105,7 +105,7 @@ fn chunk_id(pos: ChunkPos) -> u64 {
 
 #[derive(Debug)]
 pub struct VoxelWorld {
-    chunks: HashMap<ChunkPos, Chunk>,
+    chunks: HashMap<ChunkPos, ChunkType>,
     dirty_mesh: HashSet<ChunkPos>,
     registry: BlockRegistry,
 }
@@ -165,10 +165,10 @@ impl VoxelWorld {
 
     pub fn set_chunk(&mut self, pos: ChunkPos, chunk: Chunk) {
         self.dirty_mesh.insert(pos);
-        self.chunks.insert(pos, chunk);
+        self.chunks.insert(pos, chunk.into());
     }
 
-    pub fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> {
+    pub fn chunk(&self, pos: ChunkPos) -> Option<&ChunkType> {
         self.chunks.get(&pos)
     }
 
@@ -184,19 +184,45 @@ impl VoxelWorld {
 
     /// Tries to replace the block at `pos`, returning the block that was
     /// replaced if it was found
+    // oh god...
     pub fn set_block_id(&mut self, pos: BlockPos, block: BlockId) -> Option<BlockId> {
+        use std::mem;
         let (chunk_pos, block_pos) = pos.chunk_pos_offset();
 
-        self.mark_neighborhood_dirty(pos);
+        let homogeneous = self.chunks.get(&chunk_pos).and_then(|chunk| match chunk {
+            ChunkType::Homogeneous(id) => Some(*id),
+            _ => None,
+        });
 
-        self.chunks
-            .get_mut(&chunk_pos)
-            .map(|chunk| ::std::mem::replace(&mut chunk[block_pos], block))
+        if let Some(id) = homogeneous {
+            // Setting the same block as the homogeneous chunk already contains means that
+            // we shouldn't update the chunk!
+            if id == block {
+                return homogeneous;
+            }
+
+            match self.chunks.get_mut(&chunk_pos) {
+                // There is a chunk here, expand it
+                Some(chunk) => *chunk = ChunkType::Array(Chunk::empty()),
+                // No chunk, return saying we found no block
+                None => return None,
+            }
+        }
+
+        self.mark_neighborhood_dirty(pos);
+        self.chunks.get_mut(&chunk_pos).map(|chunk| match chunk {
+            ChunkType::Array(chunk) => mem::replace(&mut chunk[block_pos], block),
+            // We always expand the chunk or exit early by this point
+            _ => unreachable!(),
+        })
     }
 
     pub fn get_block_id(&self, pos: BlockPos) -> Option<BlockId> {
         let (chunk_pos, block_pos) = pos.chunk_pos_offset();
-        self.chunks.get(&chunk_pos).map(|chunk| chunk[block_pos])
+        self.chunks.get(&chunk_pos).map(|chunk| match chunk {
+            ChunkType::Homogeneous(id) => *id,
+            ChunkType::Array(chunk) => chunk[block_pos],
+        })
     }
 
     pub fn registry(&self, pos: BlockPos) -> Option<block::RegistryRef> {
