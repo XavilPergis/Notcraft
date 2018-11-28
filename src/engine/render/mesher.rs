@@ -350,14 +350,13 @@ struct MeshConstructor<'w> {
 impl<'w> MeshConstructor<'w> {
     fn add_liquid(&mut self, quad: VoxelQuad, side: Side, pos: Point3<usize>) {
         let pos: Point3<f32> = pos.cast().unwrap();
-        let top = side.facing_positive();
 
         let clockwise = match side {
             Side::Top => false,
-            Side::Front => true,
-            Side::Right => false,
             Side::Bottom => true,
+            Side::Front => true,
             Side::Back => false,
+            Side::Right => false,
             Side::Left => true,
         };
 
@@ -378,14 +377,14 @@ impl<'w> MeshConstructor<'w> {
         let face = self.registry.block_texture(quad.id, side).unwrap();
         let tex_id = *face.texture.select() as i32;
 
-        let h = if top { 1.0 } else { 0.0 };
+        let h = if side.facing_positive() { 1.0 } else { 0.0 };
         let qw = quad.width as f32;
         let qh = quad.height as f32;
 
-        let mut push_vertex = |offset, uv: Vector2<f32>| {
+        let mut push_vertex = |offset, uv| {
             self.mesh.liquid.vertices.push(LiquidVertex {
                 pos: (pos + offset),
-                uv: Vector2::new(uv.x * qw, uv.y * qh),
+                uv,
                 normal,
                 tex_id,
             })
@@ -394,30 +393,65 @@ impl<'w> MeshConstructor<'w> {
         let uvs = UV_VARIANT_1;
 
         if side == Side::Left || side == Side::Right {
-            push_vertex(Vector3::new(h, qw, 0.0), uvs[0]);
-            push_vertex(Vector3::new(h, qw, qh), uvs[1]);
-            push_vertex(Vector3::new(h, 0.0, 0.0), uvs[2]);
-            push_vertex(Vector3::new(h, 0.0, qh), uvs[3]);
+            push_vertex(
+                Vector3::new(h, qw, 0.0),
+                Vector2::new(uvs[0].x * qh, uvs[0].y * qw),
+            );
+            push_vertex(
+                Vector3::new(h, qw, qh),
+                Vector2::new(uvs[1].x * qh, uvs[1].y * qw),
+            );
+            push_vertex(
+                Vector3::new(h, 0.0, 0.0),
+                Vector2::new(uvs[2].x * qh, uvs[2].y * qw),
+            );
+            push_vertex(
+                Vector3::new(h, 0.0, qh),
+                Vector2::new(uvs[3].x * qh, uvs[3].y * qw),
+            );
         }
 
         if side == Side::Top || side == Side::Bottom {
-            push_vertex(Vector3::new(0.0, h, qh), uvs[0]);
-            push_vertex(Vector3::new(qw, h, qh), uvs[1]);
-            push_vertex(Vector3::new(0.0, h, 0.0), uvs[2]);
-            push_vertex(Vector3::new(qw, h, 0.0), uvs[3]);
+            push_vertex(
+                Vector3::new(0.0, h, qh),
+                Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
+            );
+            push_vertex(
+                Vector3::new(qw, h, qh),
+                Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
+            );
+            push_vertex(
+                Vector3::new(0.0, h, 0.0),
+                Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
+            );
+            push_vertex(
+                Vector3::new(qw, h, 0.0),
+                Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+            );
         }
 
         if side == Side::Front || side == Side::Back {
-            push_vertex(Vector3::new(0.0, qh, h), uvs[0]);
-            push_vertex(Vector3::new(qw, qh, h), uvs[1]);
-            push_vertex(Vector3::new(0.0, 0.0, h), uvs[2]);
-            push_vertex(Vector3::new(qw, 0.0, h), uvs[3]);
+            push_vertex(
+                Vector3::new(0.0, qh, h),
+                Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
+            );
+            push_vertex(
+                Vector3::new(qw, qh, h),
+                Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
+            );
+            push_vertex(
+                Vector3::new(0.0, 0.0, h),
+                Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
+            );
+            push_vertex(
+                Vector3::new(qw, 0.0, h),
+                Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+            );
         }
     }
 
     fn add_terrain(&mut self, quad: VoxelQuad, side: Side, pos: Point3<usize>) {
         let pos: Point3<f32> = pos.cast().unwrap();
-        let top = side.facing_positive();
 
         let ao_pp = (quad.ao.corner_ao(FaceAo::AO_POS_POS) as f32) / 3.0;
         let ao_pn = (quad.ao.corner_ao(FaceAo::AO_POS_NEG) as f32) / 3.0;
@@ -427,10 +461,10 @@ impl<'w> MeshConstructor<'w> {
 
         let clockwise = match side {
             Side::Top => false,
-            Side::Front => true,
-            Side::Right => false,
             Side::Bottom => true,
+            Side::Front => true,
             Side::Back => false,
+            Side::Right => false,
             Side::Left => true,
         };
 
@@ -460,14 +494,14 @@ impl<'w> MeshConstructor<'w> {
         let face = self.registry.block_texture(quad.id, side).unwrap();
         let tex_id = *face.texture.select() as i32;
 
-        let h = if top { 1.0 } else { 0.0 };
+        let h = if side.facing_positive() { 1.0 } else { 0.0 };
         let qw = quad.width as f32;
         let qh = quad.height as f32;
 
-        let mut push_vertex = |offset, uv: Vector2<f32>, ao| {
+        let mut push_vertex = |offset, uv, ao| {
             self.mesh.terrain.vertices.push(BlockVertex {
                 pos: (pos + offset),
-                uv: Vector2::new(uv.x * qw, uv.y * qh),
+                uv,
                 ao,
                 normal,
                 tex_id,
@@ -476,25 +510,75 @@ impl<'w> MeshConstructor<'w> {
 
         let uvs = UV_VARIANT_1;
 
+        // REALLY don't know why I have to plit the quad width and height here... I bet
+        // someone more qualified could tell me :>
         if side == Side::Left || side == Side::Right {
-            push_vertex(Vector3::new(h, qw, 0.0), uvs[0], ao_pn);
-            push_vertex(Vector3::new(h, qw, qh), uvs[1], ao_pp);
-            push_vertex(Vector3::new(h, 0.0, 0.0), uvs[2], ao_nn);
-            push_vertex(Vector3::new(h, 0.0, qh), uvs[3], ao_np);
+            push_vertex(
+                Vector3::new(h, qw, 0.0),
+                Vector2::new(uvs[0].x * qh, uvs[0].y * qw),
+                ao_pn,
+            );
+            push_vertex(
+                Vector3::new(h, qw, qh),
+                Vector2::new(uvs[1].x * qh, uvs[1].y * qw),
+                ao_pp,
+            );
+            push_vertex(
+                Vector3::new(h, 0.0, 0.0),
+                Vector2::new(uvs[2].x * qh, uvs[2].y * qw),
+                ao_nn,
+            );
+            push_vertex(
+                Vector3::new(h, 0.0, qh),
+                Vector2::new(uvs[3].x * qh, uvs[3].y * qw),
+                ao_np,
+            );
         }
 
         if side == Side::Top || side == Side::Bottom {
-            push_vertex(Vector3::new(0.0, h, qh), uvs[0], ao_pn);
-            push_vertex(Vector3::new(qw, h, qh), uvs[1], ao_pp);
-            push_vertex(Vector3::new(0.0, h, 0.0), uvs[2], ao_nn);
-            push_vertex(Vector3::new(qw, h, 0.0), uvs[3], ao_np);
+            push_vertex(
+                Vector3::new(0.0, h, qh),
+                Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
+                ao_pn,
+            );
+            push_vertex(
+                Vector3::new(qw, h, qh),
+                Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
+                ao_pp,
+            );
+            push_vertex(
+                Vector3::new(0.0, h, 0.0),
+                Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
+                ao_nn,
+            );
+            push_vertex(
+                Vector3::new(qw, h, 0.0),
+                Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+                ao_np,
+            );
         }
 
         if side == Side::Front || side == Side::Back {
-            push_vertex(Vector3::new(0.0, qh, h), uvs[0], ao_np);
-            push_vertex(Vector3::new(qw, qh, h), uvs[1], ao_pp);
-            push_vertex(Vector3::new(0.0, 0.0, h), uvs[2], ao_nn);
-            push_vertex(Vector3::new(qw, 0.0, h), uvs[3], ao_pn);
+            push_vertex(
+                Vector3::new(0.0, qh, h),
+                Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
+                ao_np,
+            );
+            push_vertex(
+                Vector3::new(qw, qh, h),
+                Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
+                ao_pp,
+            );
+            push_vertex(
+                Vector3::new(0.0, 0.0, h),
+                Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
+                ao_nn,
+            );
+            push_vertex(
+                Vector3::new(qw, 0.0, h),
+                Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+                ao_pn,
+            );
         }
     }
 }
