@@ -1,5 +1,5 @@
 use cgmath::{Matrix2, Matrix3, Matrix4, Point1, Point2, Point3, Vector2, Vector3, Vector4};
-use gl_api::context::Context;
+use crate::Context;
 
 pub type UniformLocation = ::gl::types::GLint;
 

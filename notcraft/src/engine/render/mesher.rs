@@ -79,19 +79,10 @@ impl<'a> System<'a> for ChunkMesher {
 }
 
 fn mesh_chunk(pos: ChunkPos, world: &VoxelWorld) -> TerrainMeshes {
-    let mut mesher = CullMesher::new(pos, world);
+    let mut mesher = Mesher::new(pos, world);
     mesher.mesh();
     mesher.mesh_constructor.mesh
 }
-
-// TODO:
-// - emit empty mesh for homogeneous chunk of non-opaque blocks
-// - reduce (max) number of world lookups from 60 to 27
-// - cache chunk neighborhood
-// - maybe make the AO function not suck as bad? ie just make it take 8 inputs
-//   or something
-//   - AO function probably isn't called that much relative to other stuff
-//     anyways
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 struct VoxelQuad {
@@ -119,20 +110,21 @@ struct VoxelFace {
     visited: bool,
 }
 
-pub struct CullMesher<'w> {
+pub struct Mesher<'w> {
     registry: &'w BlockRegistry,
     center: PaddedChunk,
     mesh_constructor: MeshConstructor<'w>,
     slice: Vec<VoxelFace>,
 }
 
+// index into the flat voxel face slice using a 2D coordinate
 const fn idx(u: usize, v: usize) -> usize {
     SIZE * u + v
 }
 
-impl<'w> CullMesher<'w> {
+impl<'w> Mesher<'w> {
     pub fn new(pos: ChunkPos, world: &'w VoxelWorld) -> Self {
-        CullMesher {
+        Mesher {
             registry: world.get_registry(),
             center: ::engine::world::chunk::make_padded(world, pos).unwrap(),
             slice: vec![VoxelFace::default(); ::engine::world::chunk::AREA],

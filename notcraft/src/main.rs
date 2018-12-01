@@ -11,11 +11,11 @@
 
 extern crate cgmath;
 extern crate collision;
-extern crate gl;
 extern crate glutin;
 extern crate image;
 extern crate ndarray as nd;
 extern crate noise;
+extern crate notcraft_graphics as graphics;
 extern crate ordered_float;
 extern crate rand;
 extern crate rayon;
@@ -41,8 +41,6 @@ extern crate test;
 use engine::world::ChunkPos;
 pub use specs::shred;
 
-#[macro_use]
-pub mod gl_api;
 pub mod engine;
 pub mod handle;
 pub mod util;
@@ -55,7 +53,7 @@ use engine::{
     components as comp,
     job::Worker,
     render::{
-        mesher::{ChunkMesher, CullMesher},
+        mesher::{ChunkMesher, Mesher},
         ui::DrawCrosshair,
     },
     resources as res,
@@ -95,7 +93,7 @@ mod benches {
         }
 
         bencher.iter(|| {
-            let mut mesher = CullMesher::new(ChunkPos(Point3::new(0, 0, 0)), &world);
+            let mut mesher = Mesher::new(ChunkPos(Point3::new(0, 0, 0)), &world);
             mesher.mesh();
         });
     }

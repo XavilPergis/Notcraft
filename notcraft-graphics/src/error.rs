@@ -46,13 +46,13 @@ macro_rules! gl_call {
     ($name:ident($($args:expr),*)) => {{
         use ::gl;
         let ret = unsafe { gl::$name($($args),*) };
-        $crate::gl_api::error::GlError::get().result(ret)
+        $crate::error::GlError::get().result(ret)
     }};
 
     (assert $name:ident($($args:expr),*)) => {{
         use ::gl;
         let ret = unsafe { gl::$name($($args),*) };
-        match $crate::gl_api::error::GlError::get().result(ret) {
+        match $crate::error::GlError::get().result(ret) {
             Err(err) => panic!("gl{} failed with error code {:?}", stringify!($name), err),
             Ok(res) => res
         }
@@ -62,7 +62,7 @@ macro_rules! gl_call {
         use ::gl;
         let ret = unsafe { gl::$name($($args),*) };
         if cfg!(debug_assertions) {
-            if $crate::gl_api::error::GlError::get().result(ret).is_err() {
+            if $crate::error::GlError::get().result(ret).is_err() {
                 panic!("gl{} failed with error code {:?}");
             }
         }

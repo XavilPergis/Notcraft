@@ -14,7 +14,7 @@ out vec4 color;
 
 void main()
 {
-    float density = 0.007;
+    float density = 0.003;
     float gradient = 5.0;
     float fog = exp(-pow(length(camera_position - v_pos) * density, gradient));
     vec4 tex_color = texture(texture_map, vec3(v_uv, float(v_tex_id)));
