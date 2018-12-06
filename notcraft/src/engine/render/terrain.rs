@@ -39,7 +39,7 @@ impl TerrainRenderer {
         })
     }
 
-    pub fn draw<S: Surface>(&mut self, surface: &mut S, camera: Camera) {
+    pub fn draw<S: Surface>(&mut self, surface: &mut S, camera: Camera, mode: PolygonMode) {
         let graphics = self.graphics.borrow();
         for (pos, mesh) in graphics.iter_terrain() {
             if let Some(gpu) = mesh.gpu.as_ref() {
@@ -70,6 +70,8 @@ impl TerrainRenderer {
                             texture_map: sampler,
                         },
                         &DrawParameters {
+                            polygon_mode: mode,
+                            backface_culling: BackfaceCullingMode::CullCounterClockwise,
                             depth: Depth {
                                 test: DepthTest::IfLess,
                                 write: true,

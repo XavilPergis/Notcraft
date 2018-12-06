@@ -43,7 +43,7 @@ use cgmath::{Deg, Point3, Vector3};
 use collision::Aabb3;
 use glium::{
     texture::{RawImage2d, Texture2dArray},
-    Surface,
+    PolygonMode, Surface,
 };
 use shrev::EventChannel;
 use specs::prelude::*;
@@ -253,15 +253,14 @@ fn main() {
 
     dispatcher.setup(&mut world.res);
 
-    // world.add_resource(debug_accumulator);
     world.add_resource(res::ActiveDirections::default());
-    // world.add_resource(mesh_channel);
     world.add_resource(res::StopGameLoop(false));
     world.add_resource(window_events);
     world.add_resource(res::Dt(Duration::from_secs(1)));
     world.add_resource(Camera::default());
 
     world.add_resource(voxel_world);
+    world.add_resource(PolygonMode::Fill);
     world.add_resource(DebugAccumulator::default());
 
     println!("World set up");
@@ -320,9 +319,11 @@ fn main() {
             },
         );
 
-        world.exec(|camera: Read<'_, Camera>| {
-            terrain_renderer.draw(&mut frame, *camera);
-        });
+        world.exec(
+            |(camera, mode): (Read<'_, Camera>, ReadExpect<'_, PolygonMode>)| {
+                terrain_renderer.draw(&mut frame, *camera, *mode);
+            },
+        );
 
         let processing_end = Instant::now();
 

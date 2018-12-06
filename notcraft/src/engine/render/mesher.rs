@@ -333,10 +333,10 @@ const NORMAL_QUAD_CW: &'static [u32] = &[3, 2, 0, 0, 1, 3];
 const NORMAL_QUAD_CCW: &'static [u32] = &[0, 2, 3, 3, 1, 0];
 
 const UV_VARIANT_1: &[Vector2<f32>] = &[
-    Vector2 { x: 0.0, y: 0.0 },
-    Vector2 { x: 1.0, y: 0.0 },
-    Vector2 { x: 0.0, y: 1.0 },
     Vector2 { x: 1.0, y: 1.0 },
+    Vector2 { x: 0.0, y: 1.0 },
+    Vector2 { x: 1.0, y: 0.0 },
+    Vector2 { x: 0.0, y: 0.0 },
 ];
 
 const UV_VARIANT_2: &[Vector2<f32>] = &[
@@ -416,25 +416,6 @@ impl<'w> MeshConstructor<'w> {
 
         if !self.liquid_mesh.add(
             match side {
-                Side::Left | Side::Right => [
-                    vert(
-                        Vector3::new(h, qw, 0.0),
-                        Vector2::new(uvs[0].x * qh, uvs[0].y * qw),
-                    ),
-                    vert(
-                        Vector3::new(h, qw, qh),
-                        Vector2::new(uvs[1].x * qh, uvs[1].y * qw),
-                    ),
-                    vert(
-                        Vector3::new(h, 0.0, 0.0),
-                        Vector2::new(uvs[2].x * qh, uvs[2].y * qw),
-                    ),
-                    vert(
-                        Vector3::new(h, 0.0, qh),
-                        Vector2::new(uvs[3].x * qh, uvs[3].y * qw),
-                    ),
-                ],
-
                 Side::Top | Side::Bottom => [
                     vert(
                         Vector3::new(0.0, h, qh),
@@ -451,6 +432,25 @@ impl<'w> MeshConstructor<'w> {
                     vert(
                         Vector3::new(qw, h, 0.0),
                         Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+                    ),
+                ],
+
+                Side::Left | Side::Right => [
+                    vert(
+                        Vector3::new(h, qw, 0.0),
+                        Vector2::new(uvs[0].x * qh, uvs[0].y * qw),
+                    ),
+                    vert(
+                        Vector3::new(h, qw, qh),
+                        Vector2::new(uvs[1].x * qh, uvs[1].y * qw),
+                    ),
+                    vert(
+                        Vector3::new(h, 0.0, 0.0),
+                        Vector2::new(uvs[2].x * qh, uvs[2].y * qw),
+                    ),
+                    vert(
+                        Vector3::new(h, 0.0, qh),
+                        Vector2::new(uvs[3].x * qh, uvs[3].y * qw),
                     ),
                 ],
 

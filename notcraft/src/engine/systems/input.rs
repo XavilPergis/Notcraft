@@ -13,16 +13,12 @@ use std::collections::{HashMap, HashSet};
 
 pub struct InputHandler {
     events_handle: ReaderId<Event>,
-    wireframe: bool,
-    capture_mouse: bool,
 }
 
 impl InputHandler {
     pub fn new(event_channel: &mut EventChannel<Event>) -> Self {
         InputHandler {
             events_handle: event_channel.register_reader(),
-            wireframe: false,
-            capture_mouse: false,
         }
     }
 }
@@ -44,92 +40,31 @@ impl From<u32> for Key {
     }
 }
 
-pub struct Keybind {
-    key: Key,
-    modifiers: Option<ModifiersState>,
-}
+// const KEYBIND_ZOOM: Keybind = Keybind {
+//     key: Key::Physical(0x2E),
+//     modifiers: Some(NO_MODIFIERS),
+// };
 
-impl Keybind {
-    pub fn new<K: Into<Key>>(key: K, modifiers: Option<ModifiersState>) -> Self {
-        Keybind {
-            key: key.into(),
-            modifiers,
-        }
-    }
-
-    pub fn matches_input(&self, input: KeyboardInput) -> bool {
-        self.modifiers
-            .map_or(true, |modifiers| input.modifiers == modifiers)
-            && match self.key {
-                Key::Virtual(vkk) => input.virtual_keycode.map_or(false, |vkk_in| vkk_in == vkk),
-                Key::Physical(scancode) => input.scancode == scancode,
-            }
-    }
-}
-
-const NO_MODIFIERS: ModifiersState = ModifiersState {
-    shift: false,
-    ctrl: false,
-    alt: false,
-    logo: false,
-};
-
-const CTRL_MODIFIERS: ModifiersState = ModifiersState {
-    shift: false,
-    ctrl: true,
-    alt: false,
-    logo: false,
-};
-
-const KEYBIND_FORWARDS: Keybind = Keybind {
-    key: Key::Physical(0x11),
-    modifiers: None,
-};
-const KEYBIND_BACKWARDS: Keybind = Keybind {
-    key: Key::Physical(0x1F),
-    modifiers: None,
-};
-const KEYBIND_LEFT: Keybind = Keybind {
-    key: Key::Physical(0x1E),
-    modifiers: None,
-};
-const KEYBIND_RIGHT: Keybind = Keybind {
-    key: Key::Physical(0x20),
-    modifiers: None,
-};
-const KEYBIND_UP: Keybind = Keybind {
-    key: Key::Physical(0x39),
-    modifiers: None,
-};
-const KEYBIND_DOWN: Keybind = Keybind {
-    key: Key::Physical(0x2A),
-    modifiers: None,
-};
-const KEYBIND_ZOOM: Keybind = Keybind {
-    key: Key::Physical(0x2E),
-    modifiers: Some(NO_MODIFIERS),
-};
-
-const KEYBIND_EXIT: Keybind = Keybind {
-    key: Key::Virtual(VirtualKeyCode::Escape),
-    modifiers: Some(NO_MODIFIERS),
-};
-const KEYBIND_DEBUG: Keybind = Keybind {
-    key: Key::Virtual(VirtualKeyCode::B),
-    modifiers: Some(CTRL_MODIFIERS),
-};
-const KEYBIND_TOGGLE_WIREFRAME: Keybind = Keybind {
-    key: Key::Virtual(VirtualKeyCode::F),
-    modifiers: Some(CTRL_MODIFIERS),
-};
-const KEYBIND_INC_RENDER_DISTANCE: Keybind = Keybind {
-    key: Key::Virtual(VirtualKeyCode::RBracket),
-    modifiers: Some(CTRL_MODIFIERS),
-};
-const KEYBIND_DEC_RENDER_DISTANCE: Keybind = Keybind {
-    key: Key::Virtual(VirtualKeyCode::LBracket),
-    modifiers: Some(CTRL_MODIFIERS),
-};
+// const KEYBIND_EXIT: Keybind = Keybind {
+//     key: Key::Virtual(VirtualKeyCode::Escape),
+//     modifiers: Some(NO_MODIFIERS),
+// };
+// const KEYBIND_DEBUG: Keybind = Keybind {
+//     key: Key::Virtual(VirtualKeyCode::B),
+//     modifiers: Some(CTRL_MODIFIERS),
+// };
+// const KEYBIND_TOGGLE_WIREFRAME: Keybind = Keybind {
+//     key: Key::Virtual(VirtualKeyCode::F),
+//     modifiers: Some(CTRL_MODIFIERS),
+// };
+// const KEYBIND_INC_RENDER_DISTANCE: Keybind = Keybind {
+//     key: Key::Virtual(VirtualKeyCode::RBracket),
+//     modifiers: Some(CTRL_MODIFIERS),
+// };
+// const KEYBIND_DEC_RENDER_DISTANCE: Keybind = Keybind {
+//     key: Key::Virtual(VirtualKeyCode::LBracket),
+//     modifiers: Some(CTRL_MODIFIERS),
+// };
 
 use crate::engine::components as comp;
 
