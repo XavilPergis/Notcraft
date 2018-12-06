@@ -1,23 +1,23 @@
 use cgmath::{Deg, Point3, Vector3};
-use glutin::GlWindow;
+use glium::glutin::GlWindow;
 use std::cmp::Ordering;
 
-pub fn aspect_ratio(window: &GlWindow) -> Option<f64> {
+pub fn aspect_ratio(window: &GlWindow) -> Option<f32> {
     window.get_inner_size().map(|size| {
         let size: (f64, f64) = size.to_physical(window.get_hidpi_factor()).into();
-        size.0 / size.1
+        size.0 as f32 / size.1 as f32
     })
 }
 
-pub fn lerp_angle(a: Deg<f64>, b: Deg<f64>, t: f64) -> Deg<f64> {
+pub fn lerp_angle(a: Deg<f32>, b: Deg<f32>, t: f32) -> Deg<f32> {
     Deg(a.0 * (1.0 - t) + b.0 * clamp(t, 0.0, 1.0))
 }
 
-pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
+pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a * (1.0 - t) + b * t
 }
 
-pub fn lerp_vec(a: Vector3<f64>, b: Vector3<f64>, t: f64) -> Vector3<f64> {
+pub fn lerp_vec(a: Vector3<f32>, b: Vector3<f32>, t: f32) -> Vector3<f32> {
     Vector3::new(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t))
 }
 
@@ -78,6 +78,16 @@ pub fn in_range(pos: Point3<i32>, center: Point3<i32>, radii: Vector3<i32>) -> b
 }
 
 /// Mathematical mod function
-pub fn modulo(a: f64, b: f64) -> f64 {
+pub fn modulo(a: f32, b: f32) -> f32 {
     (a % b + b) % b
+}
+
+pub fn read_file<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<String> {
+    use std::{fs::File, io::Read};
+
+    let mut file = File::open(path)?;
+    let mut buffer = String::new();
+    file.read_to_string(&mut buffer)?;
+
+    Ok(buffer)
 }

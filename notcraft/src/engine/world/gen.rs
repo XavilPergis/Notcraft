@@ -1,9 +1,10 @@
-use engine::render::debug::{DebugAccumulator, Shape};
+use crate::engine::{
+    prelude::*,
+    render::debug::{DebugAccumulator, Shape},
+};
 use noise::{Fbm, MultiFractal, NoiseFn, RidgedMulti, SuperSimplex};
 use specs::world::EntitiesRes;
 use std::collections::HashSet;
-
-use engine::prelude::*;
 
 #[derive(Clone, Debug)]
 pub struct NoiseGenerator {
@@ -116,7 +117,7 @@ impl<'a> System<'a> for ChunkUnloader {
         for &comp::ChunkId(chunk) in chunks.join() {
             for (transform, _) in (&transforms, &players).join() {
                 let center: ChunkPos = WorldPos(transform.position).into();
-                if ::util::in_range(chunk.0, center.0, distance) {
+                if crate::util::in_range(chunk.0, center.0, distance) {
                     self.keep_loaded.insert(chunk);
                 }
             }

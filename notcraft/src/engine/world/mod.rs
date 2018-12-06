@@ -1,9 +1,12 @@
+use crate::engine::{
+    render::debug::{DebugSection, Shape},
+    world::{
+        block::BlockRegistry,
+        chunk::{ChunkType, SIZE},
+    },
+};
 use cgmath::{Point3, Vector3, Vector4};
 use collision::{Aabb, Aabb3};
-use engine::{
-    render::debug::{DebugSection, Shape},
-    world::{block::BlockRegistry, chunk::ChunkType},
-};
 use std::collections::{HashMap, HashSet};
 
 use self::block::BlockId;
@@ -18,15 +21,15 @@ pub struct ChunkPos(pub Point3<i32>);
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct BlockPos(pub Point3<i32>);
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct WorldPos(pub Point3<f64>);
+pub struct WorldPos(pub Point3<f32>);
 
 // CHUNK POS
 impl From<BlockPos> for ChunkPos {
     fn from(pos: BlockPos) -> Self {
-        const SIZE: i32 = ::engine::world::chunk::SIZE as i32;
-        let cx = ::util::floor_div(pos.0.x, SIZE);
-        let cy = ::util::floor_div(pos.0.y, SIZE);
-        let cz = ::util::floor_div(pos.0.z, SIZE);
+        const SIZEI: i32 = SIZE as i32;
+        let cx = crate::util::floor_div(pos.0.x, SIZEI);
+        let cy = crate::util::floor_div(pos.0.y, SIZEI);
+        let cz = crate::util::floor_div(pos.0.z, SIZEI);
         ChunkPos(Point3::new(cx, cy, cz))
     }
 }
@@ -54,7 +57,7 @@ impl ChunkPos {
     }
 
     pub fn base(self) -> BlockPos {
-        BlockPos(::engine::world::chunk::SIZE as i32 * self.0)
+        BlockPos(SIZE as i32 * self.0)
     }
 }
 
@@ -76,20 +79,20 @@ impl BlockPos {
 
     pub fn center(self) -> WorldPos {
         WorldPos(Point3::new(
-            self.0.x as f64 + 0.5,
-            self.0.y as f64 + 0.5,
-            self.0.z as f64 + 0.5,
+            self.0.x as f32 + 0.5,
+            self.0.y as f32 + 0.5,
+            self.0.z as f32 + 0.5,
         ))
     }
 
-    pub fn aabb(&self) -> Aabb3<f64> {
+    pub fn aabb(&self) -> Aabb3<f32> {
         Aabb3::new(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0))
-            .add_v(::util::to_vector(self.base().0))
+            .add_v(crate::util::to_vector(self.base().0))
     }
 }
 
 impl WorldPos {
-    pub fn offset<I: Into<Vector3<f64>>>(self, vec: I) -> Self {
+    pub fn offset<I: Into<Vector3<f32>>>(self, vec: I) -> Self {
         WorldPos(self.0 + vec.into())
     }
 }
@@ -102,6 +105,32 @@ fn chunk_id(pos: ChunkPos) -> u64 {
     id |= (pos.0.z as u64 & 0xFFFF) << 32;
     id
 }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+struct QueryId(usize);
+
+#[derive(Debug, Default)]
+struct ChunkPager {
+    queries: HashMap<ChunkPos, usize>,
+
+    /// Map of chunk positions to (chunks, time to live)
+    paged: HashMap<ChunkPos, (ChunkType, usize)>,
+}
+
+impl ChunkPager {
+    pub fn update(&mut self) {}
+
+    pub fn query(&self) -> QueryId {
+        unimplemented!()
+    }
+}
+
+// TODO: chunk paging:
+// - Immediate (same-frame) chunk paging (should be used sparingly and when
+//   you're fairly confident those chunks are already loaded)
+// - Async chunk queries (with time to live)
+// - Persistent chunk mappings (make sure certain chunks neveer get unmapped
+//   while locked)
 
 #[derive(Debug)]
 pub struct VoxelWorld {
@@ -253,8 +282,8 @@ impl VoxelWorld {
 
     pub fn trace_block(
         &self,
-        ray: Ray3<f64>,
-        radius: f64,
+        ray: Ray3<f32>,
+        radius: f32,
         debug: &mut DebugSection,
     ) -> Option<(BlockPos, Option<Vector3<i32>>)> {
         let mut ret_pos = WorldPos(ray.origin).into();
@@ -275,44 +304,45 @@ impl VoxelWorld {
     }
 }
 
-mod benches {
-    use super::*;
-    use test::Bencher;
+// mod benches {
+//     use super::*;
+//     use test::Bencher;
 
-    #[bench]
-    fn bench_world_get(b: &mut Bencher) {
-        let mut world = VoxelWorld::new(
-            BlockRegistry::load_from_file("resources/blocks.json")
-                .unwrap()
-                .0,
-        );
-        world.set_chunk(ChunkPos(Point3::new(0, 0, 0)), super::gen::get_test_chunk());
-        b.iter(|| {
-            for x in -2..34 {
-                for y in -2..34 {
-                    for z in -2..34 {
-                        ::test::black_box(world.get_block_id(BlockPos(Point3::new(x, y, z))));
-                    }
-                }
-            }
-        });
-    }
-}
+//     #[bench]
+//     fn bench_world_get(b: &mut Bencher) {
+//         let mut world = VoxelWorld::new(
+//             BlockRegistry::load_from_file("resources/blocks.json")
+//                 .unwrap()
+//                 .0,
+//         );
+//         world.set_chunk(ChunkPos(Point3::new(0, 0, 0)),
+// super::gen::get_test_chunk());         b.iter(|| {
+//             for x in -2..34 {
+//                 for y in -2..34 {
+//                     for z in -2..34 {
+//
+// test::black_box(world.get_block_id(BlockPos(Point3::new(x, y, z))));
+//                     }
+//                 }
+//             }
+//         });
+//     }
+// }
 
 use collision::Ray3;
 
-fn int_bound(ray: Ray3<f64>, axis: usize) -> f64 {
+fn int_bound(ray: Ray3<f32>, axis: usize) -> f32 {
     if ray.direction[axis] < 0.0 {
         let mut new = ray;
         new.origin[axis] *= -1.0;
         new.direction[axis] *= -1.0;
         int_bound(new, axis)
     } else {
-        (1.0 - ::util::modulo(ray.origin[axis], 1.0)) / ray.direction[axis]
+        (1.0 - crate::util::modulo(ray.origin[axis], 1.0)) / ray.direction[axis]
     }
 }
 
-fn trace_ray<F>(ray: Ray3<f64>, radius: f64, mut func: F) -> bool
+fn trace_ray<F>(ray: Ray3<f32>, radius: f32, mut func: F) -> bool
 where
     F: FnMut(BlockPos, Option<Vector3<i32>>) -> bool,
 {

@@ -1,34 +1,34 @@
+use crate::engine::{camera::Camera, prelude::*, world::chunk::SIZE};
 use cgmath::Deg;
 use collision::{Aabb3, Ray3};
-use engine::{camera::Camera, prelude::*, world::chunk::SIZE};
-use gl_api::{
-    buffer::{Buffer, UsageType},
-    context::Context,
-    shader::{program::Program, simple_pipeline},
-    PrimitiveType,
+use glium::{
+    index::{NoIndices, PrimitiveType},
+    *,
 };
 use ordered_float::OrderedFloat;
 use specs::shred::PanicHandler;
 use std::{
     collections::{HashMap, HashSet},
+    rc::Rc,
     sync::{Mutex, MutexGuard},
 };
 
-vertex! {
-    vertex DebugVertex {
-        pos: Point3<f64>,
-        color: Vector4<f64>,
-    }
+#[derive(Copy, Clone, Debug)]
+struct DebugVertex {
+    pos: [f32; 3],
+    color: [f32; 4],
 }
+
+glium::implement_vertex!(DebugVertex, pos, color);
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Shape {
-    GriddedChunk(f64, ChunkPos, Vector4<f64>),
-    Chunk(f64, ChunkPos, Vector4<f64>),
-    Box(f64, Aabb3<f64>, Vector4<f64>),
-    Block(f64, BlockPos, Vector4<f64>),
-    Ray(f64, Ray3<f64>, Vector4<f64>),
-    Line(f64, WorldPos, Vector3<f64>, Vector4<f64>),
+    GriddedChunk(f32, ChunkPos, Vector4<f32>),
+    Chunk(f32, ChunkPos, Vector4<f32>),
+    Box(f32, Aabb3<f32>, Vector4<f32>),
+    Block(f32, BlockPos, Vector4<f32>),
+    Ray(f32, Ray3<f32>, Vector4<f32>),
+    Line(f32, WorldPos, Vector3<f32>, Vector4<f32>),
 }
 
 pub enum DebugSection<'a> {
@@ -45,6 +45,7 @@ impl<'a> DebugSection<'a> {
     }
 }
 
+#[derive(Debug, Default)]
 pub struct DebugAccumulator {
     shape_buffer: Mutex<Vec<Shape>>,
     enabled: HashSet<String>,
@@ -80,51 +81,48 @@ impl DebugAccumulator {
 }
 
 pub struct DebugRenderer {
-    ctx: Context,
+    ctx: Display,
     program: Program,
-    vbo: Buffer<DebugVertex>,
-    geometry: HashMap<OrderedFloat<f64>, Vec<DebugVertex>>,
+    buffer: VertexBuffer<DebugVertex>,
+    geometry: HashMap<OrderedFloat<f32>, Vec<DebugVertex>>,
 }
 
 impl DebugRenderer {
-    pub fn new(ctx: &mut Context) -> (Self, DebugAccumulator) {
-        let program = simple_pipeline(
+    pub fn new(ctx: &Display) -> std::io::Result<Self> {
+        let program = Program::from_source(
             ctx,
-            "resources/shaders/debug.vs",
-            "resources/shaders/debug.fs",
+            &util::read_file("resources/shaders/debug.vs")?,
+            &util::read_file("resources/shaders/debug.fs")?,
+            None,
         )
         .unwrap();
-        let vbo = Buffer::new(ctx);
 
-        (
-            DebugRenderer {
-                ctx: ctx.clone(),
-                geometry: HashMap::new(),
-                program,
-                vbo,
-            },
-            DebugAccumulator {
-                shape_buffer: Mutex::new(vec![]),
-                enabled: HashSet::new(),
-            },
-        )
+        Ok(DebugRenderer {
+            ctx: ctx.clone(),
+            geometry: HashMap::new(),
+            program,
+            buffer: VertexBuffer::empty_dynamic(ctx, 0).unwrap(),
+        })
     }
 
-    fn add_line(&mut self, start: WorldPos, end: WorldPos, color: Vector4<f64>, weight: f64) {
+    fn add_line(&mut self, start: WorldPos, end: WorldPos, color: Vector4<f32>, weight: f32) {
         self.geometry
             .entry(OrderedFloat(weight))
             .or_default()
             .push(DebugVertex {
-                pos: start.0,
-                color,
+                pos: start.0.into(),
+                color: color.into(),
             });
         self.geometry
             .entry(OrderedFloat(weight))
             .or_default()
-            .push(DebugVertex { pos: end.0, color });
+            .push(DebugVertex {
+                pos: end.0.into(),
+                color: color.into(),
+            });
     }
 
-    fn add_box(&mut self, b: Aabb3<f64>, color: Vector4<f64>, weight: f64) {
+    fn add_box(&mut self, b: Aabb3<f32>, color: Vector4<f32>, weight: f32) {
         let len_x = b.max.x - b.min.x;
         let len_y = b.max.y - b.min.y;
         let len_z = b.max.z - b.min.z;
@@ -155,20 +153,12 @@ impl DebugRenderer {
         self.add_line(y_lpp, y_hpp, color, weight);
         self.add_line(y_lpn, y_hpn, color, weight);
     }
-}
 
-impl<'a> System<'a> for DebugRenderer {
-    type SystemData = (
-        ReadStorage<'a, comp::Transform>,
-        ReadStorage<'a, comp::Player>,
-        ReadStorage<'a, comp::ClientControlled>,
-        ReadExpect<'a, Camera>,
-        WriteExpect<'a, DebugAccumulator>,
-    );
-
-    fn run(
+    pub fn draw<S: Surface>(
         &mut self,
-        (transforms, player_marker, client_controlled_marker, camera, mut accumulator): Self::SystemData,
+        surface: &mut S,
+        accumulator: &mut DebugAccumulator,
+        camera: Camera,
     ) {
         self.geometry.clear();
         for shape in accumulator.shapes_mut().drain(..) {
@@ -191,7 +181,7 @@ impl<'a> System<'a> for DebugRenderer {
                 }
 
                 Shape::Chunk(weight, pos, color) => {
-                    let fsize = SIZE as f64;
+                    let fsize = SIZE as f32;
                     let base = pos.base().base().0;
                     self.add_box(
                         Aabb3::new(base, base + Vector3::new(fsize, fsize, fsize)),
@@ -201,7 +191,7 @@ impl<'a> System<'a> for DebugRenderer {
                 }
 
                 Shape::GriddedChunk(weight, pos, color) => {
-                    let fsize = SIZE as f64;
+                    let fsize = SIZE as f32;
                     let base = pos.base().base();
                     self.add_box(
                         Aabb3::new(base.0, base.0 + Vector3::new(fsize, fsize, fsize)),
@@ -210,7 +200,7 @@ impl<'a> System<'a> for DebugRenderer {
                     );
 
                     for n in 0..SIZE {
-                        let n = n as f64;
+                        let n = n as f32;
                         let x_nn = base.offset((n, 0.0, 0.0));
                         let x_np = base.offset((n, 0.0, fsize));
                         let x_pn = base.offset((n, fsize, 0.0));
@@ -247,28 +237,39 @@ impl<'a> System<'a> for DebugRenderer {
             }
         }
 
-        let player_transform = (&player_marker, &client_controlled_marker, &transforms)
-            .join()
-            .map(|(_, _, tfm)| tfm)
-            .next();
+        surface
+            .draw(
+                &self.buffer,
+                &NoIndices(PrimitiveType::LinesList),
+                &self.program,
+                &glium::uniform! {},
+                &DrawParameters {
+                    depth: Depth {
+                        test: DepthTest::IfLess,
+                        write: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
 
-        if let Some(tfm) = player_transform {
-            let view_matrix = camera.view_matrix().cast::<f32>().unwrap();
-            let projection: Matrix4<f32> = camera.projection_matrix().cast().unwrap();
-            self.program
-                .set_uniform(&mut self.ctx, "view", &view_matrix);
-            self.program
-                .set_uniform(&mut self.ctx, "projection", &projection);
+        // let player_transform = (&player_marker, &client_controlled_marker,
+        // &transforms)     .join()
+        //     .map(|(_, _, tfm)| tfm)
+        //     .next();
 
-            for (weight, geom) in &self.geometry {
-                self.vbo
-                    .upload(&self.ctx, geom, UsageType::DynamicDraw)
-                    .unwrap();
+        // if let Some(tfm) = player_transform {
+        //     let view_matrix = camera.view_matrix().cast::<f32>().unwrap();
+        //     let projection: Matrix4<f32> =
+        // camera.projection_matrix().cast().unwrap();     self.program
+        //         .set_uniform(&mut self.ctx, "view", &view_matrix);
+        //     self.program
+        //         .set_uniform(&mut self.ctx, "projection", &projection);
 
-                gl_call!(LineWidth(weight.0 as f32)).unwrap();
-                self.ctx
-                    .draw_arrays(PrimitiveType::Lines, &self.program, &self.vbo);
-            }
-        }
+        //     for (weight, geom) in &self.geometry {
+        //         self.buffer.write(geom);
+        //     }
+        // }
     }
 }

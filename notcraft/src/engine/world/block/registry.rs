@@ -1,5 +1,5 @@
 use cgmath::Vector2;
-use engine::{world::block::Faces, Side};
+use crate::engine::{world::block::Faces, Side};
 use rand::prelude::*;
 use std::{collections::HashMap, error::Error, io, path::Path};
 

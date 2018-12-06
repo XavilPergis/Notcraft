@@ -4,8 +4,8 @@ use std::time::Duration;
 
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub struct CursorPos {
-    pub x: f64,
-    pub y: f64,
+    pub x: f32,
+    pub y: f32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
@@ -24,8 +24,8 @@ impl Default for ViewDistance {
 pub struct Dt(pub Duration);
 
 impl Dt {
-    pub fn as_secs(&self) -> f64 {
-        self.0.as_secs() as f64 + self.0.subsec_nanos() as f64 * 1e-9
+    pub fn as_secs(&self) -> f32 {
+        self.0.as_secs() as f32 + self.0.subsec_nanos() as f32 * 1e-9
     }
 }
 

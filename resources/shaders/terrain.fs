@@ -30,5 +30,5 @@ void main()
     float ao = pow(v_ao, 1.0 / AO_CURVE) * (1.0 - MIN_AO) + MIN_AO;
     vec4 col = vec4(v_face_scalar * ao * ambient_light, 1.0) * tex_color;
 
-    color = mix(vec4(0.729411765, 0.907843137, 0.981568627, 1.0), col, fog);
+    color = col; //mix(vec4(0.729411765, 0.907843137, 0.981568627, 1.0), col, fog);
 }

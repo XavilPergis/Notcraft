@@ -1,150 +1,81 @@
-use gl_api::{
-    buffer::{Buffer, UsageType},
-    context::Context,
-    error::GlResult,
-    layout::Layout,
-    shader::program::Program,
-    BufferIndex, PrimitiveType,
+use glium::{
+    backend::Facade,
+    index::{Index, PrimitiveType},
+    vertex::BufferCreationError,
+    *,
 };
-use specs::prelude::*;
+use num_traits::{AsPrimitive, CheckedAdd, FromPrimitive};
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct GpuMesh<V, I> {
-    verts: Buffer<V>,
-    indices: Buffer<I>,
+#[derive(Debug)]
+pub struct GpuMesh<V: Copy, I: Index> {
+    pub vertices: VertexBuffer<V>,
+    pub indices: IndexBuffer<I>,
 }
 
-impl<V: Layout, I: BufferIndex> GpuMesh<V, I> {
-    pub fn new(ctx: &Context) -> GlResult<Self> {
-        let vbo = Buffer::new(ctx);
-        let ibo = Buffer::new(ctx);
+#[derive(Debug)]
+pub enum BufferError {
+    Vertex(vertex::BufferCreationError),
+    Index(index::BufferCreationError),
+}
 
+impl<V: Copy + Vertex, I: Index> GpuMesh<V, I> {
+    pub fn empty_dynamic<F: Facade>(
+        ctx: &F,
+        primitive_type: PrimitiveType,
+        reserve_vert: usize,
+        reserve_idx: usize,
+    ) -> Result<Self, BufferError> {
         Ok(GpuMesh {
-            indices: ibo,
-            verts: vbo,
+            vertices: VertexBuffer::empty_dynamic(ctx, reserve_vert)
+                .map_err(BufferError::Vertex)?,
+            indices: IndexBuffer::empty_dynamic(ctx, primitive_type, reserve_idx)
+                .map_err(BufferError::Index)?,
         })
     }
-
-    pub fn upload<IV: AsRef<[V]>, II: AsRef<[I]>>(
-        &mut self,
-        ctx: &Context,
-        verts: IV,
-        indices: II,
-        usage_type: UsageType,
-    ) -> GlResult<()> {
-        self.verts.upload(ctx, verts.as_ref(), usage_type)?;
-        self.indices.upload(ctx, indices.as_ref(), usage_type)?;
-
-        Ok(())
-    }
-
-    pub fn draw_with(&self, ctx: &mut Context, program: &Program) {
-        ctx.draw_elements(
-            PrimitiveType::Triangles,
-            program,
-            &self.verts,
-            &self.indices,
-        );
-    }
 }
 
-struct TriangleIter<'m, V: 'm, I: BufferIndex + 'm> {
-    mesh: &'m Mesh<V, I>,
-    num: usize,
+#[derive(Clone, Debug, Default)]
+pub struct Mesh<V, I> {
+    vertices: Vec<V>,
+    indices: Vec<I>,
 }
 
-impl<'m, V: 'm, I: BufferIndex + 'm> Iterator for TriangleIter<'m, V, I> {
-    type Item = TriangleRef<'m, V, I>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let res = self.mesh.triangle(self.num);
-        self.num += 1;
-        res
-    }
-}
-
-pub struct TriangleRef<'m, V: 'm, I: BufferIndex> {
-    pub indices: (I, I, I),
-    pub vertices: (&'m V, &'m V, &'m V),
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub struct Mesh<V, I: BufferIndex> {
-    crate vertices: Vec<V>,
-    crate indices: Vec<I>,
-    crate dirty: bool,
-    crate gpu_mesh: Option<GpuMesh<V, I>>,
-}
-
-impl<V: Send + Sync + 'static, I: BufferIndex> Component for Mesh<V, I> {
-    type Storage = HashMapStorage<Self>;
-}
-
-impl<V, I: BufferIndex> Default for Mesh<V, I> {
-    fn default() -> Self {
-        Mesh {
-            vertices: Vec::new(),
-            indices: Vec::new(),
-            dirty: false,
-            gpu_mesh: None,
-        }
-    }
-}
-
-impl<V, I: BufferIndex> Mesh<V, I> {
-    pub fn with_capacity(verts_cap: usize, indices_cap: usize) -> Self {
-        Mesh {
-            vertices: Vec::with_capacity(verts_cap),
-            indices: Vec::with_capacity(indices_cap),
-            ..Default::default()
+impl<V, I> Mesh<V, I> {
+    #[must_use]
+    pub fn add<VI, II>(&mut self, verts: VI, indices: II) -> bool
+    where
+        VI: IntoIterator<Item = V>,
+        II: IntoIterator<Item = I>,
+        I: FromPrimitive + CheckedAdd + Copy + 'static,
+    {
+        match I::from_usize(self.vertices.len()) {
+            Some(base) => {
+                for index in indices.into_iter() {
+                    match base.checked_add(&index) {
+                        None => return false,
+                        Some(sum) => self.indices.push(sum),
+                    }
+                }
+                self.vertices.extend(verts);
+                true
+            }
+            None => false,
         }
     }
 
-    pub fn triangle(&self, triangle_index: usize) -> Option<TriangleRef<'_, V, I>> {
-        if triangle_in_bounds(self.indices.len(), triangle_index) {
-            let base = triangle_index * 3;
-            Some(TriangleRef {
-                vertices: (
-                    self.vertices.get(self.indices[base].as_usize())?,
-                    self.vertices.get(self.indices[base + 1].as_usize())?,
-                    self.vertices.get(self.indices[base + 2].as_usize())?,
-                ),
-                indices: (
-                    self.indices[base],
-                    self.indices[base + 1],
-                    self.indices[base + 2],
-                ),
-            })
-        } else {
-            None
-        }
+    pub fn to_gpu_mesh<F: Facade>(
+        &self,
+        ctx: &F,
+        primitive: PrimitiveType,
+    ) -> Result<GpuMesh<V, I>, BufferError>
+    where
+        V: Copy + Vertex,
+        I: Index,
+    {
+        let vertices = VertexBuffer::new(ctx, &self.vertices).map_err(BufferError::Vertex)?;
+        let indices =
+            IndexBuffer::new(ctx, primitive, &self.indices).map_err(BufferError::Index)?;
+
+        Ok(GpuMesh { vertices, indices })
     }
-
-    pub fn triangle_count(&self) -> usize {
-        self.indices.len() * 3
-    }
-
-    pub fn triangles(&self) -> impl Iterator<Item = TriangleRef<'_, V, I>> {
-        TriangleIter { mesh: self, num: 0 }
-    }
-
-    pub fn needs_new_gpu_mesh(&self) -> bool {
-        self.gpu_mesh.is_none() || self.dirty
-    }
-}
-
-impl<V: Layout, I: BufferIndex> Mesh<V, I> {
-    /// Creates the GPU buffers for this mesh and uploads the data in this mesh
-    /// to it. Note that this has to clone the mesh data
-    pub fn upload(&mut self, ctx: &Context, usage_type: UsageType) -> GlResult<()> {
-        let mut mesh = GpuMesh::new(ctx)?;
-        mesh.upload(ctx, &self.vertices[..], &self.indices[..], usage_type)?;
-        self.gpu_mesh = Some(mesh);
-
-        Ok(())
-    }
-}
-
-fn triangle_in_bounds(triangle_list_len: usize, triangle_index: usize) -> bool {
-    triangle_index < triangle_list_len / 3
 }

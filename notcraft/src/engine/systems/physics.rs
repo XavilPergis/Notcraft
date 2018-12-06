@@ -1,5 +1,5 @@
 use collision::{prelude::*, Aabb3};
-use engine::{
+use crate::engine::{
     prelude::*,
     render::debug::{DebugAccumulator, DebugSection, Shape},
     world::VoxelWorld,
@@ -13,7 +13,7 @@ impl Physics {
     }
 }
 
-fn collidable_blocks_in_aabb(world: &VoxelWorld, aabb: Aabb3<f64>) -> Vec<BlockPos> {
+fn collidable_blocks_in_aabb(world: &VoxelWorld, aabb: Aabb3<f32>) -> Vec<BlockPos> {
     let min: BlockPos = WorldPos(aabb.min).into();
     let max: BlockPos = WorldPos(aabb.max).into();
     let mut found = vec![];
@@ -36,7 +36,7 @@ fn collidable_blocks_in_aabb(world: &VoxelWorld, aabb: Aabb3<f64>) -> Vec<BlockP
 
 // take two ranges (like an aabb projected down to a single axis) and find how
 // far `a` needs to move so that the ranges do not overlap
-fn resolve_collision(a: Aabb3<f64>, b: Aabb3<f64>, axis: usize) -> f64 {
+fn resolve_collision(a: Aabb3<f32>, b: Aabb3<f32>, axis: usize) -> f32 {
     // the ranges are already disjoint, no resolution needs to be applied.
     if !a.intersects(&b) {
         return 0.0;
@@ -60,20 +60,20 @@ struct PhysicsStepContext<'a> {
     transform: &'a mut comp::Transform,
     body: &'a mut comp::RigidBody,
     collision_box: &'a comp::Collidable,
-    dt: f64,
+    dt: f32,
 }
 
 impl<'a> PhysicsStepContext<'a> {
-    fn entity_aabb(&self) -> Aabb3<f64> {
+    fn entity_aabb(&self) -> Aabb3<f32> {
         self.collision_box
             .aabb
-            .add_v(::util::to_vector(self.transform.position))
+            .add_v(crate::util::to_vector(self.transform.position))
     }
 }
 
-fn cube_aabb(pos: BlockPos) -> Aabb3<f64> {
+fn cube_aabb(pos: BlockPos) -> Aabb3<f32> {
     let cube_base = Aabb3::new(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
-    cube_base.add_v(::util::to_vector(pos.base().0))
+    cube_base.add_v(crate::util::to_vector(pos.base().0))
 }
 
 // fn physics_step(ctx: &mut PhysicsStepContext, axis: usize, debug: &mut
@@ -95,7 +95,7 @@ fn physics_step_x(ctx: &mut PhysicsStepContext, debug: &mut DebugSection) {
 
     let num_blocks = blocks.len();
     let mut dbg_aabb = |aabb, i| {
-        let val = i as f64 / num_blocks as f64;
+        let val = i as f32 / num_blocks as f32;
         debug.draw(Shape::Box(5.0, aabb, Vector4::new(val, 0.0, 0.0, 1.0)));
     };
 
@@ -132,7 +132,7 @@ fn physics_step_y(ctx: &mut PhysicsStepContext, debug: &mut DebugSection) {
 
     let num_blocks = blocks.len();
     let mut dbg_aabb = |aabb, i| {
-        let val = i as f64 / num_blocks as f64;
+        let val = i as f32 / num_blocks as f32;
         debug.draw(Shape::Box(5.0, aabb, Vector4::new(0.0, val, 0.0, 1.0)));
     };
 
@@ -167,7 +167,7 @@ fn physics_step_z(ctx: &mut PhysicsStepContext, debug: &mut DebugSection) {
 
     let num_blocks = blocks.len();
     let mut dbg_aabb = |aabb, i| {
-        let val = i as f64 / num_blocks as f64;
+        let val = i as f32 / num_blocks as f32;
         debug.draw(Shape::Box(5.0, aabb, Vector4::new(0.0, 0.0, val, 1.0)));
     };
 
@@ -208,7 +208,7 @@ impl<'a> System<'a> for Physics {
             let mut section = debug.section("physics");
             let steps = if collidable.is_some() { 4 } else { 1 };
             // adjusted dt for smaller steps when there are more of them
-            let dt = dt.as_secs() / steps as f64;
+            let dt = dt.as_secs() / steps as f32;
 
             for _step in 0..steps {
                 // apply_physics_step(&mut rigidbody, &mut transform, dt);

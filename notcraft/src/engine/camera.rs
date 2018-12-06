@@ -1,26 +1,26 @@
 use cgmath::PerspectiveFov;
 use collision::Ray3;
-use engine::prelude::*;
+use crate::engine::prelude::*;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Camera {
-    pub position: Point3<f64>,
-    pub orientation: Vector2<Deg<f64>>,
-    pub projection: PerspectiveFov<f64>,
+    pub position: Point3<f32>,
+    pub orientation: Vector2<Deg<f32>>,
+    pub projection: PerspectiveFov<f32>,
 }
 
 impl Camera {
-    pub fn view_matrix(&self) -> Matrix4<f64> {
+    pub fn view_matrix(&self) -> Matrix4<f32> {
         Matrix4::from_angle_x(self.orientation.x)
             * Matrix4::from_angle_y(self.orientation.y)
-            * Matrix4::from_translation(-::util::to_vector(self.position))
+            * Matrix4::from_translation(-crate::util::to_vector(self.position))
     }
 
-    pub fn projection_matrix(&self) -> Matrix4<f64> {
+    pub fn projection_matrix(&self) -> Matrix4<f32> {
         self.projection.into()
     }
 
-    pub fn basis_vectors(&self) -> (Vector3<f64>, Vector3<f64>) {
+    pub fn basis_vectors(&self) -> (Vector3<f32>, Vector3<f32>) {
         let yaw = Matrix3::from_angle_y(self.orientation.y);
         let mut forward = yaw * Vector3::unit_z();
         let mut right = yaw * Vector3::unit_x();
@@ -29,7 +29,7 @@ impl Camera {
         (forward, right)
     }
 
-    pub fn camera_ray(&self) -> Ray3<f64> {
+    pub fn camera_ray(&self) -> Ray3<f32> {
         let yaw = Matrix3::from_angle_y(self.orientation.y);
         let pitch = Matrix3::from_axis_angle(yaw * Vector3::unit_x(), self.orientation.x);
 

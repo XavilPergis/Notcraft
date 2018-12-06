@@ -1,7 +1,8 @@
-use engine::{
+use crate::engine::{
     camera::Camera,
     prelude::*,
     render::debug::{DebugAccumulator, Shape},
+    systems::input::{keys, InputState},
     world::chunk::SIZE,
 };
 use specs::prelude::*;
@@ -12,25 +13,49 @@ pub struct PlayerController;
 impl<'a> System<'a> for PlayerController {
     type SystemData = (
         ReadStorage<'a, comp::Player>,
+        ReadStorage<'a, comp::ClientControlled>,
         WriteStorage<'a, comp::Transform>,
         WriteStorage<'a, comp::RigidBody>,
-        ReadStorage<'a, comp::MoveDelta>,
+        ReadExpect<'a, InputState>,
         ReadExpect<'a, Camera>,
-        Read<'a, res::ActiveDirections>,
-        WriteExpect<'a, DebugAccumulator>,
         ReadExpect<'a, res::Dt>,
+        WriteExpect<'a, DebugAccumulator>,
     );
 
     fn run(
         &mut self,
-        (player, mut player_transform, mut rigidbody, move_delta, camera, directions, debug, dt): Self::SystemData,
+        (player, client_controlled, mut transforms, mut rigidbodies, input, camera, dt, debug): Self::SystemData,
     ) {
         let mut section = debug.section("chunk grid");
-        for (_, tfm, move_delta) in (&player, &mut player_transform, &move_delta).join() {
-            tfm.position += move_delta.0;
-        }
 
-        for (_, tfm) in (&player, &player_transform).join() {
+        let dt = dt.as_secs();
+        for (tfm, rb, _, _) in (
+            &mut transforms,
+            &mut rigidbodies,
+            &player,
+            &client_controlled,
+        )
+            .join()
+        {
+            if input.is_pressed(keys::FORWARD, None) {
+                rb.velocity += 20.0 * dt * camera.basis_vectors().0;
+            }
+            if input.is_pressed(keys::BACKWARD, None) {
+                rb.velocity -= 20.0 * dt * camera.basis_vectors().0;
+            }
+            if input.is_pressed(keys::LEFT, None) {
+                rb.velocity -= 20.0 * dt * camera.basis_vectors().1;
+            }
+            if input.is_pressed(keys::RIGHT, None) {
+                rb.velocity += 20.0 * dt * camera.basis_vectors().1;
+            }
+            if input.is_pressed(keys::UP, None) {
+                rb.velocity += Vector3::unit_y();
+            }
+            if input.is_pressed(keys::DOWN, None) {
+                rb.velocity -= Vector3::unit_y();
+            }
+
             let cpos: ChunkPos = WorldPos(tfm.position).into();
             let center = cpos
                 .base()
@@ -59,29 +84,6 @@ impl<'a> System<'a> for PlayerController {
                 Vector3::unit_z(),
                 Vector4::new(0.0, 0.0, 1.0, 1.0),
             ));
-        }
-
-        let dt = dt.as_secs();
-
-        for (_, rigidbody) in (&player, &mut rigidbody).join() {
-            if directions.front {
-                rigidbody.velocity += 20.0 * dt * camera.basis_vectors().0;
-            };
-            if directions.back {
-                rigidbody.velocity -= 20.0 * dt * camera.basis_vectors().0;
-            };
-            if directions.left {
-                rigidbody.velocity -= 20.0 * dt * camera.basis_vectors().1;
-            };
-            if directions.right {
-                rigidbody.velocity += 20.0 * dt * camera.basis_vectors().1;
-            };
-            if directions.up {
-                rigidbody.velocity += Vector3::unit_y();
-            }
-            if directions.down {
-                rigidbody.velocity -= Vector3::unit_y();
-            }
         }
     }
 }

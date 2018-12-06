@@ -22,6 +22,7 @@ pub mod prelude {
     pub use cgmath::{
         prelude::*, Deg, Matrix3, Matrix4, Point1, Point2, Point3, Vector2, Vector3, Vector4,
     };
+    pub use crate::util;
     pub use shrev::EventChannel;
     pub use specs::prelude::*;
 }

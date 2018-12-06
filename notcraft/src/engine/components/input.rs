@@ -1,5 +1,4 @@
-use cgmath::Deg;
-use cgmath::Vector3;
+use cgmath::{Deg, Vector3};
 use specs::prelude::*;
 
 #[derive(Copy, Clone, Debug, PartialEq, Component)]
@@ -20,7 +19,7 @@ impl Default for LookTarget {
 
 #[derive(Copy, Clone, Debug, PartialEq, Component)]
 #[storage(HashMapStorage)]
-pub struct MoveDelta(pub Vector3<f64>);
+pub struct MoveDelta(pub Vector3<f32>);
 
 impl Default for MoveDelta {
     fn default() -> Self {

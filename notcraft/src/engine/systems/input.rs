@@ -1,13 +1,15 @@
-use cgmath::Deg;
-use engine::{
+use crate::engine::{
     camera::Camera,
     prelude::*,
     render::debug::{DebugAccumulator, Shape},
 };
-use glutin::{
-    ElementState, Event, GlWindow, KeyboardInput, ModifiersState, VirtualKeyCode, WindowEvent,
+use cgmath::Deg;
+use glium::glutin::{
+    DeviceEvent, ElementState, Event, GlWindow, KeyboardInput, ModifiersState, VirtualKeyCode,
+    WindowEvent,
 };
 use shrev::EventChannel;
+use std::collections::{HashMap, HashSet};
 
 pub struct InputHandler {
     events_handle: ReaderId<Event>,
@@ -23,16 +25,6 @@ impl InputHandler {
             capture_mouse: false,
         }
     }
-}
-
-use gl_api::misc::*;
-
-fn set_wireframe(wf: bool) {
-    polygon_mode(if wf {
-        PolygonMode::Line
-    } else {
-        PolygonMode::Fill
-    });
 }
 
 pub enum Key {
@@ -139,203 +131,179 @@ const KEYBIND_DEC_RENDER_DISTANCE: Keybind = Keybind {
     modifiers: Some(CTRL_MODIFIERS),
 };
 
-use engine::components as comp;
+use crate::engine::components as comp;
 
-#[derive(SystemData)]
-pub struct ReadClientPlayer<'a> {
-    client_controlled: ReadStorage<'a, comp::ClientControlled>,
-    player_marker: ReadStorage<'a, comp::Player>,
-    transform: ReadStorage<'a, comp::Transform>,
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
+pub struct Modifiers {
+    shift: bool,
+    ctrl: bool,
+    alt: bool,
+    sup: bool,
 }
 
-impl<'a> ReadClientPlayer<'a> {
-    fn get_transform(&self) -> Option<&comp::Transform> {
-        (
-            &self.client_controlled,
-            &self.player_marker,
-            &self.transform,
-        )
-            .join()
-            .next()
-            .map(|(_, _, tfm)| tfm)
+impl From<ModifiersState> for Modifiers {
+    fn from(state: ModifiersState) -> Self {
+        Modifiers {
+            shift: state.shift,
+            ctrl: state.ctrl,
+            alt: state.alt,
+            sup: state.logo,
+        }
     }
 }
+
+use std::ops;
+
+impl ops::BitOr for Modifiers {
+    type Output = Modifiers;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Modifiers {
+            shift: self.shift | rhs.shift,
+            ctrl: self.ctrl | rhs.ctrl,
+            alt: self.alt | rhs.alt,
+            sup: self.sup | rhs.sup,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct InputState {
+    physical_map: HashMap<VirtualKeyCode, u32>,
+    rising: HashSet<u32>,
+    falling: HashSet<u32>,
+    pressed: HashSet<u32>,
+    current_modifiers: Modifiers,
+}
+
+impl InputState {
+    fn update(&mut self, input: KeyboardInput) {
+        self.current_modifiers = input.modifiers.into();
+
+        if let Some(vkk) = input.virtual_keycode {
+            self.physical_map.insert(vkk, input.scancode);
+        }
+
+        match input.state {
+            ElementState::Pressed => {
+                if self.pressed.insert(input.scancode) {
+                    self.rising.insert(input.scancode);
+                }
+            }
+
+            ElementState::Released => {
+                if self.pressed.remove(&input.scancode) {
+                    self.falling.insert(input.scancode);
+                }
+            }
+        }
+    }
+
+    fn modifiers_match(&self, modifiers: Option<Modifiers>) -> bool {
+        modifiers.map_or(true, |modifiers| self.current_modifiers == modifiers)
+    }
+
+    /// Returns true if `key` is being pressed.
+    pub fn is_pressed<K, M>(&self, key: K, modifiers: M) -> bool
+    where
+        K: Into<Key>,
+        M: Into<Option<Modifiers>>,
+    {
+        let key = match key.into() {
+            // Try to look up the virtual key code in the key map. If the entry does not exist,
+            // then either the vkk was not pressed yet or the vkk -> physical
+            // mapping just doesn't exist (which I find very unlikely). In both
+            // situations, though, we want to say that the key in not pressed
+            // (return false).
+            Key::Virtual(vkk) => self
+                .physical_map
+                .get(&vkk)
+                .map(|code| self.pressed.contains(&code))
+                .unwrap_or(false),
+            Key::Physical(code) => self.pressed.contains(&code),
+        };
+
+        key && self.modifiers_match(modifiers.into())
+    }
+
+    /// Returns true if `key` was not pressed before and is now pressed.
+    pub fn is_rising<K, M>(&self, key: K, modifiers: M) -> bool
+    where
+        K: Into<Key>,
+        M: Into<Option<Modifiers>>,
+    {
+        let key = match key.into() {
+            Key::Virtual(vkk) => self
+                .physical_map
+                .get(&vkk)
+                .map(|code| self.rising.contains(&code))
+                .unwrap_or(false),
+            Key::Physical(code) => self.rising.contains(&code),
+        };
+
+        key && self.modifiers_match(modifiers.into())
+    }
+
+    /// Returns true if `key` was pressed before and is now no longer pressed.
+    pub fn is_falling<K, M>(&self, key: K, modifiers: M) -> bool
+    where
+        K: Into<Key>,
+        M: Into<Option<Modifiers>>,
+    {
+        let key = match key.into() {
+            Key::Virtual(vkk) => self
+                .physical_map
+                .get(&vkk)
+                .map(|code| self.falling.contains(&code))
+                .unwrap_or(false),
+            Key::Physical(code) => self.falling.contains(&code),
+        };
+
+        key && self.modifiers_match(modifiers.into())
+    }
+}
+
+pub mod keys {
+    pub const FORWARD: u32 = 0x11;
+    pub const BACKWARD: u32 = 0x1F;
+    pub const LEFT: u32 = 0x1E;
+    pub const RIGHT: u32 = 0x20;
+    pub const UP: u32 = 0x39;
+    pub const DOWN: u32 = 0x2A;
+}
+
+// (VirtualKeyCode::C, "chunk grid"),
+// (VirtualKeyCode::T, "terrain generation"),
+// (VirtualKeyCode::M, "mesher"),
+// (VirtualKeyCode::P, "physics"),
+// (VirtualKeyCode::I, "interaction"),
 
 impl<'a> System<'a> for InputHandler {
     type SystemData = (
         Read<'a, EventChannel<Event>>,
-        WriteStorage<'a, comp::MoveDelta>,
         Write<'a, res::StopGameLoop>,
-        Write<'a, res::ActiveDirections>,
-        WriteExpect<'a, Camera>,
-        WriteExpect<'a, res::ViewDistance>,
-        ReadClientPlayer<'a>,
+        Write<'a, InputState>,
         WriteExpect<'a, DebugAccumulator>,
     );
 
     fn run(
         &mut self,
-        (
-            window_events,
-            mut move_deltas,
-            mut stop_flag,
-            mut active_directions,
-            mut camera,
-            mut view_distance,
-            player,
-            mut debug,
-        ): Self::SystemData,
+        (window_events, mut stop_flag, mut input_state, mut debug): Self::SystemData,
     ) {
-        for delta in (&mut move_deltas).join() {
-            *delta = comp::MoveDelta::default();
-        }
-
         for event in window_events.read(&mut self.events_handle) {
-            if let Event::WindowEvent { event, .. } = event {
-                match event {
+            match event {
+                Event::WindowEvent { event, .. } => match event {
                     WindowEvent::CloseRequested => {
                         stop_flag.0 = true;
-                        break;
                     }
 
-                    WindowEvent::KeyboardInput {
-                        input:
-                            input @ KeyboardInput {
-                                state: ElementState::Pressed,
-                                ..
-                            },
-                        ..
-                    } => {
-                        if KEYBIND_FORWARDS.matches_input(*input) {
-                            active_directions.front = true;
-                        }
-                        if KEYBIND_BACKWARDS.matches_input(*input) {
-                            active_directions.back = true;
-                        }
-                        if KEYBIND_LEFT.matches_input(*input) {
-                            active_directions.left = true;
-                        }
-                        if KEYBIND_RIGHT.matches_input(*input) {
-                            active_directions.right = true;
-                        }
-                        if KEYBIND_UP.matches_input(*input) {
-                            active_directions.up = true;
-                        }
-                        if KEYBIND_DOWN.matches_input(*input) {
-                            active_directions.down = true;
-                        }
-                        if KEYBIND_ZOOM.matches_input(*input) {
-                            camera.projection.fovy = Deg(20.0).into();
-                        }
-                        if KEYBIND_EXIT.matches_input(*input) {
-                            stop_flag.0 = true;
-                            break;
-                        }
+                    WindowEvent::KeyboardInput { input, .. } => input_state.update(*input),
 
-                        if KEYBIND_INC_RENDER_DISTANCE.matches_input(*input) {
-                            view_distance.0 += Vector3::new(1, 1, 1);
-                        }
-                        if KEYBIND_DEC_RENDER_DISTANCE.matches_input(*input) {
-                            view_distance.0 -= Vector3::new(1, 1, 1);
-                        }
-
-                        // TODO: I don't like having arbitrary strings in my program like this,
-                        // maybe I can find a cleaner way to do debug
-                        // sections later, but it's fine for now.
-                        for &(key, section) in &[
-                            (VirtualKeyCode::C, "chunk grid"),
-                            (VirtualKeyCode::T, "terrain generation"),
-                            (VirtualKeyCode::M, "mesher"),
-                            (VirtualKeyCode::P, "physics"),
-                            (VirtualKeyCode::I, "interaction"),
-                        ] {
-                            if Keybind::new(
-                                key,
-                                Some(ModifiersState {
-                                    shift: false,
-                                    ctrl: true,
-                                    alt: false,
-                                    logo: false,
-                                }),
-                            )
-                            .matches_input(*input)
-                            {
-                                debug.toggle(section.to_owned());
-                            }
-                        }
-
-                        if KEYBIND_DEBUG.matches_input(*input) {
-                            let tfm = player.get_transform().unwrap();
-                            let bpos: BlockPos = WorldPos(tfm.position).into();
-                            let (cpos, offset) = bpos.chunk_pos_offset();
-                            debug!("client position: {:?}", tfm.position);
-                            debug!("chunk/offset: {:?}/{:?}", cpos, offset);
-                        }
-                        if KEYBIND_TOGGLE_WIREFRAME.matches_input(*input) {
-                            info!("Toggled wireframe rendering");
-                            self.wireframe = !self.wireframe;
-                            set_wireframe(self.wireframe);
-                        }
-                    }
-
-                    WindowEvent::KeyboardInput {
-                        input:
-                            input @ KeyboardInput {
-                                state: ElementState::Released,
-                                ..
-                            },
-                        ..
-                    } => {
-                        if KEYBIND_FORWARDS.matches_input(*input) {
-                            active_directions.front = false;
-                        }
-                        if KEYBIND_BACKWARDS.matches_input(*input) {
-                            active_directions.back = false;
-                        }
-                        if KEYBIND_LEFT.matches_input(*input) {
-                            active_directions.left = false;
-                        }
-                        if KEYBIND_RIGHT.matches_input(*input) {
-                            active_directions.right = false;
-                        }
-                        if KEYBIND_UP.matches_input(*input) {
-                            active_directions.up = false;
-                        }
-                        if KEYBIND_DOWN.matches_input(*input) {
-                            active_directions.down = false;
-                        }
-                        if KEYBIND_ZOOM.matches_input(*input) {
-                            camera.projection.fovy = Deg(80.0).into();
-                        }
-                    }
-
-                    // Event::Key(Key::F3, _, Action::Press, _) => { self.capture_mouse =
-                    // !self.capture_mouse; set_mouse_capture(&mut *self.window.lock().unwrap(),
-                    // self.capture_mouse) }, Event::Key(Key::RightBracket, _,
-                    // Action::Press, _) => { view_distance.0 += Vector3::new(1, 1, 1); },
-                    _ => {}
-                }
+                    _ => (),
+                },
+                _ => (),
             }
         }
-    }
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
-pub struct CameraUpdater;
-
-impl<'a> System<'a> for CameraUpdater {
-    type SystemData = (
-        WriteExpect<'a, Camera>,
-        ReadExpect<'a, GlWindow>,
-        ReadClientPlayer<'a>,
-    );
-
-    fn run(&mut self, (mut camera, window, player): Self::SystemData) {
-        let pos = player.get_transform().unwrap().position;
-        let aspect = ::util::aspect_ratio(&window).unwrap();
-
-        camera.projection.aspect = aspect;
-        camera.position = pos;
     }
 }
 
@@ -381,14 +349,17 @@ impl<'a> System<'a> for BlockInteraction {
                         if let Some((block, _)) =
                             world.trace_block(camera.camera_ray(), 10.0, &mut section)
                         {
-                            world.set_block_id(block, ::engine::world::block::AIR);
+                            world.set_block_id(block, crate::engine::world::block::AIR);
                         }
                     }
                     3 => {
                         if let Some((block, Some(normal))) =
                             world.trace_block(camera.camera_ray(), 10.0, &mut section)
                         {
-                            world.set_block_id(block.offset(normal), ::engine::world::block::STONE);
+                            world.set_block_id(
+                                block.offset(normal),
+                                crate::engine::world::block::STONE,
+                            );
                         }
                     }
                     _ => {}
@@ -412,8 +383,6 @@ impl CameraRotationUpdater {
     }
 }
 
-use glutin::DeviceEvent;
-
 impl<'a> System<'a> for CameraRotationUpdater {
     type SystemData = (Read<'a, EventChannel<Event>>, WriteExpect<'a, Camera>);
 
@@ -426,15 +395,15 @@ impl<'a> System<'a> for CameraRotationUpdater {
                 } => {
                     let sensitivity = 0.25;
 
-                    let dx = sensitivity * dx;
-                    let dy = sensitivity * dy;
+                    let dx = sensitivity * dx as f32;
+                    let dy = sensitivity * dy as f32;
                     // Ok, I know this looks weird, but `target` describes which *axis* should
                     // be rotated around. It just so happens that the Y
                     // coordinate of the mouse corresponds to a rotation around the X axis
                     // So that's why we add the change in x to the y component of the look
                     // target.
                     camera.orientation.x =
-                        Deg(::util::clamp(camera.orientation.x.0 + dy, -90.0, 90.0));
+                        Deg(util::clamp(camera.orientation.x.0 + dy, -90.0, 90.0));
                     camera.orientation.y += Deg(dx);
                 }
 

@@ -1,10 +1,6 @@
-use engine::{prelude::*, render::verts};
-use gl_api::{
-    buffer::Buffer,
-    context::Context,
-    shader::{load_shader, program::Program},
-    texture::Texture2d,
-    PrimitiveType, UsageType,
+use crate::{
+    engine::{prelude::*, render::verts},
+    graphics::{self, prelude::*},
 };
 use glutin::GlWindow;
 

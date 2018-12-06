@@ -1,67 +1,82 @@
-use cgmath::{Vector2, Vector3};
-use engine::render::{
-    mesh::Mesh,
-    terrain::{BlockVertex, LiquidVertex},
+use crate::engine::{
+    render::mesh::{GpuMesh, Mesh},
+    world::ChunkPos,
 };
+use cgmath::{Vector2, Vector3};
+use glium::{backend::Facade, index::PrimitiveType, texture::Texture2dArray, Vertex};
 use specs::prelude::*;
+use std::collections::HashMap;
 
 pub mod debug;
 pub mod mesh;
 pub mod mesher;
 pub mod terrain;
-pub mod ui;
+// pub mod ui;
 
-pub mod verts {
-    use cgmath::{Vector2, Vector3};
-    vertex! {
-        vertex Pos {
-            pos: Vector3<f32>,
-        }
-    }
-
-    vertex! {
-        vertex PosUv {
-            pos: Vector3<f32>,
-            uv: Vector2<f32>,
-        }
-    }
-
-    vertex! {
-        vertex PosUvNorm {
-            pos: Vector3<f32>,
-            normal: Vector3<f32>,
-            uv: Vector2<f32>,
-        }
-    }
-
-    const fn pos(x: f32, y: f32, z: f32) -> Vector3<f32> {
-        Vector3 { x, y, z }
-    }
-
-    const fn uv(x: f32, y: f32) -> Vector2<f32> {
-        Vector2 { x, y }
-    }
-
-    const fn puv(x: f32, y: f32, z: f32, u: f32, v: f32) -> PosUv {
-        PosUv {
-            pos: pos(x, y, z),
-            uv: uv(u, v),
-        }
-    }
-
-    pub static UV_QUAD_CW: &[PosUv] = &[
-        puv(-1.0, -1.0, 0.0, 0.0, 0.0),
-        puv(-1.0, 1.0, 0.0, 0.0, 1.0),
-        puv(1.0, -1.0, 0.0, 1.0, 0.0),
-        puv(1.0, 1.0, 0.0, 1.0, 1.0),
-        puv(1.0, -1.0, 0.0, 1.0, 0.0),
-        puv(-1.0, 1.0, 0.0, 0.0, 1.0),
-    ];
+glium::implement_vertex!(LiquidVertex, pos, uv, normal, tex_id);
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub struct LiquidVertex {
+    pub pos: [f32; 3],
+    pub uv: [f32; 2],
+    pub normal: [f32; 3],
+    pub tex_id: i32,
 }
 
-#[derive(Debug, Default, Component)]
-#[storage(DenseVecStorage)]
-pub struct TerrainMeshes {
-    pub terrain: Mesh<BlockVertex, u32>,
-    pub liquid: Mesh<LiquidVertex, u32>,
+glium::implement_vertex!(TerrainVertex, pos, uv, normal, tex_id, ao);
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub struct TerrainVertex {
+    pub pos: [f32; 3],
+    pub uv: [f32; 2],
+    pub normal: [f32; 3],
+    pub tex_id: i32,
+    pub ao: f32,
+}
+
+pub type LiquidMesh = Mesh<LiquidVertex, u32>;
+pub type TerrainMesh = Mesh<TerrainVertex, u32>;
+
+#[derive(Debug)]
+pub struct MeshPair<V: Copy> {
+    pub dirty: bool,
+    pub cpu: Mesh<V, u32>,
+    pub gpu: Option<GpuMesh<V, u32>>,
+}
+
+impl<T: Copy + Vertex> MeshPair<T> {
+    pub fn upload<F: Facade>(&mut self, ctx: &F) {
+        if self.dirty || self.gpu.is_none() {
+            self.gpu = Some(
+                self.cpu
+                    .to_gpu_mesh(ctx, PrimitiveType::TrianglesList)
+                    .unwrap(),
+            );
+            self.dirty = false;
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct GraphicsData {
+    pub terrain_meshes: HashMap<ChunkPos, (MeshPair<TerrainVertex>, MeshPair<LiquidVertex>)>,
+    pub textures: Texture2dArray,
+}
+
+impl GraphicsData {
+    pub fn new(textures: Texture2dArray) -> Self {
+        GraphicsData {
+            terrain_meshes: Default::default(),
+            textures,
+        }
+    }
+
+    pub fn iter_terrain(&self) -> impl Iterator<Item = (ChunkPos, &MeshPair<TerrainVertex>)> + '_ {
+        self.terrain_meshes.iter().map(|(&k, v)| (k, &v.0))
+    }
+
+    pub fn update<F: Facade>(&mut self, ctx: &F, center: ChunkPos) {
+        for (_, &mut (ref mut terrain, ref mut liquid)) in &mut self.terrain_meshes {
+            terrain.upload(ctx);
+            liquid.upload(ctx);
+        }
+    }
 }

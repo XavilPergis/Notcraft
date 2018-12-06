@@ -1,10 +1,9 @@
-use cgmath::{Point2, Point3, Vector2, Vector3, Vector4};
-use engine::{
+use crate::engine::{
     components as comp,
     render::{
         debug::{DebugAccumulator, Shape},
-        terrain::{BlockVertex, LiquidVertex},
-        TerrainMeshes,
+        mesh::Mesh,
+        GraphicsData, LiquidMesh, LiquidVertex, MeshPair, TerrainMesh, TerrainVertex,
     },
     world::{
         block::{self, BlockId, BlockRegistry},
@@ -13,40 +12,42 @@ use engine::{
     },
     Side,
 };
+use cgmath::{Point2, Point3, Vector2, Vector3, Vector4};
 use rand::prelude::*;
 use specs::prelude::*;
+use std::{cell::RefCell, rc::Rc};
 
-pub struct ChunkMesher;
+pub struct ChunkMesher {
+    graphics: Rc<RefCell<GraphicsData>>,
+}
 
 impl ChunkMesher {
-    pub fn new() -> Self {
-        ChunkMesher
+    pub fn new(graphics: &Rc<RefCell<GraphicsData>>) -> Self {
+        ChunkMesher {
+            graphics: graphics.clone(),
+        }
     }
 }
 
 impl<'a> System<'a> for ChunkMesher {
     type SystemData = (
-        ReadStorage<'a, comp::ChunkId>,
-        WriteStorage<'a, TerrainMeshes>,
-        Entities<'a>,
         WriteExpect<'a, VoxelWorld>,
         ReadExpect<'a, DebugAccumulator>,
     );
 
-    fn run(&mut self, (chunk_ids, mut meshes, entities, mut world, debug): Self::SystemData) {
+    fn run(&mut self, (mut world, debug): Self::SystemData) {
         let mut section = debug.section("mesher");
         loop {
             if let Some(pos) = world.get_dirty_chunk() {
-                // if self.c % 100 == 0 {
-                //     debug!("");
-                // }
+                log::trace!("{:?} ", pos);
                 match world.chunk(pos) {
                     Some(ChunkType::Homogeneous(id)) => {
+                        // lol this fucking if statment
                         if !world.get_registry().opaque(*id) {
                             // Don't do anything lole
                         }
 
-                        // TODO: we can get some pretty weird inconsistencies here if we don't mesh
+                        // FIXME: we can get some pretty weird inconsistencies here if we don't mesh
                         // homogeneous solid chunks. could we just generate one big cube or smth?
                         world.clean_chunk(pos);
 
@@ -54,16 +55,25 @@ impl<'a> System<'a> for ChunkMesher {
                     }
 
                     Some(ChunkType::Array(_)) => {
-                        let entity = (&chunk_ids, &entities)
-                            .join()
-                            .find(|(&comp::ChunkId(id), _)| id == pos)
-                            .map(|(_, a)| a);
+                        let mut graphics = self.graphics.borrow_mut();
+                        graphics.terrain_meshes.entry(pos).or_insert_with(|| {
+                            let (terrain, liquid) = mesh_chunk(pos, &world);
 
-                        if let Some(entity) = entity {
-                            let _ = meshes.insert(entity, mesh_chunk(pos, &world));
-                            world.clean_chunk(pos);
-                        }
+                            (
+                                MeshPair {
+                                    dirty: false,
+                                    cpu: terrain,
+                                    gpu: None,
+                                },
+                                MeshPair {
+                                    dirty: false,
+                                    cpu: liquid,
+                                    gpu: None,
+                                },
+                            )
+                        });
 
+                        world.clean_chunk(pos);
                         section.draw(Shape::Chunk(5.0, pos, Vector4::new(1.0, 0.0, 1.0, 1.0)));
                         break;
                     }
@@ -78,10 +88,13 @@ impl<'a> System<'a> for ChunkMesher {
     }
 }
 
-fn mesh_chunk(pos: ChunkPos, world: &VoxelWorld) -> TerrainMeshes {
+fn mesh_chunk(pos: ChunkPos, world: &VoxelWorld) -> (TerrainMesh, LiquidMesh) {
     let mut mesher = Mesher::new(pos, world);
     mesher.mesh();
-    mesher.mesh_constructor.mesh
+    (
+        mesher.mesh_constructor.terrain_mesh,
+        mesher.mesh_constructor.liquid_mesh,
+    )
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
@@ -126,12 +139,11 @@ impl<'w> Mesher<'w> {
     pub fn new(pos: ChunkPos, world: &'w VoxelWorld) -> Self {
         Mesher {
             registry: world.get_registry(),
-            center: ::engine::world::chunk::make_padded(world, pos).unwrap(),
-            slice: vec![VoxelFace::default(); ::engine::world::chunk::AREA],
+            center: crate::engine::world::chunk::make_padded(world, pos).unwrap(),
+            slice: vec![VoxelFace::default(); crate::engine::world::chunk::AREA],
             mesh_constructor: MeshConstructor {
-                liquid_index: 0,
-                terrain_index: 0,
-                mesh: Default::default(),
+                liquid_mesh: Default::default(),
+                terrain_mesh: Default::default(),
                 registry: world.get_registry(),
             },
         }
@@ -193,18 +205,18 @@ impl<'w> Mesher<'w> {
     for each x:
         for each y:
             if the face has been expanded onto already, skip this.
-            
+
             # note that width and height start off as 1, and mark the "next" block
             while (x + width) is still in chunk bounds and the face at (x + width, y) is the same as the current face:
                 increment width
-            
+
             while (y + height) is still in chunk bounds:
                 # every block under the current quad
                 if every block in x=[x, x + width] y=y+1 is the same as the current:
                     increment height
                 else:
                     stop the loop
-    
+
             mark every block under expanded quad as visited
     */
     // TODO: explain how greedy meshing works
@@ -360,9 +372,8 @@ fn select_uv_variant(random: bool) -> &'static [Vector2<f32>] {
 
 #[derive(Debug)]
 struct MeshConstructor<'w> {
-    liquid_index: u32,
-    terrain_index: u32,
-    mesh: TerrainMeshes,
+    liquid_mesh: LiquidMesh,
+    terrain_mesh: TerrainMesh,
     registry: &'w BlockRegistry,
 }
 
@@ -385,12 +396,6 @@ impl<'w> MeshConstructor<'w> {
             NORMAL_QUAD_CCW
         };
 
-        let index = self.liquid_index;
-        self.mesh
-            .liquid
-            .indices
-            .extend(indices.iter().map(|i| i + index));
-        self.liquid_index += 4;
         let normal = side.normal();
 
         let face = self.registry.block_texture(quad.id, side).unwrap();
@@ -400,72 +405,79 @@ impl<'w> MeshConstructor<'w> {
         let qw = quad.width as f32;
         let qh = quad.height as f32;
 
-        let mut push_vertex = |offset, uv| {
-            self.mesh.liquid.vertices.push(LiquidVertex {
-                pos: (pos + offset),
-                uv,
-                normal,
-                tex_id,
-            })
+        let vert = |offset: Vector3<f32>, uv: Vector2<f32>| LiquidVertex {
+            pos: (pos + offset).into(),
+            uv: uv.into(),
+            normal: normal.into(),
+            tex_id,
         };
 
         let uvs = UV_VARIANT_1;
 
-        if side == Side::Left || side == Side::Right {
-            push_vertex(
-                Vector3::new(h, qw, 0.0),
-                Vector2::new(uvs[0].x * qh, uvs[0].y * qw),
-            );
-            push_vertex(
-                Vector3::new(h, qw, qh),
-                Vector2::new(uvs[1].x * qh, uvs[1].y * qw),
-            );
-            push_vertex(
-                Vector3::new(h, 0.0, 0.0),
-                Vector2::new(uvs[2].x * qh, uvs[2].y * qw),
-            );
-            push_vertex(
-                Vector3::new(h, 0.0, qh),
-                Vector2::new(uvs[3].x * qh, uvs[3].y * qw),
-            );
-        }
+        if !self.liquid_mesh.add(
+            match side {
+                Side::Left | Side::Right => [
+                    vert(
+                        Vector3::new(h, qw, 0.0),
+                        Vector2::new(uvs[0].x * qh, uvs[0].y * qw),
+                    ),
+                    vert(
+                        Vector3::new(h, qw, qh),
+                        Vector2::new(uvs[1].x * qh, uvs[1].y * qw),
+                    ),
+                    vert(
+                        Vector3::new(h, 0.0, 0.0),
+                        Vector2::new(uvs[2].x * qh, uvs[2].y * qw),
+                    ),
+                    vert(
+                        Vector3::new(h, 0.0, qh),
+                        Vector2::new(uvs[3].x * qh, uvs[3].y * qw),
+                    ),
+                ],
 
-        if side == Side::Top || side == Side::Bottom {
-            push_vertex(
-                Vector3::new(0.0, h, qh),
-                Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
-            );
-            push_vertex(
-                Vector3::new(qw, h, qh),
-                Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
-            );
-            push_vertex(
-                Vector3::new(0.0, h, 0.0),
-                Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
-            );
-            push_vertex(
-                Vector3::new(qw, h, 0.0),
-                Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
-            );
-        }
+                Side::Top | Side::Bottom => [
+                    vert(
+                        Vector3::new(0.0, h, qh),
+                        Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
+                    ),
+                    vert(
+                        Vector3::new(qw, h, qh),
+                        Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
+                    ),
+                    vert(
+                        Vector3::new(0.0, h, 0.0),
+                        Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
+                    ),
+                    vert(
+                        Vector3::new(qw, h, 0.0),
+                        Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+                    ),
+                ],
 
-        if side == Side::Front || side == Side::Back {
-            push_vertex(
-                Vector3::new(0.0, qh, h),
-                Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
-            );
-            push_vertex(
-                Vector3::new(qw, qh, h),
-                Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
-            );
-            push_vertex(
-                Vector3::new(0.0, 0.0, h),
-                Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
-            );
-            push_vertex(
-                Vector3::new(qw, 0.0, h),
-                Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
-            );
+                Side::Front | Side::Back => [
+                    vert(
+                        Vector3::new(0.0, qh, h),
+                        Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
+                    ),
+                    vert(
+                        Vector3::new(qw, qh, h),
+                        Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
+                    ),
+                    vert(
+                        Vector3::new(0.0, 0.0, h),
+                        Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
+                    ),
+                    vert(
+                        Vector3::new(qw, 0.0, h),
+                        Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+                    ),
+                ],
+            }
+            .iter()
+            .cloned(),
+            indices.iter().cloned(),
+        ) {
+            panic!("Mesh could not be created");
         }
     }
 
@@ -501,13 +513,6 @@ impl<'w> MeshConstructor<'w> {
             }
         };
 
-        let index = self.terrain_index;
-        self.mesh
-            .terrain
-            .indices
-            .extend(indices.iter().map(|i| i + index));
-        self.terrain_index += 4;
-
         let normal = side.normal();
 
         let face = self.registry.block_texture(quad.id, side).unwrap();
@@ -517,87 +522,94 @@ impl<'w> MeshConstructor<'w> {
         let qw = quad.width as f32;
         let qh = quad.height as f32;
 
-        let mut push_vertex = |offset, uv, ao| {
-            self.mesh.terrain.vertices.push(BlockVertex {
-                pos: (pos + offset),
-                uv,
-                ao,
-                normal,
-                tex_id,
-            })
+        let mut vert = |offset: Vector3<f32>, uv: Vector2<f32>, ao| TerrainVertex {
+            pos: (pos + offset).into(),
+            uv: uv.into(),
+            normal: normal.into(),
+            ao,
+            tex_id,
         };
 
         let uvs = UV_VARIANT_1;
 
-        // REALLY don't know why I have to plit the quad width and height here... I bet
-        // someone more qualified could tell me :>
-        if side == Side::Left || side == Side::Right {
-            push_vertex(
-                Vector3::new(h, qw, 0.0),
-                Vector2::new(uvs[0].x * qh, uvs[0].y * qw),
-                ao_pn,
-            );
-            push_vertex(
-                Vector3::new(h, qw, qh),
-                Vector2::new(uvs[1].x * qh, uvs[1].y * qw),
-                ao_pp,
-            );
-            push_vertex(
-                Vector3::new(h, 0.0, 0.0),
-                Vector2::new(uvs[2].x * qh, uvs[2].y * qw),
-                ao_nn,
-            );
-            push_vertex(
-                Vector3::new(h, 0.0, qh),
-                Vector2::new(uvs[3].x * qh, uvs[3].y * qw),
-                ao_np,
-            );
-        }
+        // REALLY don't know why I have to reverse the quad width and height along the X
+        // axis... I bet someone more qualified could tell me :>
+        if !self.terrain_mesh.add(
+            match side {
+                Side::Left | Side::Right => [
+                    vert(
+                        Vector3::new(h, qw, 0.0),
+                        Vector2::new(uvs[0].x * qh, uvs[0].y * qw),
+                        ao_pn,
+                    ),
+                    vert(
+                        Vector3::new(h, qw, qh),
+                        Vector2::new(uvs[1].x * qh, uvs[1].y * qw),
+                        ao_pp,
+                    ),
+                    vert(
+                        Vector3::new(h, 0.0, 0.0),
+                        Vector2::new(uvs[2].x * qh, uvs[2].y * qw),
+                        ao_nn,
+                    ),
+                    vert(
+                        Vector3::new(h, 0.0, qh),
+                        Vector2::new(uvs[3].x * qh, uvs[3].y * qw),
+                        ao_np,
+                    ),
+                ],
 
-        if side == Side::Top || side == Side::Bottom {
-            push_vertex(
-                Vector3::new(0.0, h, qh),
-                Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
-                ao_pn,
-            );
-            push_vertex(
-                Vector3::new(qw, h, qh),
-                Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
-                ao_pp,
-            );
-            push_vertex(
-                Vector3::new(0.0, h, 0.0),
-                Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
-                ao_nn,
-            );
-            push_vertex(
-                Vector3::new(qw, h, 0.0),
-                Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
-                ao_np,
-            );
-        }
+                Side::Top | Side::Bottom => [
+                    vert(
+                        Vector3::new(0.0, h, qh),
+                        Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
+                        ao_pn,
+                    ),
+                    vert(
+                        Vector3::new(qw, h, qh),
+                        Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
+                        ao_pp,
+                    ),
+                    vert(
+                        Vector3::new(0.0, h, 0.0),
+                        Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
+                        ao_nn,
+                    ),
+                    vert(
+                        Vector3::new(qw, h, 0.0),
+                        Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+                        ao_np,
+                    ),
+                ],
 
-        if side == Side::Front || side == Side::Back {
-            push_vertex(
-                Vector3::new(0.0, qh, h),
-                Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
-                ao_np,
-            );
-            push_vertex(
-                Vector3::new(qw, qh, h),
-                Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
-                ao_pp,
-            );
-            push_vertex(
-                Vector3::new(0.0, 0.0, h),
-                Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
-                ao_nn,
-            );
-            push_vertex(
-                Vector3::new(qw, 0.0, h),
-                Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
-                ao_pn,
-            );
+                Side::Front | Side::Back => [
+                    vert(
+                        Vector3::new(0.0, qh, h),
+                        Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
+                        ao_np,
+                    ),
+                    vert(
+                        Vector3::new(qw, qh, h),
+                        Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
+                        ao_pp,
+                    ),
+                    vert(
+                        Vector3::new(0.0, 0.0, h),
+                        Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
+                        ao_nn,
+                    ),
+                    vert(
+                        Vector3::new(qw, 0.0, h),
+                        Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+                        ao_pn,
+                    ),
+                ],
+            }
+            .iter()
+            .cloned(),
+            indices.iter().cloned(),
+        ) {
+            panic!("Mesh could not be created");
         }
     }
 }

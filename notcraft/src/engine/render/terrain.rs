@@ -1,153 +1,155 @@
-use engine::{camera::Camera, prelude::*, render::TerrainMeshes};
-use gl_api::{
-    context::Context,
-    shader::{load_shader, program::Program},
-    texture_array::TextureArray2d,
+use crate::engine::{camera::Camera, prelude::*, render::GraphicsData};
+use glium::{
+    texture::{RawImage2d, Texture2dArray},
+    uniforms::{MagnifySamplerFilter, MinifySamplerFilter},
+    *,
 };
-use glutin::GlWindow;
-
-vertex! {
-    vertex BlockVertex {
-        pos: Point3<f32>,
-        normal: Vector3<f32>,
-        uv: Vector2<f32>,
-        tex_id: i32,
-        ao: f32,
-    }
-}
-
-vertex! {
-    vertex LiquidVertex {
-        pos: Point3<f32>,
-        normal: Vector3<f32>,
-        uv: Vector2<f32>,
-        tex_id: i32,
-    }
-}
+use std::{cell::RefCell, rc::Rc};
 
 pub struct TerrainRenderer {
-    ctx: Context,
+    ctx: Display,
+    graphics: Rc<RefCell<GraphicsData>>,
     terrain_program: Program,
     water_program: Program,
-    textures: TextureArray2d,
 }
 
 impl TerrainRenderer {
-    pub fn new(ctx: &mut Context, names: Vec<String>) -> Self {
-        let textures = TextureArray2d::new(ctx, 16, 16, names.len());
-        let images: Result<Vec<_>, _> = names
-            .into_iter()
-            .map(|name| {
-                info!("trying to open resources/textures/{}", &name);
-                image::open(format!("resources/textures/{}", name))
-            })
-            .collect();
-        // FIXME: omg propogate this error plz
-        textures.upload_textures(ctx, images.unwrap().into_iter().map(|img| img.to_rgba()));
-        // let textures = Texture2D::new();
-        // textures
-        //     .source_from_image("resources/textures.png")
-        //     .unwrap();
-        // textures.min_filter(MinimizationFilter::Nearest);
-        // textures.mag_filter(MagnificationFilter::Nearest);
-        // textures.texture_wrap_behavior(TextureAxis::R, WrapMode::Repeat);
-        // textures.texture_wrap_behavior(TextureAxis::S, WrapMode::Repeat);
-        // textures.set_texture_bank(0);
-
-        let mut terrain_program = load_shader(
+    pub fn new(ctx: &Display, graphics: &Rc<RefCell<GraphicsData>>) -> std::io::Result<Self> {
+        let terrain_program = Program::from_source(
             ctx,
-            "resources/shaders/terrain.vs",
-            "resources/shaders/terrain.fs",
-        );
-        terrain_program.set_uniform(ctx, "time", &0.0f32);
-        terrain_program.set_uniform(ctx, "ambient_light", &Vector3::<f32>::new(1.0, 1.0, 1.0));
-        terrain_program.set_uniform(ctx, "camera_position", &Vector3::new(0.0f32, 10.0, 0.0));
-        terrain_program.set_uniform(ctx, "texture_map", &textures);
-        let mut water_program = load_shader(
-            ctx,
-            "resources/shaders/water.vs",
-            "resources/shaders/water.fs",
-        );
-        water_program.set_uniform(ctx, "time", &0.0f32);
-        water_program.set_uniform(ctx, "ambient_light", &Vector3::<f32>::new(1.0, 1.0, 1.0));
-        water_program.set_uniform(ctx, "camera_position", &Vector3::new(0.0f32, 10.0, 0.0));
-        water_program.set_uniform(ctx, "texture_map", &textures);
+            &util::read_file("resources/shaders/terrain.vs")?,
+            &util::read_file("resources/shaders/terrain.fs")?,
+            None,
+        )
+        .unwrap();
 
-        TerrainRenderer {
+        let water_program = Program::from_source(
+            ctx,
+            &util::read_file("resources/shaders/water.vs")?,
+            &util::read_file("resources/shaders/water.fs")?,
+            None,
+        )
+        .unwrap();
+
+        Ok(TerrainRenderer {
             ctx: ctx.clone(),
+            graphics: graphics.clone(),
             terrain_program,
             water_program,
-            textures,
+        })
+    }
+
+    pub fn draw<S: Surface>(&mut self, surface: &mut S, camera: Camera) {
+        let graphics = self.graphics.borrow();
+        for (pos, mesh) in graphics.iter_terrain() {
+            if let Some(gpu) = mesh.gpu.as_ref() {
+                let world_pos = pos.base().base();
+                let model: [[f32; 4]; 4] =
+                    Matrix4::from_translation(util::to_vector(world_pos.0)).into();
+                let view: [[f32; 4]; 4] = camera.view_matrix().into();
+                let projection: [[f32; 4]; 4] = camera.projection_matrix().into();
+                let camera_pos: [f32; 3] = camera.position.into();
+                let ambient_light = [1.0, 1.0, 1.0f32];
+                let sampler = graphics
+                    .textures
+                    .sampled()
+                    .magnify_filter(MagnifySamplerFilter::Nearest)
+                    .minify_filter(MinifySamplerFilter::Nearest);
+                surface
+                    .draw(
+                        &gpu.vertices,
+                        &gpu.indices,
+                        &self.terrain_program,
+                        &glium::uniform! {
+                            time: 0.0,
+                            model_matrix: model,
+                            view_matrix: view,
+                            projection_matrix: projection,
+                            camera_position: camera_pos,
+                            ambient_light: ambient_light,
+                            texture_map: sampler,
+                        },
+                        &DrawParameters {
+                            depth: Depth {
+                                test: DepthTest::IfLess,
+                                write: true,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+            }
         }
     }
 }
 
-impl<'a> System<'a> for TerrainRenderer {
-    type SystemData = (
-        WriteStorage<'a, TerrainMeshes>,
-        ReadStorage<'a, comp::Transform>,
-        ReadExpect<'a, Camera>,
-    );
+// impl<'a> System<'a> for TerrainRenderer {
+//     type SystemData = (
+//         WriteStorage<'a, TerrainMeshes>,
+//         ReadStorage<'a, comp::Transform>,
+//         ReadExpect<'a, Camera>,
+//     );
 
-    fn run(&mut self, (mut meshes, transforms, camera): Self::SystemData) {
-        use gl_api::buffer::UsageType;
+//     fn run(&mut self, (mut meshes, transforms, camera): Self::SystemData) {
+//         for mesh in (&mut meshes).join() {
+//             if mesh.terrain.needs_new_gpu_mesh() {
+//                 mesh.terrain
+//                     .upload(&self.ctx, UsageType::StaticDraw)
+//                     .unwrap();
+//             }
 
-        for mesh in (&mut meshes).join() {
-            if mesh.terrain.needs_new_gpu_mesh() {
-                mesh.terrain
-                    .upload(&self.ctx, UsageType::StaticDraw)
-                    .unwrap();
-            }
+//             if mesh.liquid.needs_new_gpu_mesh() {
+//                 mesh.liquid
+//                     .upload(&self.ctx, UsageType::StaticDraw)
+//                     .unwrap();
+//             }
+//         }
 
-            if mesh.liquid.needs_new_gpu_mesh() {
-                mesh.liquid
-                    .upload(&self.ctx, UsageType::StaticDraw)
-                    .unwrap();
-            }
-        }
+//         let projection = camera.projection_matrix().cast::<f32>().unwrap();
+//         self.terrain_program
+//             .set_uniform(&mut self.ctx, "projection_matrix", &projection);
+//         self.terrain_program.set_uniform(
+//             &mut self.ctx,
+//             "camera_position",
+//             &camera.position.cast::<f32>().unwrap(),
+//         );
+//         self.water_program
+//             .set_uniform(&mut self.ctx, "projection_matrix", &projection);
+//         self.water_program.set_uniform(
+//             &mut self.ctx,
+//             "camera_position",
+//             &camera.position.cast::<f32>().unwrap(),
+//         );
 
-        let projection = camera.projection_matrix().cast::<f32>().unwrap();
-        self.terrain_program
-            .set_uniform(&mut self.ctx, "projection_matrix", &projection);
-        self.terrain_program.set_uniform(
-            &mut self.ctx,
-            "camera_position",
-            &camera.position.cast::<f32>().unwrap(),
-        );
-        self.water_program
-            .set_uniform(&mut self.ctx, "projection_matrix", &projection);
-        self.water_program.set_uniform(
-            &mut self.ctx,
-            "camera_position",
-            &camera.position.cast::<f32>().unwrap(),
-        );
+//         // Draw terrain
+//         for (mesh, tfm) in (&meshes, &transforms).join() {
+//             let tfm: Matrix4<f32> =
+// tfm.model_matrix().cast::<f32>().unwrap();             let view_matrix:
+// Matrix4<f32> = camera.view_matrix().cast().unwrap();
 
-        // Draw terrain
-        for (mesh, tfm) in (&meshes, &transforms).join() {
-            let tfm: Matrix4<f32> = tfm.model_matrix().cast::<f32>().unwrap();
-            let view_matrix: Matrix4<f32> = camera.view_matrix().cast().unwrap();
+//             if let Some(mesh) = mesh.terrain.gpu_mesh.as_ref() {
+//                 self.terrain_program
+//                     .set_uniform(&mut self.ctx, "view_matrix", &view_matrix);
+//                 self.terrain_program
+//                     .set_uniform(&mut self.ctx, "model_matrix", &tfm);
+//                 mesh.draw_with(&mut self.ctx, &self.terrain_program);
+//             }
+//         }
 
-            if let Some(mesh) = mesh.terrain.gpu_mesh.as_ref() {
-                self.terrain_program
-                    .set_uniform(&mut self.ctx, "view_matrix", &view_matrix);
-                self.terrain_program
-                    .set_uniform(&mut self.ctx, "model_matrix", &tfm);
-                mesh.draw_with(&mut self.ctx, &self.terrain_program);
-            }
-        }
+//         // Draw water
+//         for (mesh, tfm) in (&meshes, &transforms).join() {
+//             let tfm: Matrix4<f32> =
+// tfm.model_matrix().cast::<f32>().unwrap();             let view_matrix:
+// Matrix4<f32> = camera.view_matrix().cast().unwrap();
 
-        // Draw water
-        for (mesh, tfm) in (&meshes, &transforms).join() {
-            let tfm: Matrix4<f32> = tfm.model_matrix().cast::<f32>().unwrap();
-            let view_matrix: Matrix4<f32> = camera.view_matrix().cast().unwrap();
-
-            if let Some(mesh) = mesh.liquid.gpu_mesh.as_ref() {
-                self.water_program
-                    .set_uniform(&mut self.ctx, "view_matrix", &view_matrix);
-                self.water_program
-                    .set_uniform(&mut self.ctx, "model_matrix", &tfm);
-                mesh.draw_with(&mut self.ctx, &self.water_program);
-            }
-        }
-    }
-}
+//             if let Some(mesh) = mesh.liquid.gpu_mesh.as_ref() {
+//                 self.water_program
+//                     .set_uniform(&mut self.ctx, "view_matrix", &view_matrix);
+//                 self.water_program
+//                     .set_uniform(&mut self.ctx, "model_matrix", &tfm);
+//                 mesh.draw_with(&mut self.ctx, &self.water_program);
+//             }
+//         }
+//     }
+// }

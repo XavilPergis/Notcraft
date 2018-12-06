@@ -1,9 +1,8 @@
 use cgmath::{Point3, Vector3};
-use engine::world::{
+use crate::engine::world::{
     block::{self, BlockId},
     ChunkPos, VoxelWorld,
 };
-use nd::Array3;
 
 // The width of the chunk is `2 ^ SIZE_BITS`
 pub const SIZE_BITS: usize = 5;
