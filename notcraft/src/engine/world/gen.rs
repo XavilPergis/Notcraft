@@ -71,13 +71,6 @@ impl job::Worker for NoiseGenerator {
     }
 }
 
-use self::job::Worker;
-
-crate fn get_test_chunk() -> Chunk {
-    let mut gen = NoiseGenerator::new_default();
-    gen.compute(&ChunkPos(Point3::new(0, 0, 0)))
-}
-
 pub struct ChunkUnloader {
     keep_loaded: HashSet<ChunkPos>,
 }

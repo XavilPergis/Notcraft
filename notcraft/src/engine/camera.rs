@@ -1,6 +1,6 @@
+use crate::engine::prelude::*;
 use cgmath::PerspectiveFov;
 use collision::Ray3;
-use crate::engine::prelude::*;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Camera {

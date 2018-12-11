@@ -1,5 +1,10 @@
-use crate::engine::{camera::Camera, prelude::*, render::GraphicsData};
+use crate::engine::{
+    camera::Camera,
+    prelude::*,
+    render::{DeferredRenderPass, DeferredRenderPassContext, GraphicsData},
+};
 use glium::{
+    backend::Facade,
     texture::{RawImage2d, Texture2dArray},
     uniforms::{MagnifySamplerFilter, MinifySamplerFilter},
     *,
@@ -38,51 +43,83 @@ impl TerrainRenderer {
             water_program,
         })
     }
+}
 
-    pub fn draw<S: Surface>(&mut self, surface: &mut S, camera: Camera, mode: PolygonMode) {
-        let graphics = self.graphics.borrow();
-        for (pos, mesh) in graphics.iter_terrain() {
+impl DeferredRenderPass for TerrainRenderer {
+    fn draw<F: Facade>(
+        &mut self,
+        ctx: &mut DeferredRenderPassContext<'_, '_, '_, F>,
+    ) -> Result<(), glium::DrawError> {
+        for (pos, mesh) in ctx.data.iter_terrain() {
             if let Some(gpu) = mesh.gpu.as_ref() {
                 let world_pos = pos.base().base();
                 let model: [[f32; 4]; 4] =
                     Matrix4::from_translation(util::to_vector(world_pos.0)).into();
-                let view: [[f32; 4]; 4] = camera.view_matrix().into();
-                let projection: [[f32; 4]; 4] = camera.projection_matrix().into();
-                let camera_pos: [f32; 3] = camera.position.into();
                 let ambient_light = [1.0, 1.0, 1.0f32];
-                let sampler = graphics
-                    .textures
+
+                let albedo_maps = ctx
+                    .data
+                    .albedo_maps
                     .sampled()
-                    .magnify_filter(MagnifySamplerFilter::Nearest)
-                    .minify_filter(MinifySamplerFilter::Nearest);
-                surface
-                    .draw(
-                        &gpu.vertices,
-                        &gpu.indices,
-                        &self.terrain_program,
-                        &glium::uniform! {
-                            time: 0.0,
-                            model_matrix: model,
-                            view_matrix: view,
-                            projection_matrix: projection,
-                            camera_position: camera_pos,
-                            ambient_light: ambient_light,
-                            texture_map: sampler,
-                        },
-                        &DrawParameters {
-                            polygon_mode: mode,
-                            backface_culling: BackfaceCullingMode::CullCounterClockwise,
-                            depth: Depth {
-                                test: DepthTest::IfLess,
-                                write: true,
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        },
-                    )
-                    .unwrap();
+                    .magnify_filter(MagnifySamplerFilter::Linear)
+                    .minify_filter(MinifySamplerFilter::LinearMipmapNearest);
+                let normal_maps = ctx
+                    .data
+                    .normal_maps
+                    .sampled()
+                    .magnify_filter(MagnifySamplerFilter::Linear)
+                    .minify_filter(MinifySamplerFilter::LinearMipmapNearest);
+                let height_maps = ctx
+                    .data
+                    .height_maps
+                    .sampled()
+                    .magnify_filter(MagnifySamplerFilter::Linear)
+                    .minify_filter(MinifySamplerFilter::LinearMipmapNearest);
+                let roughness_maps = ctx
+                    .data
+                    .roughness_maps
+                    .sampled()
+                    .magnify_filter(MagnifySamplerFilter::Linear)
+                    .minify_filter(MinifySamplerFilter::LinearMipmapNearest);
+                let ao_maps = ctx
+                    .data
+                    .ao_maps
+                    .sampled()
+                    .magnify_filter(MagnifySamplerFilter::Linear)
+                    .minify_filter(MinifySamplerFilter::LinearMipmapNearest);
+                let metallic_maps = ctx
+                    .data
+                    .metallic_maps
+                    .sampled()
+                    .magnify_filter(MagnifySamplerFilter::Linear)
+                    .minify_filter(MinifySamplerFilter::LinearMipmapNearest);
+
+                let uniforms = glium::uniform! {
+                    time: 0.0,
+                    model_matrix: model,
+                    view_matrix: ctx.view_matrix(),
+                    projection_matrix: ctx.projection_matrix(),
+                    camera_position: ctx.eye_pos(),
+                    ambient_light: ambient_light,
+
+                    albedo_maps: albedo_maps,
+                    normal_maps: normal_maps,
+                    height_maps: height_maps,
+                    roughness_maps: roughness_maps,
+                    ao_maps: ao_maps,
+                    metallic_maps: metallic_maps,
+                };
+
+                ctx.target.draw(
+                    &gpu.vertices,
+                    &gpu.indices,
+                    &self.terrain_program,
+                    &uniforms,
+                    &ctx.default_draw_params(),
+                )?;
             }
         }
+        Ok(())
     }
 }
 

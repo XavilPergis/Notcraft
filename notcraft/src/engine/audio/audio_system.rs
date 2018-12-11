@@ -4,7 +4,7 @@ use rodio::{Decoder, Device, Sink, Source};
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 const MIN_MUSIC_GAP_SECS: f64 = 60.0;
@@ -15,7 +15,7 @@ fn random_duration() -> Duration {
 }
 
 struct AudioManagerInner {
-    device: Device,
+    _device: Device,
     music_sink: Sink,
 }
 
@@ -65,7 +65,7 @@ impl AudioManager {
         AudioManager(
             rodio::default_output_device().map(|device| AudioManagerInner {
                 music_sink: Sink::new(&device),
-                device,
+                _device: device,
             }),
         )
     }

@@ -304,31 +304,6 @@ impl VoxelWorld {
     }
 }
 
-// mod benches {
-//     use super::*;
-//     use test::Bencher;
-
-//     #[bench]
-//     fn bench_world_get(b: &mut Bencher) {
-//         let mut world = VoxelWorld::new(
-//             BlockRegistry::load_from_file("resources/blocks.json")
-//                 .unwrap()
-//                 .0,
-//         );
-//         world.set_chunk(ChunkPos(Point3::new(0, 0, 0)),
-// super::gen::get_test_chunk());         b.iter(|| {
-//             for x in -2..34 {
-//                 for y in -2..34 {
-//                     for z in -2..34 {
-//
-// test::black_box(world.get_block_id(BlockPos(Point3::new(x, y, z))));
-//                     }
-//                 }
-//             }
-//         });
-//     }
-// }
-
 use collision::Ray3;
 
 fn int_bound(ray: Ray3<f32>, axis: usize) -> f32 {

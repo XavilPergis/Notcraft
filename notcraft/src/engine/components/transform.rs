@@ -1,6 +1,4 @@
-use cgmath::{Deg, Matrix3, Matrix4, Point3, Vector2, Vector3, Vector4};
-use collision::Ray3;
-use crate::engine::world::WorldPos;
+use cgmath::{Deg, Matrix3, Matrix4, Point3, Vector2, Vector3};
 use specs::prelude::*;
 
 #[derive(Copy, Clone, Debug, PartialEq, Component)]

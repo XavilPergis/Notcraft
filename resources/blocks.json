@@ -14,7 +14,7 @@
         "textures": {
             "same": {
                 "random_orientation": true,
-                "texture": "stone.png"
+                "texture": "stone"
             }
         }
     },
@@ -26,7 +26,7 @@
         "textures": {
             "same": {
                 "random_orientation": false,
-                "texture": "dirt.png"
+                "texture": "dirt"
             }
         }
     },
@@ -39,28 +39,15 @@
             "top_bottom": {
                 "top": {
                     "random_orientation": true,
-                    "texture": [
-                        [
-                            100.0,
-                            "grass_top_1.png"
-                        ],
-                        [
-                            1.0,
-                            "grass_top_2.png"
-                        ],
-                        [
-                            1.0,
-                            "grass_top_3.png"
-                        ]
-                    ]
+                    "texture": "grass"
                 },
                 "bottom": {
                     "random_orientation": true,
-                    "texture": "dirt.png"
+                    "texture": "dirt"
                 },
                 "side": {
                     "random_orientation": false,
-                    "texture": "grass_side.png"
+                    "texture": "grass"
                 }
             }
         }
@@ -68,25 +55,15 @@
     {
         "name": "sand",
         "collidable": true,
-        "opaque": true,
+        "opaque": false,
         "liquid": false,
-        "textures": {
-            "same": {
-                "random_orientation": false,
-                "texture": "sand.png"
-            }
-        }
+        "textures": null
     },
     {
         "name": "water",
         "collidable": false,
         "opaque": false,
         "liquid": true,
-        "textures": {
-            "same": {
-                "random_orientation": false,
-                "texture": "water.png"
-            }
-        }
+        "textures": null
     }
 ]

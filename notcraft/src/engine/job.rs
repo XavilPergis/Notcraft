@@ -1,20 +1,11 @@
 use crossbeam::deque::{self, Steal};
-use std::{
-    collections::VecDeque,
-    sync::{mpsc, Arc, Mutex},
-    thread,
-};
+use std::{sync::mpsc, thread};
 
 pub trait Worker: Send + 'static {
     type Input: Send + 'static;
     type Output: Send + 'static;
 
     fn compute(&mut self, input: &Self::Input) -> Self::Output;
-}
-
-pub struct WorkerHandle {
-    working: bool,
-    _handle: thread::JoinHandle<()>,
 }
 
 fn spawn_worker<W: Worker>(
@@ -48,22 +39,6 @@ fn spawn_worker<W: Worker>(
         })
         .unwrap()
 }
-
-/*
-
-Service<I, O>:
-    - request(I)
-    - cancel(I)
-    - gather() -> [O]
-
-    + DequeTx<I>
-    + Rx<O>
-
-Workers:
-    + DequeRx<I>
-    + Tx<O>
-
-*/
 
 pub struct Service<W: Worker> {
     requester: deque::Worker<W::Input>,

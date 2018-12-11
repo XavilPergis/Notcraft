@@ -57,7 +57,10 @@ impl<'a> System<'a> for ChunkMesher {
                     Some(ChunkType::Array(_)) => {
                         let mut graphics = self.graphics.borrow_mut();
                         graphics.terrain_meshes.entry(pos).or_insert_with(|| {
-                            let (terrain, liquid) = mesh_chunk(pos, &world);
+                            let (mut terrain, mut liquid) = mesh_chunk(pos, &world);
+
+                            terrain.recalculate_tangent_bases();
+                            liquid.recalculate_tangent_bases();
 
                             (
                                 MeshPair {
@@ -405,11 +408,11 @@ impl<'w> MeshConstructor<'w> {
         let qw = quad.width as f32;
         let qh = quad.height as f32;
 
-        let vert = |offset: Vector3<f32>, uv: Vector2<f32>| LiquidVertex {
-            pos: (pos + offset).into(),
-            uv: uv.into(),
-            normal: normal.into(),
-            tex_id,
+        let vert = |offset, uv| {
+            LiquidVertex::default()
+                .with_pos(pos + offset)
+                .with_uv(uv)
+                .with_normal(normal)
         };
 
         let uvs = UV_VARIANT_1;
@@ -513,21 +516,21 @@ impl<'w> MeshConstructor<'w> {
             }
         };
 
-        let normal = side.normal();
+        let normal = side.normal::<f32>();
 
         let face = self.registry.block_texture(quad.id, side).unwrap();
-        let tex_id = *face.texture.select() as i32;
+        let tex_id = *face.texture.select();
 
         let h = if side.facing_positive() { 1.0 } else { 0.0 };
         let qw = quad.width as f32;
         let qh = quad.height as f32;
 
-        let mut vert = |offset: Vector3<f32>, uv: Vector2<f32>, ao| TerrainVertex {
-            pos: (pos + offset).into(),
-            uv: uv.into(),
-            normal: normal.into(),
-            ao,
-            tex_id,
+        let vert = |offset, uv, ao| {
+            TerrainVertex::default()
+                .with_pos(pos + offset)
+                .with_uv(uv)
+                .with_texture(tex_id)
+                .with_ao(ao)
         };
 
         let uvs = UV_VARIANT_1;
