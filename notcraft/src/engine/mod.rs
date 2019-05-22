@@ -1,15 +1,18 @@
-use cgmath::{One, Vector3, Zero};
+use nalgebra::Vector3;
+use num_traits::{One, Zero};
 use std::ops::Neg;
 
+// pub mod error;
 pub mod world;
 
 pub mod audio;
-pub mod camera;
 pub mod components;
+pub mod input;
 pub mod job;
+pub mod loader;
+pub mod physics;
 pub mod render;
 pub mod resources;
-pub mod systems;
 
 pub mod prelude {
     pub use super::{
@@ -20,8 +23,8 @@ pub mod prelude {
         },
     };
     pub use crate::util;
-    pub use cgmath::{
-        prelude::*, Deg, Matrix3, Matrix4, Point1, Point2, Point3, Vector2, Vector3, Vector4,
+    pub use nalgebra::{
+        self as na, Matrix3, Matrix4, Point1, Point2, Point3, Vector2, Vector3, Vector4,
     };
     pub use shrev::EventChannel;
     pub use specs::prelude::*;
@@ -60,7 +63,7 @@ impl Side {
         }
     }
 
-    pub fn normal<S: One + Zero + Neg<Output = S>>(&self) -> Vector3<S> {
+    pub fn normal<S: nalgebra::Scalar + One + Zero + Neg<Output = S>>(&self) -> Vector3<S> {
         match *self {
             Side::Top => Vector3::new(S::zero(), S::one(), S::zero()),
             Side::Bottom => Vector3::new(S::zero(), -S::one(), S::zero()),

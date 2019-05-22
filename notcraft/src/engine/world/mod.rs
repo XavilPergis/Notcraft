@@ -1,12 +1,8 @@
-use crate::engine::{
-    render::debug::{DebugSection, Shape},
-    world::{
-        block::BlockRegistry,
-        chunk::{ChunkType, SIZE},
-    },
+use crate::engine::world::{
+    block::BlockRegistry,
+    chunk::{ChunkType, SIZE},
 };
-use cgmath::{Point3, Vector3, Vector4};
-use collision::{Aabb, Aabb3};
+use nalgebra::{Point3, Vector3};
 use std::collections::{HashMap, HashSet};
 
 use self::block::BlockId;
@@ -52,8 +48,12 @@ impl From<WorldPos> for BlockPos {
 }
 
 impl ChunkPos {
-    pub fn offset<I: Into<Vector3<i32>>>(self, vec: I) -> Self {
-        ChunkPos(self.0 + vec.into())
+    pub fn xyz(x: i32, y: i32, z: i32) -> Self {
+        ChunkPos(Point3::new(x, y, z))
+    }
+
+    pub fn offset(self, x: i32, y: i32, z: i32) -> Self {
+        ChunkPos(self.0 + Vector3::new(x, y, z))
     }
 
     pub fn base(self) -> BlockPos {
@@ -62,12 +62,16 @@ impl ChunkPos {
 }
 
 impl BlockPos {
-    pub fn offset<I: Into<Vector3<i32>>>(self, vec: I) -> Self {
-        BlockPos(self.0 + vec.into())
+    pub fn offset(self, x: i32, y: i32, z: i32) -> Self {
+        BlockPos(self.0 + Vector3::new(x, y, z))
     }
 
     pub fn base(self) -> WorldPos {
-        WorldPos(self.0.cast().unwrap())
+        WorldPos(Point3::new(
+            self.0.x as f32,
+            self.0.y as f32,
+            self.0.z as f32,
+        ))
     }
 
     pub fn chunk_pos_offset(self) -> (ChunkPos, Vector3<i32>) {
@@ -84,44 +88,15 @@ impl BlockPos {
             self.0.z as f32 + 0.5,
         ))
     }
-
-    pub fn aabb(&self) -> Aabb3<f32> {
-        Aabb3::new(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0))
-            .add_v(crate::util::to_vector(self.base().0))
-    }
 }
 
 impl WorldPos {
-    pub fn offset<I: Into<Vector3<f32>>>(self, vec: I) -> Self {
-        WorldPos(self.0 + vec.into())
+    pub fn xyz(x: f32, y: f32, z: f32) -> Self {
+        WorldPos(Point3::new(x, y, z))
     }
-}
 
-#[inline(always)]
-fn chunk_id(pos: ChunkPos) -> u64 {
-    let mut id = 0;
-    id |= pos.0.x as u64 & 0xFFFF;
-    id |= (pos.0.y as u64 & 0xFFFF) << 16;
-    id |= (pos.0.z as u64 & 0xFFFF) << 32;
-    id
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct QueryId(usize);
-
-#[derive(Debug, Default)]
-struct ChunkPager {
-    queries: HashMap<ChunkPos, usize>,
-
-    /// Map of chunk positions to (chunks, time to live)
-    paged: HashMap<ChunkPos, (ChunkType, usize)>,
-}
-
-impl ChunkPager {
-    pub fn update(&mut self) {}
-
-    pub fn query(&self) -> QueryId {
-        unimplemented!()
+    pub fn offset(self, x: f32, y: f32, z: f32) -> Self {
+        WorldPos(self.0 + Vector3::new(x, y, z))
     }
 }
 
@@ -136,7 +111,8 @@ impl ChunkPager {
 pub struct VoxelWorld {
     chunks: HashMap<ChunkPos, ChunkType>,
     dirty_mesh: HashSet<ChunkPos>,
-    registry: BlockRegistry,
+    world_generator: gen::NoiseGenerator,
+    pub registry: BlockRegistry,
 }
 
 // use std::ops::{Index, IndexMut};
@@ -180,12 +156,9 @@ impl VoxelWorld {
         VoxelWorld {
             chunks: Default::default(),
             dirty_mesh: Default::default(),
+            world_generator: gen::NoiseGenerator::new_default(),
             registry,
         }
-    }
-
-    pub fn get_registry(&self) -> &BlockRegistry {
-        &self.registry
     }
 
     pub fn unload_chunk(&mut self, pos: ChunkPos) {
@@ -206,7 +179,7 @@ impl VoxelWorld {
     }
 
     fn mark_neighborhood_dirty(&mut self, pos: BlockPos) {
-        iter_pos(pos.offset((-1, -1, -1)), pos.offset((1, 1, 1)), |pos| {
+        iter_pos(pos.offset(-1, -1, -1), pos.offset(1, 1, 1), |pos| {
             self.dirty_mesh.insert(pos.into());
         });
     }
@@ -266,7 +239,7 @@ impl VoxelWorld {
                 for x in -1..=1 {
                     for y in -1..=1 {
                         for z in -1..=1 {
-                            surrounded &= self.chunk_exists(pos.offset((x, y, z)));
+                            surrounded &= self.chunk_exists(pos.offset(x, y, z));
                         }
                     }
                 }
@@ -280,107 +253,144 @@ impl VoxelWorld {
         self.dirty_mesh.remove(&pos);
     }
 
-    pub fn trace_block(
-        &self,
-        ray: Ray3<f32>,
-        radius: f32,
-        debug: &mut DebugSection,
-    ) -> Option<(BlockPos, Option<Vector3<i32>>)> {
-        let mut ret_pos = WorldPos(ray.origin).into();
-        let mut ret_norm = None;
+    // pub fn trace_block(
+    //     &self,
+    //     ray: Ray3<f32>,
+    //     radius: f32,
+    //     // debug: &mut DebugSection,
+    // ) -> Option<(BlockPos, Option<Vector3<i32>>)> {
+    //     let mut ret_pos = WorldPos(ray.origin).into();
+    //     let mut ret_norm = None;
 
-        if trace_ray(ray, radius, |pos, norm| {
-            ret_pos = pos;
-            ret_norm = norm;
-            debug.draw(Shape::Block(1.0, pos, Vector4::new(1.0, 0.0, 1.0, 1.0)));
-            self.registry(pos)
-                .map(|props| props.opaque())
-                .unwrap_or(false)
-        }) {
-            Some((ret_pos, ret_norm))
-        } else {
-            None
-        }
-    }
+    //     if trace_ray(ray, radius, |pos, norm| {
+    //         ret_pos = pos;
+    //         ret_norm = norm;
+    //         // debug.block(pos, 1.0, Vector4::new(1.0, 0.0, 1.0, 1.0));
+    //         self.registry(pos)
+    //             .map(|props| props.opaque())
+    //             .unwrap_or(false)
+    //     }) {
+    //         Some((ret_pos, ret_norm))
+    //     } else {
+    //         None
+    //     }
+    // }
 }
 
-use collision::Ray3;
-
-fn int_bound(ray: Ray3<f32>, axis: usize) -> f32 {
-    if ray.direction[axis] < 0.0 {
-        let mut new = ray;
-        new.origin[axis] *= -1.0;
-        new.direction[axis] *= -1.0;
-        int_bound(new, axis)
-    } else {
-        (1.0 - crate::util::modulo(ray.origin[axis], 1.0)) / ray.direction[axis]
-    }
-}
-
-fn trace_ray<F>(ray: Ray3<f32>, radius: f32, mut func: F) -> bool
-where
-    F: FnMut(BlockPos, Option<Vector3<i32>>) -> bool,
-{
-    // init phase
-    let origin: BlockPos = WorldPos(ray.origin).into();
-    let mut current = origin.0;
-    let step_x = ray.direction.x.signum();
-    let step_y = ray.direction.y.signum();
-    let step_z = ray.direction.z.signum();
-
-    let mut t_max_x = int_bound(ray, 0);
-    let mut t_max_y = int_bound(ray, 1);
-    let mut t_max_z = int_bound(ray, 2);
-
-    let t_delta_x = step_x / ray.direction.x;
-    let t_delta_y = step_y / ray.direction.y;
-    let t_delta_z = step_z / ray.direction.z;
-
-    let step_x = step_x as i32;
-    let step_y = step_y as i32;
-    let step_z = step_z as i32;
-    let mut normal = None;
-
-    // incremental pahse
-    loop {
-        if func(BlockPos(current), normal) {
-            return true;
-        }
-
-        if t_max_x < t_max_y {
-            if t_max_x < t_max_z {
-                if t_max_x > radius {
-                    break;
+pub fn load_chunks(world: &mut VoxelWorld, pos: ChunkPos, radius: i32) {
+    use std::iter::once;
+    // 5 3 1 0 2 4 6 -> r=3
+    // 0 -1 1 -2 2 -3 3
+    for xoff in once(0)
+        .chain(1..radius)
+        .flat_map(|x| once(-x).chain(once(x)))
+    {
+        for yoff in once(0)
+            .chain(1..radius)
+            .flat_map(|y| once(-y).chain(once(y)))
+        {
+            for zoff in once(0)
+                .chain(1..radius)
+                .flat_map(|z| once(-z).chain(once(z)))
+            {
+                let pos = pos.offset(xoff, yoff, zoff);
+                if !world.chunks.contains_key(&pos) {
+                    world.set_chunk(
+                        pos,
+                        world
+                            .world_generator
+                            .make_chunk(pos, &world.registry)
+                            .into(),
+                    );
+                    return;
                 }
-                current.x += step_x;
-                t_max_x += t_delta_x;
-                normal = Some(Vector3::new(-step_x, 0, 0));
-            } else {
-                if t_max_z > radius {
-                    break;
-                }
-                current.z += step_z;
-                t_max_z += t_delta_z;
-                normal = Some(Vector3::new(0, 0, -step_z));
-            }
-        } else {
-            if t_max_y < t_max_z {
-                if t_max_y > radius {
-                    break;
-                }
-                current.y += step_y;
-                t_max_y += t_delta_y;
-                normal = Some(Vector3::new(0, -step_y, 0));
-            } else {
-                if t_max_z > radius {
-                    break;
-                }
-                current.z += step_z;
-                t_max_z += t_delta_z;
-                normal = Some(Vector3::new(0, 0, -step_z));
             }
         }
     }
-
-    false
+    // println!("LOADED: {}", world.chunks.len());
+    // panic!();
 }
+
+// fn int_bound(ray: Ray3<f32>, axis: usize) -> f32 {
+//     if ray.direction[axis] < 0.0 {
+//         let mut new = ray;
+//         new.origin[axis] *= -1.0;
+//         new.direction[axis] *= -1.0;
+//         int_bound(new, axis)
+//     } else {
+//         (1.0 - crate::util::modulo(ray.origin[axis], 1.0)) /
+// ray.direction[axis]     }
+// }
+
+// fn trace_ray<F>(ray: Ray3<f32>, radius: f32, mut func: F) -> bool
+// where
+//     F: FnMut(BlockPos, Option<Vector3<i32>>) -> bool,
+// {
+//     // FIXME: actually do something when looking straight up/down! please!
+//     if ray.direction.y == 0.0 {
+//         return false;
+//     }
+
+//     // init phase
+//     let origin: BlockPos = WorldPos(ray.origin).into();
+//     let mut current = origin.0;
+//     let step_x = ray.direction.x.signum();
+//     let step_y = ray.direction.y.signum();
+//     let step_z = ray.direction.z.signum();
+
+//     let mut t_max_x = int_bound(ray, 0);
+//     let mut t_max_y = int_bound(ray, 1);
+//     let mut t_max_z = int_bound(ray, 2);
+
+//     let t_delta_x = step_x / ray.direction.x;
+//     let t_delta_y = step_y / ray.direction.y;
+//     let t_delta_z = step_z / ray.direction.z;
+
+//     let step_x = step_x as i32;
+//     let step_y = step_y as i32;
+//     let step_z = step_z as i32;
+//     let mut normal = None;
+
+//     // incremental pahse
+//     for _ in 0..3000 {
+//         if func(BlockPos(current), normal) {
+//             return true;
+//         }
+
+//         if t_max_x < t_max_y {
+//             if t_max_x < t_max_z {
+//                 if t_max_x > radius {
+//                     break;
+//                 }
+//                 current.x += step_x;
+//                 t_max_x += t_delta_x;
+//                 normal = Some(Vector3::new(-step_x, 0, 0));
+//             } else {
+//                 if t_max_z > radius {
+//                     break;
+//                 }
+//                 current.z += step_z;
+//                 t_max_z += t_delta_z;
+//                 normal = Some(Vector3::new(0, 0, -step_z));
+//             }
+//         } else {
+//             if t_max_y < t_max_z {
+//                 if t_max_y > radius {
+//                     break;
+//                 }
+//                 current.y += step_y;
+//                 t_max_y += t_delta_y;
+//                 normal = Some(Vector3::new(0, -step_y, 0));
+//             } else {
+//                 if t_max_z > radius {
+//                     break;
+//                 }
+//                 current.z += step_z;
+//                 t_max_z += t_delta_z;
+//                 normal = Some(Vector3::new(0, 0, -step_z));
+//             }
+//         }
+//     }
+
+//     false
+// }

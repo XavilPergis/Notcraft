@@ -7,11 +7,13 @@ use std::{
     time::Duration,
 };
 
-const MIN_MUSIC_GAP_SECS: f64 = 60.0;
-const MAX_MUSIC_GAP_SECS: f64 = 600.0;
+const MIN_MUSIC_GAP_MILLISECS: u64 = 6000;
+const MAX_MUSIC_GAP_MILLISECS: u64 = 60000;
 
 fn random_duration() -> Duration {
-    Duration::from_float_secs(rand::thread_rng().gen_range(MIN_MUSIC_GAP_SECS, MAX_MUSIC_GAP_SECS))
+    Duration::from_millis(
+        rand::thread_rng().gen_range(MIN_MUSIC_GAP_MILLISECS, MAX_MUSIC_GAP_MILLISECS),
+    )
 }
 
 struct AudioManagerInner {
@@ -51,7 +53,10 @@ impl AudioManagerInner {
         if self.music_sink.empty() {
             if let Some(Some(source)) = select_audio_file("resources/audio").ok() {
                 let duration = random_duration();
-                debug!("Playing music in {} seconds", duration.as_float_secs());
+                debug!(
+                    "Playing music in {} seconds",
+                    duration.subsec_millis() as f64 / 1000.0
+                );
                 self.music_sink.append(source.delay(duration));
             }
         }

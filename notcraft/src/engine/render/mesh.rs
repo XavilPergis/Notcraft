@@ -1,8 +1,73 @@
+// use rendy::{hal::Primitive, mesh};
+// use specs::prelude::*;
+// use std::{borrow::Cow, collections::HashMap};
+
+// /// A type-erased, owned vertex buffer.
+// #[derive(Clone, Debug, PartialEq)]
+// pub struct AttributeBuffer<'a> {
+//     data: *const u8,
+//     len: usize,
+//     format: VertexFormat<'a>,
+// }
+
+// impl<T> From<Box<[T]>> for AttributeBuffer
+// where
+//     T: AsVertex,
+// {
+//     fn from(data: Box<T>) -> Self {
+//         AttributeBuffer {
+//             len: data.len() * std::mem::size_of::<T>(),
+//             data: data.into_raw() as *const _,
+//             format: T::VERTEX,
+//         }
+//     }
+// }
+
+// #[derive(Clone, Debug, PartialEq)]
+// pub enum IndexBuffer {
+//     U16(Box<[u16]>),
+//     U32(Box<[u32]>),
+// }
+
+// #[derive(Clone, Debug, PartialEq)]
+// pub struct Mesh {
+//     // Indices are special
+//     pub(crate) indices: Option<IndexBuffer>,
+//     pub(crate) attributes: HashMap<Cow<'static, str>, AttributeBuffer>,
+//     pub primitive: Primitive,
+// }
+
+// impl Component for Mesh {
+//     type Storage = FlaggedStorage<Self, DenseVecStorage<Self>>;
+// }
+
+// impl Mesh {
+//     pub const COLORS: &'static str = "color";
+//     pub const NORMALS: &'static str = "normal";
+//     pub const POSITIONS: &'static str = "position";
+//     pub const TANGENTS: &'static str = "tangent";
+//     pub const UVS: &'static str = "uv";
+
+//     // pub fn set_indices<I>(&mut self, indices: )
+
+//     pub fn insert<S, A>(&mut self, name: S, attrib: A) ->
+// Option<AttributeBuffer>     where
+//         S: Into<Cow<'static, str>>,
+//         A: Into<AttributeBuffer>,
+//     {
+//         self.attributes.insert(name.into(), attrib.into())
+//     }
+
+//     pub fn into_gpu_mesh<B: Backend>(&self, queue: QueueId, factory:
+// &Factory<B>) -> mesh::Mesh<B> {         //
+//     }
+// }
+
+/*
 use cgmath::InnerSpace;
 use glium::{
     backend::Facade,
     index::{Index, PrimitiveType},
-    vertex::BufferCreationError,
     *,
 };
 use num_traits::{AsPrimitive, CheckedAdd, FromPrimitive};
@@ -29,8 +94,8 @@ impl<V: Copy + Vertex, I: Index> GpuMesh<V, I> {
         Ok(GpuMesh {
             vertices: VertexBuffer::empty_dynamic(ctx, reserve_vert)
                 .map_err(BufferError::Vertex)?,
-            indices: IndexBuffer::empty_dynamic(ctx, primitive_type, reserve_idx)
-                .map_err(BufferError::Index)?,
+            indices: IndexBuffer::empty_dynamic(ctx, primitive_type,
+reserve_idx)                 .map_err(BufferError::Index)?,
         })
     }
 }
@@ -64,21 +129,22 @@ impl<V, I> Mesh<V, I> {
         }
     }
 
-    pub fn to_gpu_mesh<F: Facade>(
-        &self,
-        ctx: &F,
-        primitive: PrimitiveType,
-    ) -> Result<GpuMesh<V, I>, BufferError>
-    where
-        V: Copy + Vertex,
-        I: Index,
-    {
-        let vertices = VertexBuffer::new(ctx, &self.vertices).map_err(BufferError::Vertex)?;
-        let indices =
-            IndexBuffer::new(ctx, primitive, &self.indices).map_err(BufferError::Index)?;
+    // pub fn to_gpu_mesh<F: Facade>(
+    //     &self,
+    //     ctx: &F,
+    //     primitive: PrimitiveType,
+    // ) -> Result<GpuMesh<V, I>, BufferError>
+    // where
+    //     V: Copy + Vertex,
+    //     I: Index,
+    // {
+    //     let vertices = VertexBuffer::new(ctx,
+    // &self.vertices).map_err(BufferError::Vertex)?;     let indices =
+    //         IndexBuffer::new(ctx, primitive,
+    // &self.indices).map_err(BufferError::Index)?;
 
-        Ok(GpuMesh { vertices, indices })
-    }
+    //     Ok(GpuMesh { vertices, indices })
+    // }
 
     /// Recalculate the normal and tangent vectors (from which we can derive the
     /// rest of the basis) for each triangle in the mesh
@@ -222,3 +288,5 @@ fn triangle_tangent<V: GeometryVertex, I>(
     let r = 1.0 / (delta_uv_2.x * delta_uv_3.y - delta_uv_2.y * delta_uv_3.x);
     r * (delta_pos_2 * delta_uv_3.y - delta_pos_3 * delta_uv_2.y)
 }
+
+*/

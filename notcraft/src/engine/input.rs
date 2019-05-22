@@ -1,12 +1,6 @@
-use crate::engine::{
-    camera::Camera,
-    prelude::*,
-    render::debug::{DebugAccumulator, Shape},
-};
-use cgmath::Deg;
+use crate::engine::prelude::*;
 use glium::glutin::{
-    DeviceEvent, ElementState, Event, GlWindow, KeyboardInput, ModifiersState, VirtualKeyCode,
-    WindowEvent,
+    DeviceEvent, ElementState, Event, KeyboardInput, ModifiersState, VirtualKeyCode, WindowEvent,
 };
 use shrev::EventChannel;
 use std::collections::{HashMap, HashSet};
@@ -66,14 +60,39 @@ impl From<u32> for Key {
 //     modifiers: Some(CTRL_MODIFIERS),
 // };
 
-use crate::engine::components as comp;
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct Modifiers {
     shift: bool,
     ctrl: bool,
     alt: bool,
     sup: bool,
+}
+
+impl Modifiers {
+    pub const ALT: Self = Modifiers {
+        shift: false,
+        ctrl: false,
+        alt: true,
+        sup: false,
+    };
+    pub const CTRL: Self = Modifiers {
+        shift: false,
+        ctrl: true,
+        alt: false,
+        sup: false,
+    };
+    pub const SHIFT: Self = Modifiers {
+        shift: true,
+        ctrl: false,
+        alt: false,
+        sup: false,
+    };
+    pub const SUPER: Self = Modifiers {
+        shift: false,
+        ctrl: false,
+        alt: false,
+        sup: true,
+    };
 }
 
 impl From<ModifiersState> for Modifiers {
@@ -102,32 +121,72 @@ impl ops::BitOr for Modifiers {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct InputState {
     physical_map: HashMap<VirtualKeyCode, u32>,
     rising: HashSet<u32>,
     falling: HashSet<u32>,
     pressed: HashSet<u32>,
     current_modifiers: Modifiers,
+
+    cursor_dx: f32,
+    cursor_dy: f32,
+    pub sensitivity: f32,
+}
+
+impl Default for InputState {
+    fn default() -> Self {
+        InputState {
+            physical_map: Default::default(),
+            rising: Default::default(),
+            falling: Default::default(),
+            pressed: Default::default(),
+            current_modifiers: Default::default(),
+
+            cursor_dx: 0.0,
+            cursor_dy: 0.0,
+            sensitivity: 0.25,
+        }
+    }
 }
 
 impl InputState {
-    fn update(&mut self, input: KeyboardInput) {
+    fn update(&mut self) {
+        self.rising.clear();
+        self.falling.clear();
+
+        self.cursor_dx = 0.0;
+        self.cursor_dy = 0.0;
+    }
+
+    fn update_keyboard_inputs(&mut self, input: KeyboardInput) {
         self.current_modifiers = input.modifiers.into();
 
         if let Some(vkk) = input.virtual_keycode {
-            self.physical_map.insert(vkk, input.scancode);
+            if self.physical_map.insert(vkk, input.scancode).is_none() {
+                log::debug!("Found physical mapping for `{:?}`: {}", vkk, input.scancode);
+            }
         }
 
         match input.state {
             ElementState::Pressed => {
                 if self.pressed.insert(input.scancode) {
+                    log::trace!(
+                        "Input transitioned to high: {} ({:?})",
+                        input.scancode,
+                        input.virtual_keycode
+                    );
                     self.rising.insert(input.scancode);
                 }
             }
 
             ElementState::Released => {
                 if self.pressed.remove(&input.scancode) {
+                    log::trace!(
+                        "Input transitioned to low: {} ({:?})",
+                        input.scancode,
+                        input.virtual_keycode
+                    );
                     self.falling.insert(input.scancode);
                 }
             }
@@ -136,6 +195,13 @@ impl InputState {
 
     fn modifiers_match(&self, modifiers: Option<Modifiers>) -> bool {
         modifiers.map_or(true, |modifiers| self.current_modifiers == modifiers)
+    }
+
+    pub fn cursor_delta(&self) -> (f32, f32) {
+        (
+            self.sensitivity * self.cursor_dx,
+            self.sensitivity * self.cursor_dy,
+        )
     }
 
     /// Returns true if `key` is being pressed.
@@ -199,12 +265,19 @@ impl InputState {
 }
 
 pub mod keys {
+    use glium::glutin::VirtualKeyCode;
+
     pub const FORWARD: u32 = 0x11;
     pub const BACKWARD: u32 = 0x1F;
     pub const LEFT: u32 = 0x1E;
     pub const RIGHT: u32 = 0x20;
     pub const UP: u32 = 0x39;
     pub const DOWN: u32 = 0x2A;
+
+    pub const ARROW_UP: VirtualKeyCode = VirtualKeyCode::Up;
+    pub const ARROW_DOWN: VirtualKeyCode = VirtualKeyCode::Down;
+    pub const ARROW_LEFT: VirtualKeyCode = VirtualKeyCode::Left;
+    pub const ARROW_RIGHT: VirtualKeyCode = VirtualKeyCode::Right;
 }
 
 // (VirtualKeyCode::C, "chunk grid"),
@@ -218,13 +291,12 @@ impl<'a> System<'a> for InputHandler {
         Read<'a, EventChannel<Event>>,
         Write<'a, res::StopGameLoop>,
         Write<'a, InputState>,
-        WriteExpect<'a, DebugAccumulator>,
+        // WriteExpect<'a, DebugAccumulator>,
     );
 
-    fn run(
-        &mut self,
-        (window_events, mut stop_flag, mut input_state, mut debug): Self::SystemData,
-    ) {
+    fn run(&mut self, (window_events, mut stop_flag, mut input_state): Self::SystemData) {
+        input_state.update();
+
         for event in window_events.read(&mut self.events_handle) {
             match event {
                 Event::WindowEvent { event, .. } => match event {
@@ -232,116 +304,31 @@ impl<'a> System<'a> for InputHandler {
                         stop_flag.0 = true;
                     }
 
-                    WindowEvent::KeyboardInput { input, .. } => input_state.update(*input),
+                    WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                virtual_keycode: Some(VirtualKeyCode::Escape),
+                                ..
+                            },
+                        ..
+                    } => {
+                        stop_flag.0 = true;
+                    }
 
+                    WindowEvent::KeyboardInput { input, .. } => {
+                        input_state.update_keyboard_inputs(*input)
+                    }
+
+                    // WindowEvent::CursorMoved {position, ..}
                     _ => (),
                 },
-                _ => (),
-            }
-        }
-    }
-}
-
-pub struct BlockInteraction {
-    reader: ReaderId<Event>,
-}
-
-impl BlockInteraction {
-    pub fn new(events: &mut EventChannel<Event>) -> Self {
-        BlockInteraction {
-            reader: events.register_reader(),
-        }
-    }
-}
-
-impl<'a> System<'a> for BlockInteraction {
-    type SystemData = (
-        Read<'a, EventChannel<Event>>,
-        WriteExpect<'a, VoxelWorld>,
-        ReadExpect<'a, Camera>,
-        ReadExpect<'a, DebugAccumulator>,
-    );
-
-    fn run(&mut self, (events, mut world, camera, debug): Self::SystemData) {
-        let mut section = debug.section("interaction");
-        let ray = camera.camera_ray();
-        section.draw(Shape::Ray(10.0, ray, Vector4::new(1.0, 0.0, 0.0, 1.0)));
-        if let Some((block, normal)) = world.trace_block(camera.camera_ray(), 10.0, &mut section) {
-            section.draw(Shape::Block(3.0, block, Vector4::new(1.0, 1.0, 1.0, 1.0)));
-        }
-
-        for event in events.read(&mut self.reader) {
-            match event {
-                &Event::DeviceEvent {
-                    event:
-                        DeviceEvent::Button {
-                            button,
-                            state: ElementState::Pressed,
-                        },
-                    ..
-                } => match button {
-                    1 => {
-                        if let Some((block, _)) =
-                            world.trace_block(camera.camera_ray(), 10.0, &mut section)
-                        {
-                            world.set_block_id(block, crate::engine::world::block::AIR);
-                        }
+                Event::DeviceEvent { event, .. } => match event {
+                    DeviceEvent::MouseMotion { delta: (x, y) } => {
+                        input_state.cursor_dx = *x as f32;
+                        input_state.cursor_dy = *y as f32;
                     }
-                    3 => {
-                        if let Some((block, Some(normal))) =
-                            world.trace_block(camera.camera_ray(), 10.0, &mut section)
-                        {
-                            world.set_block_id(
-                                block.offset(normal),
-                                crate::engine::world::block::STONE,
-                            );
-                        }
-                    }
-                    _ => {}
+                    _ => (),
                 },
-
-                _ => (),
-            }
-        }
-    }
-}
-
-pub struct CameraRotationUpdater {
-    reader: ReaderId<Event>,
-}
-
-impl CameraRotationUpdater {
-    pub fn new(events: &mut EventChannel<Event>) -> Self {
-        CameraRotationUpdater {
-            reader: events.register_reader(),
-        }
-    }
-}
-
-impl<'a> System<'a> for CameraRotationUpdater {
-    type SystemData = (Read<'a, EventChannel<Event>>, WriteExpect<'a, Camera>);
-
-    fn run(&mut self, (events, mut camera): Self::SystemData) {
-        for event in events.read(&mut self.reader) {
-            match event {
-                &Event::DeviceEvent {
-                    event: DeviceEvent::MouseMotion { delta: (dx, dy) },
-                    ..
-                } => {
-                    let sensitivity = 0.25;
-
-                    let dx = sensitivity * dx as f32;
-                    let dy = sensitivity * dy as f32;
-                    // Ok, I know this looks weird, but `target` describes which *axis* should
-                    // be rotated around. It just so happens that the Y
-                    // coordinate of the mouse corresponds to a rotation around the X axis
-                    // So that's why we add the change in x to the y component of the look
-                    // target.
-                    camera.orientation.x =
-                        Deg(util::clamp(camera.orientation.x.0 + dy, -90.0, 90.0));
-                    camera.orientation.y += Deg(dx);
-                }
-
                 _ => (),
             }
         }

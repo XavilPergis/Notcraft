@@ -1,57 +1,32 @@
 use crate::{
     engine::{prelude::*, render::verts},
-    graphics::{self, prelude::*},
 };
 use glutin::GlWindow;
 
-fn gen_quad(ctx: &Context) -> Buffer<verts::PosUv> {
-    let mut buf = Buffer::new(ctx);
-    buf.upload(ctx, verts::UV_QUAD_CW, UsageType::StaticDraw)
-        .unwrap();
-    buf
+pub struct UiNode {
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+    pub position: Point3<f32>,
+    pub orientation: Vector2<Deg<f32>>,
+    pub scale: Vector3<f32>,
 }
 
-pub struct DrawCrosshair {
-    ctx: Context,
-    texture: Texture2d,
-    program: Program,
-    buffer: Buffer<verts::PosUv>,
+pub struct UiParent(pub Entitiy);
+
+pub enum TransformBase {
+    Center,
+    BottomLeft,
+    BottomRight,
+    TopLeft,
+    TopRight,
+    CenterTop,
+    CenterBottom,
+    CenterLeft,
+    CenterRight,
 }
 
-impl DrawCrosshair {
-    pub fn new(ctx: &Context) -> Self {
-        let texture = Texture2d::from_image(
-            ctx,
-            &::image::open("resources/crosshair.png").unwrap().to_rgba(),
-        );
+pub struct UiPass {}
 
-        let mut program = load_shader(
-            ctx,
-            "resources/shaders/simple_texture.vs",
-            "resources/shaders/simple_texture.fs",
-        );
-        program.set_uniform(ctx, "tex", &texture);
-
-        DrawCrosshair {
-            ctx: ctx.clone(),
-            texture,
-            program,
-            buffer: gen_quad(ctx),
-        }
-    }
-}
-
-impl<'a> System<'a> for DrawCrosshair {
-    type SystemData = (ReadExpect<'a, GlWindow>);
-
-    fn run(&mut self, window: Self::SystemData) {
-        let size = window.get_inner_size().unwrap();
-        let size: (f64, f64) = size.to_physical(window.get_hidpi_factor()).into();
-        let size = (size.0 as f32, size.1 as f32);
-
-        self.program.set_uniform(&self.ctx, "resolution", &size);
-
-        self.ctx
-            .draw_arrays(PrimitiveType::Triangles, &self.program, &self.buffer);
-    }
+impl DeferredRenderPass for UiPass {
+    
 }

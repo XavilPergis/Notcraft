@@ -1,20 +1,20 @@
-use cgmath::{Point3, Vector3};
 use crate::engine::world::{
     block::{self, BlockId},
     ChunkPos, VoxelWorld,
 };
+use nalgebra::{Point3, Vector3};
 
 // The width of the chunk is `2 ^ SIZE_BITS`
-pub const SIZE_BITS: usize = 5;
+pub const SIZE_BITS: usize = 4;
 pub const SIZE_BITS_2: usize = SIZE_BITS * 2;
 pub const SIZE: usize = 1 << SIZE_BITS;
 
 pub const AREA: usize = SIZE * SIZE;
 pub const VOLUME: usize = SIZE * SIZE * SIZE;
 
-pub fn in_chunk_bounds(pos: Point3<i32>) -> bool {
-    const SIZEI: i32 = SIZE as i32;
-    pos.x < SIZEI && pos.y < SIZEI && pos.z < SIZEI && pos.x >= 0 && pos.y >= 0 && pos.z >= 0
+pub fn in_chunk_bounds(side_len: usize, pos: Point3<i32>) -> bool {
+    let len = side_len as i32;
+    pos.x < len && pos.y < len && pos.z < len && pos.x >= 0 && pos.y >= 0 && pos.z >= 0
 }
 
 const fn index_for_coord(x: usize, y: usize, z: usize) -> usize {
@@ -25,10 +25,12 @@ const fn index_for_coord_size(size: usize, x: usize, y: usize, z: usize) -> usiz
     x * size * size + y * size + z
 }
 
+// TODO: could we possibly find a better design?
 pub struct PaddedChunk {
     data: Box<[BlockId]>,
 }
 
+// TODO: wow this looks horrible
 pub fn make_padded(world: &VoxelWorld, pos: ChunkPos) -> Option<PaddedChunk> {
     let padded_size = SIZE + 2;
 
@@ -40,7 +42,7 @@ pub fn make_padded(world: &VoxelWorld, pos: ChunkPos) -> Option<PaddedChunk> {
         for y in 0..padded_size {
             for z in 0..padded_size {
                 let block =
-                    world.get_block_id(base.offset((x as i32 - 1, y as i32 - 1, z as i32 - 1)))?;
+                    world.get_block_id(base.offset(x as i32 - 1, y as i32 - 1, z as i32 - 1))?;
                 data.push(block);
             }
         }
@@ -107,8 +109,8 @@ impl Chunk {
     }
 
     pub fn get(&self, pos: Point3<i32>) -> Option<&BlockId> {
-        if in_chunk_bounds(pos) {
-            let pos: Point3<usize> = pos.cast().unwrap();
+        if in_chunk_bounds(SIZE, pos) {
+            let pos = Point3::new(pos.x as usize, pos.y as usize, pos.z as usize);
             Some(&self[pos])
         } else {
             None
@@ -116,8 +118,8 @@ impl Chunk {
     }
 
     pub fn get_mut(&mut self, pos: Point3<i32>) -> Option<&mut BlockId> {
-        if in_chunk_bounds(pos) {
-            let pos: Point3<usize> = pos.cast().unwrap();
+        if in_chunk_bounds(SIZE, pos) {
+            let pos = Point3::new(pos.x as usize, pos.y as usize, pos.z as usize);
             Some(&mut self[pos])
         } else {
             None
@@ -137,18 +139,20 @@ macro_rules! gen_index {
             type Output = BlockId;
 
             fn index(&self, $name: $type) -> &BlockId {
-                debug_assert!(in_chunk_bounds(Point3::new(
-                    $x as i32, $y as i32, $z as i32
-                )));
+                debug_assert!(in_chunk_bounds(
+                    SIZE,
+                    Point3::new($x as i32, $y as i32, $z as i32)
+                ));
                 &self.data[index_for_coord($x, $y, $z)]
             }
         }
 
         impl IndexMut<$type> for Chunk {
             fn index_mut(&mut self, $name: $type) -> &mut BlockId {
-                debug_assert!(in_chunk_bounds(Point3::new(
-                    $x as i32, $y as i32, $z as i32
-                )));
+                debug_assert!(in_chunk_bounds(
+                    SIZE,
+                    Point3::new($x as i32, $y as i32, $z as i32)
+                ));
                 &mut self.data[index_for_coord($x, $y, $z)]
             }
         }
@@ -156,19 +160,21 @@ macro_rules! gen_index {
             type Output = BlockId;
 
             fn index(&self, $name: $type) -> &BlockId {
-                debug_assert!(in_chunk_bounds(Point3::new(
-                    $x as i32, $y as i32, $z as i32
-                )));
-                &self.data[index_for_coord_size(34, $x, $y, $z)]
+                debug_assert!(in_chunk_bounds(
+                    SIZE + 2,
+                    Point3::new($x as i32, $y as i32, $z as i32)
+                ));
+                &self.data[index_for_coord_size(SIZE + 2, $x, $y, $z)]
             }
         }
 
         impl IndexMut<$type> for PaddedChunk {
             fn index_mut(&mut self, $name: $type) -> &mut BlockId {
-                debug_assert!(in_chunk_bounds(Point3::new(
-                    $x as i32, $y as i32, $z as i32
-                )));
-                &mut self.data[index_for_coord_size(34, $x, $y, $z)]
+                debug_assert!(in_chunk_bounds(
+                    SIZE + 2,
+                    Point3::new($x as i32, $y as i32, $z as i32)
+                ));
+                &mut self.data[index_for_coord_size(SIZE + 2, $x, $y, $z)]
             }
         }
     };

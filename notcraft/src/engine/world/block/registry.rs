@@ -1,7 +1,6 @@
 use crate::engine::{world::block::Faces, Side};
-use cgmath::Vector2;
 use rand::prelude::*;
-use std::{collections::HashMap, error::Error, io, path::Path};
+use std::{collections::HashMap, error::Error, path::Path};
 
 pub const AIR: BlockId = BlockId(0);
 pub const STONE: BlockId = BlockId(1);
@@ -137,7 +136,7 @@ pub struct BlockRegistryEntry {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
-pub struct BlockId(usize);
+pub struct BlockId(pub(crate) usize);
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct BlockRegistryBuilder {
@@ -195,7 +194,7 @@ impl BlockRegistryBuilder {
         self.textures.iter().position(|item| item == name)
     }
 
-    pub fn build(self) -> (BlockRegistry, Vec<String>) {
+    pub fn build(self) -> BlockRegistry {
         let mut registry = BlockRegistry::default();
 
         debug!("builder: {:#?}", &self);
@@ -211,8 +210,9 @@ impl BlockRegistryBuilder {
         registry.collidable = self.collidable;
         registry.texture_indices = self.texture_indices;
         registry.liquid = self.liquid;
+        registry.texture_paths = self.textures;
 
-        (registry, self.textures)
+        registry
     }
 }
 
@@ -223,10 +223,11 @@ pub struct BlockRegistry {
     collidable: Vec<bool>,
     liquid: Vec<bool>,
     texture_indices: Vec<Option<Faces<BlockFace<usize>>>>,
+    texture_paths: Vec<String>,
 }
 
 impl BlockRegistry {
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<(Self, Vec<String>), Box<Error>> {
+    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<Error>> {
         let entries: Vec<BlockRegistryEntry> =
             serde_json::from_reader(::std::fs::File::open(path)?)?;
         let mut builder = BlockRegistryBuilder::default();
@@ -238,6 +239,18 @@ impl BlockRegistry {
         }
 
         Ok(builder.build())
+    }
+
+    pub fn get_id(&self, name: &str) -> BlockId {
+        self.name_map[name]
+    }
+
+    pub(crate) fn num_entries(&self) -> usize {
+        self.opaque.len()
+    }
+
+    pub fn texture_paths(&self) -> &[String] {
+        &self.texture_paths
     }
 
     #[inline(always)]

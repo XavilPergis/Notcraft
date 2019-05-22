@@ -19,6 +19,18 @@
         }
     },
     {
+        "name": "redstone_lamp_on",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "redstone_lamp_on"
+            }
+        }
+    },
+    {
         "name": "dirt",
         "collidable": true,
         "opaque": true,
@@ -39,7 +51,7 @@
             "top_bottom": {
                 "top": {
                     "random_orientation": true,
-                    "texture": "grass"
+                    "texture": "grass_top"
                 },
                 "bottom": {
                     "random_orientation": true,
@@ -47,7 +59,7 @@
                 },
                 "side": {
                     "random_orientation": false,
-                    "texture": "grass"
+                    "texture": "grass_side"
                 }
             }
         }
@@ -55,15 +67,266 @@
     {
         "name": "sand",
         "collidable": true,
-        "opaque": false,
+        "opaque": true,
         "liquid": false,
-        "textures": null
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "sand"
+            }
+        }
+    },
+    {
+        "name": "coal_block",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "coal_block"
+            }
+        }
+    },
+    {
+        "name": "coal_ore",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "coal_ore"
+            }
+        }
+    },
+    {
+        "name": "gold_block",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "gold_block"
+            }
+        }
+    },
+    {
+        "name": "gold_ore",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "gold_ore"
+            }
+        }
+    },
+    {
+        "name": "iron_block",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "iron_block"
+            }
+        }
+    },
+    {
+        "name": "iron_ore",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "iron_ore"
+            }
+        }
+    },
+    {
+        "name": "lapis_block",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "lapis_block"
+            }
+        }
+    },
+    {
+        "name": "lapis_ore",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "lapis_ore"
+            }
+        }
+    },
+    {
+        "name": "diamond_block",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "diamond_block"
+            }
+        }
+    },
+    {
+        "name": "diamond_ore",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "diamond_ore"
+            }
+        }
+    },
+    {
+        "name": "emerald_block",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "emerald_block"
+            }
+        }
+    },
+    {
+        "name": "emerald_ore",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "emerald_ore"
+            }
+        }
+    },
+    {
+        "name": "stone_brick",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "stonebrick"
+            }
+        }
+    },
+    {
+        "name": "gravel",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "gravel"
+            }
+        }
+    },
+    {
+        "name": "packed_ice",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "same": {
+                "random_orientation": true,
+                "texture": "ice_packed"
+            }
+        }
+    },
+    {
+        "name": "tnt",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "top_bottom": {
+                "top": {
+                    "random_orientation": false,
+                    "texture": "tnt_top"
+                },
+                "bottom": {
+                    "random_orientation": false,
+                    "texture": "tnt_bottom"
+                },
+                "side": {
+                    "random_orientation": false,
+                    "texture": "tnt_side"
+                }
+            }
+        }
+    },
+    {
+        "name": "quartz_block",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "top_bottom": {
+                "top": {
+                    "random_orientation": false,
+                    "texture": "quartz_block_top"
+                },
+                "bottom": {
+                    "random_orientation": false,
+                    "texture": "quartz_block_bottom"
+                },
+                "side": {
+                    "random_orientation": false,
+                    "texture": "quartz_block_side"
+                }
+            }
+        }
+    },
+    {
+        "name": "chiseled_quartz_block",
+        "collidable": true,
+        "opaque": true,
+        "liquid": false,
+        "textures": {
+            "top_bottom": {
+                "top": {
+                    "random_orientation": false,
+                    "texture": "quartz_block_chiseled_top"
+                },
+                "bottom": {
+                    "random_orientation": false,
+                    "texture": "quartz_block_chiseled"
+                },
+                "side": {
+                    "random_orientation": false,
+                    "texture": "quartz_block_chiseled"
+                }
+            }
+        }
     },
     {
         "name": "water",
         "collidable": false,
         "opaque": false,
-        "liquid": true,
+        "liquid": false,
         "textures": null
     }
 ]
