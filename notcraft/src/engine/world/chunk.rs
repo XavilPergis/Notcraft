@@ -2,7 +2,7 @@ use crate::engine::world::{
     block::{self, BlockId},
     ChunkPos, VoxelWorld,
 };
-use nalgebra::{Point3, Vector3};
+use nalgebra::{point, Point3, Vector3};
 
 // The width of the chunk is `2 ^ SIZE_BITS`
 pub const SIZE_BITS: usize = 4;
@@ -110,7 +110,7 @@ impl Chunk {
 
     pub fn get(&self, pos: Point3<i32>) -> Option<&BlockId> {
         if in_chunk_bounds(SIZE, pos) {
-            let pos = Point3::new(pos.x as usize, pos.y as usize, pos.z as usize);
+            let pos = point!(pos.x as usize, pos.y as usize, pos.z as usize);
             Some(&self[pos])
         } else {
             None
@@ -119,7 +119,7 @@ impl Chunk {
 
     pub fn get_mut(&mut self, pos: Point3<i32>) -> Option<&mut BlockId> {
         if in_chunk_bounds(SIZE, pos) {
-            let pos = Point3::new(pos.x as usize, pos.y as usize, pos.z as usize);
+            let pos = point!(pos.x as usize, pos.y as usize, pos.z as usize);
             Some(&mut self[pos])
         } else {
             None
@@ -141,7 +141,7 @@ macro_rules! gen_index {
             fn index(&self, $name: $type) -> &BlockId {
                 debug_assert!(in_chunk_bounds(
                     SIZE,
-                    Point3::new($x as i32, $y as i32, $z as i32)
+                    point!($x as i32, $y as i32, $z as i32)
                 ));
                 &self.data[index_for_coord($x, $y, $z)]
             }
@@ -151,7 +151,7 @@ macro_rules! gen_index {
             fn index_mut(&mut self, $name: $type) -> &mut BlockId {
                 debug_assert!(in_chunk_bounds(
                     SIZE,
-                    Point3::new($x as i32, $y as i32, $z as i32)
+                    point!($x as i32, $y as i32, $z as i32)
                 ));
                 &mut self.data[index_for_coord($x, $y, $z)]
             }
@@ -162,7 +162,7 @@ macro_rules! gen_index {
             fn index(&self, $name: $type) -> &BlockId {
                 debug_assert!(in_chunk_bounds(
                     SIZE + 2,
-                    Point3::new($x as i32, $y as i32, $z as i32)
+                    point!($x as i32, $y as i32, $z as i32)
                 ));
                 &self.data[index_for_coord_size(SIZE + 2, $x, $y, $z)]
             }
@@ -172,7 +172,7 @@ macro_rules! gen_index {
             fn index_mut(&mut self, $name: $type) -> &mut BlockId {
                 debug_assert!(in_chunk_bounds(
                     SIZE + 2,
-                    Point3::new($x as i32, $y as i32, $z as i32)
+                    point!($x as i32, $y as i32, $z as i32)
                 ));
                 &mut self.data[index_for_coord_size(SIZE + 2, $x, $y, $z)]
             }

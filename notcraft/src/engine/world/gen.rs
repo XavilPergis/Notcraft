@@ -1,6 +1,6 @@
 use crate::engine::prelude::*;
+use na::vector;
 use noise::{MultiFractal, NoiseFn, RidgedMulti, SuperSimplex};
-use specs::world::EntitiesRes;
 use std::collections::HashSet;
 
 #[derive(Clone, Debug)]
@@ -57,7 +57,7 @@ impl NoiseGenerator {
         for x in 0..size {
             for y in 0..size {
                 for z in 0..size {
-                    let pos = base + Vector3::new(x, y, z);
+                    let pos = base + vector!(x, y, z);
 
                     vec.push({
                         let noise: f64 = 20.0 * self.noise.get([x as f64, z as f64]);

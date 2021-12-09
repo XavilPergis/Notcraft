@@ -2,7 +2,7 @@ use crate::engine::world::{
     block::BlockRegistry,
     chunk::{ChunkType, SIZE},
 };
-use nalgebra::{Point3, Vector3};
+use nalgebra::{point, vector, Point3, Vector3};
 use std::collections::{HashMap, HashSet};
 
 use self::block::BlockId;
@@ -26,7 +26,7 @@ impl From<BlockPos> for ChunkPos {
         let cx = crate::util::floor_div(pos.0.x, SIZEI);
         let cy = crate::util::floor_div(pos.0.y, SIZEI);
         let cz = crate::util::floor_div(pos.0.z, SIZEI);
-        ChunkPos(Point3::new(cx, cy, cz))
+        ChunkPos(point!(cx, cy, cz))
     }
 }
 
@@ -39,21 +39,21 @@ impl From<WorldPos> for ChunkPos {
 // BLOCK POS
 impl From<WorldPos> for BlockPos {
     fn from(pos: WorldPos) -> Self {
-        BlockPos(Point3::new(
+        BlockPos(point!(
             pos.0.x.floor() as i32,
             pos.0.y.floor() as i32,
-            pos.0.z.floor() as i32,
+            pos.0.z.floor() as i32
         ))
     }
 }
 
 impl ChunkPos {
     pub fn xyz(x: i32, y: i32, z: i32) -> Self {
-        ChunkPos(Point3::new(x, y, z))
+        ChunkPos(point!(x, y, z))
     }
 
     pub fn offset(self, x: i32, y: i32, z: i32) -> Self {
-        ChunkPos(self.0 + Vector3::new(x, y, z))
+        ChunkPos(self.0 + vector!(x, y, z))
     }
 
     pub fn base(self) -> BlockPos {
@@ -63,15 +63,11 @@ impl ChunkPos {
 
 impl BlockPos {
     pub fn offset(self, x: i32, y: i32, z: i32) -> Self {
-        BlockPos(self.0 + Vector3::new(x, y, z))
+        BlockPos(self.0 + vector!(x, y, z))
     }
 
     pub fn base(self) -> WorldPos {
-        WorldPos(Point3::new(
-            self.0.x as f32,
-            self.0.y as f32,
-            self.0.z as f32,
-        ))
+        WorldPos(point!(self.0.x as f32, self.0.y as f32, self.0.z as f32))
     }
 
     pub fn chunk_pos_offset(self) -> (ChunkPos, Vector3<i32>) {
@@ -82,21 +78,21 @@ impl BlockPos {
     }
 
     pub fn center(self) -> WorldPos {
-        WorldPos(Point3::new(
+        WorldPos(point!(
             self.0.x as f32 + 0.5,
             self.0.y as f32 + 0.5,
-            self.0.z as f32 + 0.5,
+            self.0.z as f32 + 0.5
         ))
     }
 }
 
 impl WorldPos {
     pub fn xyz(x: f32, y: f32, z: f32) -> Self {
-        WorldPos(Point3::new(x, y, z))
+        WorldPos(point!(x, y, z))
     }
 
     pub fn offset(self, x: f32, y: f32, z: f32) -> Self {
-        WorldPos(self.0 + Vector3::new(x, y, z))
+        WorldPos(self.0 + vector!(x, y, z))
     }
 }
 
@@ -145,7 +141,7 @@ fn iter_pos(start: BlockPos, end: BlockPos, mut func: impl FnMut(BlockPos)) {
     for x in start.0.x..=end.0.x {
         for y in start.0.y..=end.0.y {
             for z in start.0.z..=end.0.z {
-                func(BlockPos(Point3::new(x, y, z)));
+                func(BlockPos(point!(x, y, z)));
             }
         }
     }
@@ -364,14 +360,14 @@ pub fn load_chunks(world: &mut VoxelWorld, pos: ChunkPos, radius: i32) {
 //                 }
 //                 current.x += step_x;
 //                 t_max_x += t_delta_x;
-//                 normal = Some(Vector3::new(-step_x, 0, 0));
+//                 normal = Some(vector!(-step_x, 0, 0));
 //             } else {
 //                 if t_max_z > radius {
 //                     break;
 //                 }
 //                 current.z += step_z;
 //                 t_max_z += t_delta_z;
-//                 normal = Some(Vector3::new(0, 0, -step_z));
+//                 normal = Some(vector!(0, 0, -step_z));
 //             }
 //         } else {
 //             if t_max_y < t_max_z {
@@ -380,14 +376,14 @@ pub fn load_chunks(world: &mut VoxelWorld, pos: ChunkPos, radius: i32) {
 //                 }
 //                 current.y += step_y;
 //                 t_max_y += t_delta_y;
-//                 normal = Some(Vector3::new(0, -step_y, 0));
+//                 normal = Some(vector!(0, -step_y, 0));
 //             } else {
 //                 if t_max_z > radius {
 //                     break;
 //                 }
 //                 current.z += step_z;
 //                 t_max_z += t_delta_z;
-//                 normal = Some(Vector3::new(0, 0, -step_z));
+//                 normal = Some(vector!(0, 0, -step_z));
 //             }
 //         }
 //     }

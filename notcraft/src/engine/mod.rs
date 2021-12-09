@@ -1,4 +1,4 @@
-use nalgebra::Vector3;
+use nalgebra::{vector, Vector3};
 use num_traits::{One, Zero};
 use std::ops::Neg;
 
@@ -26,8 +26,6 @@ pub mod prelude {
     pub use nalgebra::{
         self as na, Matrix3, Matrix4, Point1, Point2, Point3, Vector2, Vector3, Vector4,
     };
-    pub use shrev::EventChannel;
-    pub use specs::prelude::*;
 }
 
 #[repr(u8)]
@@ -65,19 +63,19 @@ impl Side {
 
     pub fn normal<S: nalgebra::Scalar + One + Zero + Neg<Output = S>>(&self) -> Vector3<S> {
         match *self {
-            Side::Top => Vector3::new(S::zero(), S::one(), S::zero()),
-            Side::Bottom => Vector3::new(S::zero(), -S::one(), S::zero()),
-            Side::Right => Vector3::new(S::one(), S::zero(), S::zero()),
-            Side::Left => Vector3::new(-S::one(), S::zero(), S::zero()),
-            Side::Front => Vector3::new(S::zero(), S::zero(), S::one()),
-            Side::Back => Vector3::new(S::zero(), S::zero(), -S::one()),
+            Side::Top => vector!(S::zero(), S::one(), S::zero()),
+            Side::Bottom => vector!(S::zero(), -S::one(), S::zero()),
+            Side::Right => vector!(S::one(), S::zero(), S::zero()),
+            Side::Left => vector!(-S::one(), S::zero(), S::zero()),
+            Side::Front => vector!(S::zero(), S::zero(), S::one()),
+            Side::Back => vector!(S::zero(), S::zero(), -S::one()),
         }
     }
 
     /// take coordinates (u, v, l) where (u, v) is parallel to this face and
     /// convert it to a relative xyz coord
     pub fn uvl_to_xyz(&self, u: i32, v: i32, l: i32) -> Vector3<i32> {
-        let mut vec = Vector3::new(0, 0, 0);
+        let mut vec = vector!(0, 0, 0);
         let axis: Axis = (*self).into();
         let l = if self.facing_positive() { l } else { -l };
         vec[axis as usize % 3] = l;

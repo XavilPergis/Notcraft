@@ -1,4 +1,5 @@
 use crate::engine::{
+    components::Transform,
     prelude::*,
     render::{Ao, Norm, Pos, Tang, Tex, TexId},
     world::{
@@ -8,60 +9,59 @@ use crate::engine::{
     },
     Side,
 };
-use specs::{prelude::*, world::EntitiesRes};
+use legion::{systems::CommandBuffer, world::SubWorld, Entity, Query};
+// use specs::{prelude::*, world::EntitiesRes};
 use std::collections::HashMap;
 
-#[derive(Debug, Default)]
-pub struct ChunkMesher {
-    chunk_renderables: HashMap<ChunkPos, Entity>,
-}
-
-impl<'a> System<'a> for ChunkMesher {
-    type SystemData = (
-        ReadExpect<'a, EntitiesRes>,
-        WriteExpect<'a, VoxelWorld>,
-        WriteStorage<'a, comp::Transform>,
-        WriteStorage<'a, TerrainMesh>,
-    );
-
-    fn run(&mut self, (entities, mut world, mut transforms, mut meshes): Self::SystemData) {
-        // let mut section = debug.section("mesher");
-        while let Some(pos) = world.get_dirty_chunk() {
-            match world.chunk(pos) {
-                Some(ChunkType::Homogeneous(id)) => {
-                    // lol this fucking if statment
-                    if !world.registry.opaque(*id) {
-                        // Don't do anything lole
-                    }
-
-                    // FIXME: we can get some pretty weird inconsistencies here if we don't mesh
-                    // homogeneous solid chunks. could we just generate one big cube or smth?
-                    world.clean_chunk(pos);
-
-                    continue;
+#[legion::system]
+pub fn chunk_mesher(
+    cmd: &mut CommandBuffer,
+    #[state] terrain_entities: &mut HashMap<ChunkPos, Entity>,
+    #[resource] voxel_world: &mut VoxelWorld,
+) {
+    // let mut section = debug.section("mesher");
+    while let Some(pos) = voxel_world.get_dirty_chunk() {
+        // log::debug!("meshing chunk {:?}", pos);
+        match voxel_world.chunk(pos) {
+            Some(ChunkType::Homogeneous(id)) => {
+                // lol this fucking if statment
+                if !voxel_world.registry.opaque(*id) {
+                    // Don't do anything lole
                 }
 
-                Some(ChunkType::Array(_)) => {
-                    let entity = self
-                        .chunk_renderables
-                        .get(&pos)
-                        .cloned()
-                        .unwrap_or_else(|| entities.create());
+                // FIXME: we can get some pretty weird inconsistencies here if we don't mesh
+                // homogeneous solid chunks. could we just generate one big cube or smth?
+                voxel_world.clean_chunk(pos);
 
-                    meshes.insert(entity, mesh_chunk(pos, &world)).unwrap();
-                    let wpos = pos.base().base().0;
-                    transforms.insert(entity, wpos.into()).unwrap();
-                    println!("Inserted mesh! {:?} {:?}", entity, pos);
-                    world.clean_chunk(pos);
-                    break;
-                }
-
-                // wat
-                _ => unreachable!(),
+                continue;
             }
+
+            Some(ChunkType::Array(_)) => {
+                let mesh = mesh_chunk(pos, &voxel_world);
+                let transform = Transform::from(pos.base().base().0);
+
+                let entity = terrain_entities
+                    .get(&pos)
+                    .copied()
+                    .unwrap_or_else(|| cmd.push(()));
+
+                cmd.add_component(entity, mesh);
+                cmd.add_component(entity, transform);
+
+                // println!("Inserted mesh! {:?} {:?}", entity, pos);
+                voxel_world.clean_chunk(pos);
+
+                break;
+            }
+
+            // wat
+            _ => unreachable!(),
         }
     }
 }
+
+#[derive(Debug, Default)]
+pub struct ChunkMesher {}
 
 pub fn mesh_chunk(pos: ChunkPos, world: &VoxelWorld) -> TerrainMesh {
     let mut mesher = Mesher::new(pos, world);
@@ -129,7 +129,7 @@ impl<'w> Mesher<'w> {
             return FaceAo::default();
         }
 
-        let pos = Point3::new(pos.x as i32, pos.y as i32, pos.z as i32);
+        let pos = na::point!(pos.x as i32, pos.y as i32, pos.z as i32);
         let is_opaque = |pos| self.registry.opaque(self.center[pos]);
 
         let neg_neg = is_opaque(pos + side.uvl_to_xyz(-1, -1, 1));
@@ -155,7 +155,7 @@ impl<'w> Mesher<'w> {
     }
 
     fn is_not_occluded(&self, pos: Point3<usize>, offset: Vector3<isize>) -> bool {
-        let offset = Point3::new(pos.x as isize, pos.y as isize, pos.z as isize) + offset;
+        let offset = na::point!(pos.x as isize, pos.y as isize, pos.z as isize) + offset;
 
         let cur_solid = self.registry.opaque(self.center[pos]);
         let other_solid = self.registry.opaque(self.center[offset]);
@@ -255,7 +255,7 @@ impl<'w> Mesher<'w> {
         for layer in 0..SIZE {
             for u in 0..SIZE {
                 for v in 0..SIZE {
-                    let padded = make_coordinate(layer, u, v) + Vector3::new(1, 1, 1);
+                    let padded = make_coordinate(layer, u, v) + na::vector!(1, 1, 1);
                     self.slice[idx(u, v)] = if self.is_not_occluded(padded, side.normal()) {
                         VoxelFace {
                             id: self.center[padded],
@@ -277,14 +277,14 @@ impl<'w> Mesher<'w> {
     }
 
     pub fn mesh(&mut self) {
-        self.mesh_slice(Side::Right, |layer, u, v| Point3::new(layer, u, v));
-        self.mesh_slice(Side::Left, |layer, u, v| Point3::new(layer, u, v));
+        self.mesh_slice(Side::Right, |layer, u, v| na::point!(layer, u, v));
+        self.mesh_slice(Side::Left, |layer, u, v| na::point!(layer, u, v));
 
-        self.mesh_slice(Side::Top, |layer, u, v| Point3::new(u, layer, v));
-        self.mesh_slice(Side::Bottom, |layer, u, v| Point3::new(u, layer, v));
+        self.mesh_slice(Side::Top, |layer, u, v| na::point!(u, layer, v));
+        self.mesh_slice(Side::Bottom, |layer, u, v| na::point!(u, layer, v));
 
-        self.mesh_slice(Side::Front, |layer, u, v| Point3::new(u, v, layer));
-        self.mesh_slice(Side::Back, |layer, u, v| Point3::new(u, v, layer));
+        self.mesh_slice(Side::Front, |layer, u, v| na::point!(u, v, layer));
+        self.mesh_slice(Side::Back, |layer, u, v| na::point!(u, v, layer));
     }
 }
 
@@ -405,10 +405,6 @@ fn triangle_tangent(mesh: &TerrainMesh, a: usize, b: usize, c: usize) -> Vector3
     r * (delta_pos_2 * delta_uv_3.y - delta_pos_3 * delta_uv_2.y)
 }
 
-impl Component for TerrainMesh {
-    type Storage = FlaggedStorage<Self, HashMapStorage<Self>>;
-}
-
 #[derive(Debug)]
 struct MeshConstructor<'w> {
     // liquid_mesh: LiquidMesh,
@@ -457,58 +453,58 @@ impl<'w> MeshConstructor<'w> {
         //     match side {
         //         Side::Top | Side::Bottom => [
         //             vert(
-        //                 Vector3::new(0.0, h, qh),
-        //                 Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
+        //                 na::vector!(0.0, h, qh),
+        //                 na::vector!(uvs[0].x * qw, uvs[0].y * qh),
         //             ),
         //             vert(
-        //                 Vector3::new(qw, h, qh),
-        //                 Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
+        //                 na::vector!(qw, h, qh),
+        //                 na::vector!(uvs[1].x * qw, uvs[1].y * qh),
         //             ),
         //             vert(
-        //                 Vector3::new(0.0, h, 0.0),
-        //                 Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
+        //                 na::vector!(0.0, h, 0.0),
+        //                 na::vector!(uvs[2].x * qw, uvs[2].y * qh),
         //             ),
         //             vert(
-        //                 Vector3::new(qw, h, 0.0),
-        //                 Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+        //                 na::vector!(qw, h, 0.0),
+        //                 na::vector!(uvs[3].x * qw, uvs[3].y * qh),
         //             ),
         //         ],
 
         //         Side::Left | Side::Right => [
         //             vert(
-        //                 Vector3::new(h, qw, 0.0),
-        //                 Vector2::new(uvs[0].x * qh, uvs[0].y * qw),
+        //                 na::vector!(h, qw, 0.0),
+        //                 na::vector!(uvs[0].x * qh, uvs[0].y * qw),
         //             ),
         //             vert(
-        //                 Vector3::new(h, qw, qh),
-        //                 Vector2::new(uvs[1].x * qh, uvs[1].y * qw),
+        //                 na::vector!(h, qw, qh),
+        //                 na::vector!(uvs[1].x * qh, uvs[1].y * qw),
         //             ),
         //             vert(
-        //                 Vector3::new(h, 0.0, 0.0),
-        //                 Vector2::new(uvs[2].x * qh, uvs[2].y * qw),
+        //                 na::vector!(h, 0.0, 0.0),
+        //                 na::vector!(uvs[2].x * qh, uvs[2].y * qw),
         //             ),
         //             vert(
-        //                 Vector3::new(h, 0.0, qh),
-        //                 Vector2::new(uvs[3].x * qh, uvs[3].y * qw),
+        //                 na::vector!(h, 0.0, qh),
+        //                 na::vector!(uvs[3].x * qh, uvs[3].y * qw),
         //             ),
         //         ],
 
         //         Side::Front | Side::Back => [
         //             vert(
-        //                 Vector3::new(0.0, qh, h),
-        //                 Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
+        //                 na::vector!(0.0, qh, h),
+        //                 na::vector!(uvs[0].x * qw, uvs[0].y * qh),
         //             ),
         //             vert(
-        //                 Vector3::new(qw, qh, h),
-        //                 Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
+        //                 na::vector!(qw, qh, h),
+        //                 na::vector!(uvs[1].x * qw, uvs[1].y * qh),
         //             ),
         //             vert(
-        //                 Vector3::new(0.0, 0.0, h),
-        //                 Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
+        //                 na::vector!(0.0, 0.0, h),
+        //                 na::vector!(uvs[2].x * qw, uvs[2].y * qh),
         //             ),
         //             vert(
-        //                 Vector3::new(qw, 0.0, h),
-        //                 Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+        //                 na::vector!(qw, 0.0, h),
+        //                 na::vector!(uvs[3].x * qw, uvs[3].y * qh),
         //             ),
         //         ],
         //     }
@@ -521,7 +517,7 @@ impl<'w> MeshConstructor<'w> {
     }
 
     fn add_terrain(&mut self, quad: VoxelQuad, side: Side, pos: Point3<usize>) {
-        let pos = Point3::new(pos.x as f32, pos.y as f32, pos.z as f32);
+        let pos = na::point!(pos.x as f32, pos.y as f32, pos.z as f32);
 
         let ao_pp = (quad.ao.corner_ao(FaceAo::AO_POS_POS) as f32) / 3.0;
         let ao_pn = (quad.ao.corner_ao(FaceAo::AO_POS_NEG) as f32) / 3.0;
@@ -580,10 +576,10 @@ impl<'w> MeshConstructor<'w> {
         };
 
         let uvs = &[
-            Vector2::new(1.0, 1.0),
-            Vector2::new(0.0, 1.0),
-            Vector2::new(1.0, 0.0),
-            Vector2::new(0.0, 0.0),
+            na::vector!(1.0, 1.0),
+            na::vector!(0.0, 1.0),
+            na::vector!(1.0, 0.0),
+            na::vector!(0.0, 0.0),
         ];
 
         // REALLY don't know why I have to reverse the quad width and height along the X
@@ -591,69 +587,69 @@ impl<'w> MeshConstructor<'w> {
         match side {
             Side::Left | Side::Right => {
                 vert(
-                    Vector3::new(h, qw, 0.0),
-                    Vector2::new(uvs[0].x * qh, uvs[0].y * qw),
+                    na::vector!(h, qw, 0.0),
+                    na::vector!(uvs[0].x * qh, uvs[0].y * qw),
                     ao_pn,
                 );
                 vert(
-                    Vector3::new(h, qw, qh),
-                    Vector2::new(uvs[1].x * qh, uvs[1].y * qw),
+                    na::vector!(h, qw, qh),
+                    na::vector!(uvs[1].x * qh, uvs[1].y * qw),
                     ao_pp,
                 );
                 vert(
-                    Vector3::new(h, 0.0, 0.0),
-                    Vector2::new(uvs[2].x * qh, uvs[2].y * qw),
+                    na::vector!(h, 0.0, 0.0),
+                    na::vector!(uvs[2].x * qh, uvs[2].y * qw),
                     ao_nn,
                 );
                 vert(
-                    Vector3::new(h, 0.0, qh),
-                    Vector2::new(uvs[3].x * qh, uvs[3].y * qw),
+                    na::vector!(h, 0.0, qh),
+                    na::vector!(uvs[3].x * qh, uvs[3].y * qw),
                     ao_np,
                 );
             }
 
             Side::Top | Side::Bottom => {
                 vert(
-                    Vector3::new(0.0, h, qh),
-                    Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
+                    na::vector!(0.0, h, qh),
+                    na::vector!(uvs[0].x * qw, uvs[0].y * qh),
                     ao_pn,
                 );
                 vert(
-                    Vector3::new(qw, h, qh),
-                    Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
+                    na::vector!(qw, h, qh),
+                    na::vector!(uvs[1].x * qw, uvs[1].y * qh),
                     ao_pp,
                 );
                 vert(
-                    Vector3::new(0.0, h, 0.0),
-                    Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
+                    na::vector!(0.0, h, 0.0),
+                    na::vector!(uvs[2].x * qw, uvs[2].y * qh),
                     ao_nn,
                 );
                 vert(
-                    Vector3::new(qw, h, 0.0),
-                    Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+                    na::vector!(qw, h, 0.0),
+                    na::vector!(uvs[3].x * qw, uvs[3].y * qh),
                     ao_np,
                 );
             }
 
             Side::Front | Side::Back => {
                 vert(
-                    Vector3::new(0.0, qh, h),
-                    Vector2::new(uvs[0].x * qw, uvs[0].y * qh),
+                    na::vector!(0.0, qh, h),
+                    na::vector!(uvs[0].x * qw, uvs[0].y * qh),
                     ao_np,
                 );
                 vert(
-                    Vector3::new(qw, qh, h),
-                    Vector2::new(uvs[1].x * qw, uvs[1].y * qh),
+                    na::vector!(qw, qh, h),
+                    na::vector!(uvs[1].x * qw, uvs[1].y * qh),
                     ao_pp,
                 );
                 vert(
-                    Vector3::new(0.0, 0.0, h),
-                    Vector2::new(uvs[2].x * qw, uvs[2].y * qh),
+                    na::vector!(0.0, 0.0, h),
+                    na::vector!(uvs[2].x * qw, uvs[2].y * qh),
                     ao_nn,
                 );
                 vert(
-                    Vector3::new(qw, 0.0, h),
-                    Vector2::new(uvs[3].x * qw, uvs[3].y * qh),
+                    na::vector!(qw, 0.0, h),
+                    na::vector!(uvs[3].x * qw, uvs[3].y * qh),
                     ao_pn,
                 );
             }

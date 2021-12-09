@@ -227,7 +227,7 @@ pub struct BlockRegistry {
 }
 
 impl BlockRegistry {
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<Error>> {
+    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
         let entries: Vec<BlockRegistryEntry> =
             serde_json::from_reader(::std::fs::File::open(path)?)?;
         let mut builder = BlockRegistryBuilder::default();

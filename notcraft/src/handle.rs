@@ -1,15 +1,12 @@
-use specs::prelude::*;
-use std::cell::{Cell, Ref, RefCell};
-use std::collections::HashMap;
-use std::marker::PhantomData;
+use std::{
+    cell::{Cell, Ref, RefCell},
+    collections::HashMap,
+    marker::PhantomData,
+};
 
 pub struct Handle<T>(usize, PhantomData<T>);
 unsafe impl<T> Send for Handle<T> {}
 unsafe impl<T> Sync for Handle<T> {}
-
-impl<T: 'static> Component for Handle<T> {
-    type Storage = DenseVecStorage<Self>;
-}
 
 #[derive(Clone, Debug)]
 pub struct LocalPool<T> {

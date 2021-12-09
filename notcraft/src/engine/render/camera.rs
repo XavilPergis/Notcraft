@@ -1,13 +1,9 @@
-use crate::engine::prelude::*;
+use legion::Entity;
 use nalgebra as na;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Camera {
     pub projection: na::Perspective3<f32>,
-}
-
-impl Component for Camera {
-    type Storage = HashMapStorage<Self>;
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Default)]

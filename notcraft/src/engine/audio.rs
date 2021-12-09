@@ -1,6 +1,5 @@
-use crate::engine::prelude::*;
 use rand::prelude::*;
-use rodio::{Decoder, Device, Sink, Source};
+use rodio::{Decoder, Device, OutputStream, Sink, Source};
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -48,40 +47,30 @@ fn select_audio_file<P: AsRef<Path>>(dir: P) -> io::Result<Option<Decoder<fs::Fi
         .and_then(|file| Decoder::new(file).ok()))
 }
 
-impl AudioManagerInner {
-    fn try_play_music(&mut self) {
-        if self.music_sink.empty() {
-            if let Some(Some(source)) = select_audio_file("resources/audio").ok() {
-                let duration = random_duration();
-                debug!(
-                    "Playing music in {} seconds",
-                    duration.subsec_millis() as f64 / 1000.0
-                );
-                self.music_sink.append(source.delay(duration));
-            }
+pub struct MusicState {
+    music_sink: Sink,
+    output_stream: OutputStream,
+}
+
+impl MusicState {
+    pub fn new() -> Self {
+        let (os, handle) = OutputStream::try_default().unwrap();
+        let sink = Sink::try_new(&handle).unwrap();
+
+        Self {
+            music_sink: sink,
+            output_stream: os,
         }
     }
 }
 
-pub struct AudioManager(Option<AudioManagerInner>);
-
-impl AudioManager {
-    pub fn new() -> Self {
-        AudioManager(
-            rodio::default_output_device().map(|device| AudioManagerInner {
-                music_sink: Sink::new(&device),
-                _device: device,
-            }),
-        )
-    }
-}
-
-impl<'a> System<'a> for AudioManager {
-    type SystemData = ();
-
-    fn run(&mut self, _: Self::SystemData) {
-        if let AudioManager(Some(inner)) = self {
-            inner.try_play_music();
+#[legion::system]
+pub fn intermittent_music(#[state] state: &mut MusicState) {
+    if state.music_sink.empty() {
+        if let Some(Some(source)) = select_audio_file("resources/audio").ok() {
+            let duration = random_duration();
+            debug!("Playing music in {} seconds", duration.as_secs_f64());
+            state.music_sink.append(source.delay(duration));
         }
     }
 }

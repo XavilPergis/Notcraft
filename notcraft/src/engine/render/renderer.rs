@@ -1,5 +1,5 @@
 use crate::engine::{
-    components::GlobalTransform,
+    components::{GlobalTransform, Transform},
     loader,
     prelude::*,
     render::{
@@ -9,10 +9,10 @@ use crate::engine::{
     },
     world::VoxelWorld,
 };
+use crossbeam_channel::Receiver;
 use glium::{
     backend::Facade,
     framebuffer::SimpleFrameBuffer,
-    glutin::EventsLoop,
     index::{IndexBuffer, PrimitiveType},
     texture::{
         DepthTexture2d, MipmapsOption, RawImage2d, SrgbTexture2dArray, Texture2d, Texture2dArray,
@@ -23,9 +23,12 @@ use glium::{
     vertex::VertexBuffer,
     Display, Program, Surface,
 };
+use legion::{world::Event, Entity, IntoQuery, Query, Read, Resources, SystemBuilder, World};
 use nalgebra::{self as na, Perspective3};
-use specs::{prelude::*, world::Index};
-use std::{collections::HashMap, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 /// Map error to a string
 macro_rules! err2s {
@@ -162,22 +165,20 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(event_loop: &EventsLoop, world: &mut World) -> Result<Self, String> {
-        let window = glium::glutin::WindowBuilder::new()
-            .with_title("Notcraft™")
-            .with_dimensions(glium::glutin::dpi::LogicalSize::new(1024.0, 768.0));
-        let ctx = glium::glutin::ContextBuilder::new().with_depth_buffer(24);
-        let display = Rc::new(
-            Display::new(window, ctx, event_loop)
-                .map_err(|err| format!("could not create Display: {:?}", err))?,
-        );
+    pub fn new(
+        display: Rc<Display>,
+        world: &mut World,
+        resources: &mut Resources,
+    ) -> Result<Self, String> {
+        let terrain_render = TerrainRenderContext::new(Rc::clone(&display), world, resources)?;
 
         let (width, height) = display.get_framebuffer_dimensions();
         let buffers =
             PipelineBuffers::new(&*display, width, height).map_err(|err| format!("{:?}", err))?;
-        let terrain_render = TerrainRenderContext::new(display.clone(), world)?;
+
         let compose_program = err2s!(loader::load_shader(&*display, "resources/shaders/compose"))?;
         let ao_program = err2s!(loader::load_shader(&*display, "resources/shaders/ssao"))?;
+
         let fullscreen_quad = err2s!(VertexBuffer::immutable(&*display, &[
             Tex { uv: [-1.0, 1.0] },
             Tex { uv: [1.0, 1.0] },
@@ -221,7 +222,6 @@ impl Renderer {
 
         let light_positions = err2s!(UniformBuffer::dynamic(&*display, light_positions))?;
         let light_colors = err2s!(UniformBuffer::dynamic(&*display, light_colors))?;
-        // ao_kernel.write(&ao_samples);
 
         Ok(Renderer {
             display,
@@ -236,7 +236,12 @@ impl Renderer {
         })
     }
 
-    pub fn draw(&mut self, world: &mut World) -> Result<(), String> {
+    pub fn draw<S: Surface>(
+        &mut self,
+        target: &mut S,
+        world: &mut World,
+        resources: &mut Resources,
+    ) -> Result<(), String> {
         // Upload/delete etc meshes to keep in sync with the world.
         self.terrain_render
             .update_meshes(&*self.display, world)
@@ -244,78 +249,62 @@ impl Renderer {
 
         // Render terrain to gbuffers
         {
-            let mut target = err2s!(get_deferred_render_target(&*self.display, &self.buffers))?;
+            // let mut target = err2s!(get_deferred_render_target(&*self.display,
+            // &self.buffers))?;
             target.clear_color_and_depth((0.0, 0.0, 0.0, 1.0), 1.0);
-            self.terrain_render.draw(&mut target, world)?;
+            self.terrain_render.draw(target, world, resources)?;
         }
 
-        let cameras = world.read_storage::<Camera>();
-        let transforms = world.read_storage::<comp::GlobalTransform>();
-        let cam_transform = get_camera(
-            world.read_resource::<ActiveCamera>().0,
-            &cameras,
-            &transforms,
-        );
+        let cam_transform = get_camera(world, resources);
         let (width, height) = self.display.get_framebuffer_dimensions();
         let (view, proj) = get_proj_view(width, height, cam_transform);
         let cam_pos = get_cam_pos(cam_transform);
 
         // AO render pass
-        {
-            let mut target = err2s!(get_ao_render_target(&*self.display, &self.buffers))?;
-            target.clear_color(1.0, 1.0, 1.0, 1.0);
-            err2s!(target.draw(
-                &self.fullscreen_quad,
-                glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
-                &self.ao_program,
-                &uniform! {
-                    gdepth: self.buffers.gdepth.sampled(),
-                    gnormal: self.buffers.gnormal.sampled(),
-                    gposition: self.buffers.gposition.sampled(),
+        // {
+        //     let mut target = err2s!(get_ao_render_target(&*self.display,
+        // &self.buffers))?;     target.clear_color(1.0, 1.0, 1.0, 1.0);
+        //     err2s!(target.draw(
+        //         &self.fullscreen_quad,
+        //         glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
+        //         &self.ao_program,
+        //         &uniform! {
+        //             gdepth: self.buffers.gdepth.sampled(),
+        //             gnormal: self.buffers.gnormal.sampled(),
+        //             gposition: self.buffers.gposition.sampled(),
 
-                    samples: &self.ao_kernel,
-                    projection_matrix: array4x4(proj.to_homogeneous()),
-                    view_matrix: array4x4(view),
-                },
-                &Default::default(),
-            ))?;
-        }
-
-        // let slice = unsafe {
-        //     self.light_positions
-        //         .slice_custom_mut(|contents| &contents[..])
-        // };
-
-        // slice
-        //     .map_write()
-        //     .set(0, [cam_pos.x, cam_pos.y, cam_pos.z, 1.0]);
+        //             samples: &self.ao_kernel,
+        //             projection_matrix: array4x4(proj.to_homogeneous()),
+        //             view_matrix: array4x4(view),
+        //         },
+        //         &Default::default(),
+        //     ))?;
+        // }
 
         // Compose
-        let mut frame = self.display.draw();
-        frame.clear_color(0.1, 0.3, 0.3, 1.0);
-        err2s!(frame.draw(
-            &self.fullscreen_quad,
-            glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
-            &self.compose_program,
-            &uniform! {
-                gcolor: self.buffers.gcolor.sampled(),
-                gposition: self.buffers.gposition.sampled(),
-                gnormal: self.buffers.gnormal.sampled(),
-                gemissive: self.buffers.gemissive.sampled(),
-                gdepth: self.buffers.gdepth.sampled(),
-                gextra: self.buffers.gextra.sampled(),
-                ao: self.buffers.ao.sampled(),
+        // target.clear_color(0.1, 0.3, 0.3, 1.0);
+        // err2s!(target.draw(
+        //     &self.fullscreen_quad,
+        //     glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
+        //     &self.compose_program,
+        //     &uniform! {
+        //         gcolor: self.buffers.gcolor.sampled(),
+        //         gposition: self.buffers.gposition.sampled(),
+        //         gnormal: self.buffers.gnormal.sampled(),
+        //         gemissive: self.buffers.gemissive.sampled(),
+        //         gdepth: self.buffers.gdepth.sampled(),
+        //         gextra: self.buffers.gextra.sampled(),
+        //         ao: self.buffers.ao.sampled(),
 
-                light_position_buffer: &self.light_positions,
-                light_color_buffer: &self.light_colors,
+        //         light_position_buffer: &self.light_positions,
+        //         light_color_buffer: &self.light_colors,
 
-                camera_pos: array3(cam_pos),
-                projection_matrix: array4x4(proj.to_homogeneous()),
-                view_matrix: array4x4(view),
-            },
-            &Default::default(),
-        ))?;
-        err2s!(frame.finish())?;
+        //         camera_pos: array3(cam_pos),
+        //         projection_matrix: array4x4(proj.to_homogeneous()),
+        //         view_matrix: array4x4(view),
+        //     },
+        //     &Default::default(),
+        // ))?;
         Ok(())
     }
 }
@@ -362,17 +351,15 @@ impl TerrainBuffers {
 }
 
 fn get_camera<'a>(
-    active: Option<Entity>,
-    cameras: &'a ReadStorage<'_, Camera>,
-    transforms: &'a ReadStorage<'_, GlobalTransform>,
+    world: &'a mut World,
+    resources: &mut Resources,
 ) -> Option<(&'a Camera, &'a GlobalTransform)> {
-    active
-        .and_then(move |entity| {
-            let camera = cameras.get(entity);
-            let global = transforms.get(entity);
-            camera.and_then(|cam| global.map(|comp| (cam, comp)))
-        })
-        .or_else(move || (cameras, transforms).join().next())
+    let active = resources.get::<ActiveCamera>().and_then(|id| id.0)?;
+
+    let camera = Read::<Camera>::query().get(world, active).ok()?;
+    let global = Read::<GlobalTransform>::query().get(world, active).ok()?;
+
+    Some((camera, global))
 }
 
 fn get_proj_view(
@@ -390,34 +377,36 @@ fn get_proj_view(
 fn get_cam_pos(cam_transform: Option<(&Camera, &GlobalTransform)>) -> Vector3<f32> {
     match cam_transform {
         Some((_, transform)) => transform.0.translation.vector,
-        None => Vector3::new(0.0, 0.0, 0.0),
+        None => na::vector!(0.0, 0.0, 0.0),
     }
 }
 
 struct TerrainRenderContext {
-    // Meshes that were added this frame
-    new_meshes: BitSet,
-    // Mask for all current meshes
-    current_meshes: BitSet,
-    // storage of actual vertex/index data
-    meshes: HashMap<Index, TerrainBuffers>,
-    mesh_reader: ReaderId<ComponentEvent>,
+    // entities with `TerrainMesh` that need to be rebuilt
+    needs_rebuild: HashSet<Entity>,
+
+    // since `TerrainBuffers` is not `Send + Sync`, we need to store it here
+    // TODO: make this not suck
+    built_meshes: HashMap<Entity, TerrainBuffers>,
+
+    mesh_events: Receiver<Event>,
 
     albedo: SrgbTexture2dArray,
-    normal: Texture2dArray,
-    extra: Texture2dArray,
-
+    // normal: Texture2dArray,
+    // extra: Texture2dArray,
     program: Program,
     display: Rc<Display>,
 }
 
 impl TerrainRenderContext {
-    fn new(display: Rc<Display>, world: &mut World) -> Result<Self, String> {
-        let mesh_reader = world.write_storage::<TerrainMesh>().register_reader();
+    fn new(
+        display: Rc<Display>,
+        world: &mut World,
+        resources: &mut Resources,
+    ) -> Result<Self, String> {
+        let program = err2s!(loader::load_shader(&*display, "resources/shaders/simple"))?;
 
-        let program = err2s!(loader::load_shader(&*display, "resources/shaders/terrain"))?;
-
-        let voxel_world = world.read_resource::<VoxelWorld>();
+        let voxel_world = resources.get::<VoxelWorld>().unwrap();
         let paths = voxel_world.registry.texture_paths();
         let (width, height, maps) = err2s!(loader::load_block_textures(
             "resources/textures/blocks",
@@ -428,8 +417,8 @@ impl TerrainRenderContext {
         log::debug!("Texture dimensions: {:?}", dims);
 
         let mut albedo = vec![];
-        let mut normal = vec![];
-        let mut extra = vec![];
+        // let mut normal = vec![];
+        // let mut extra = vec![];
 
         for map in maps {
             assert!(map.albedo.dimensions() == dims);
@@ -438,23 +427,24 @@ impl TerrainRenderContext {
                 dims,
             ));
 
-            let normal_map = if let Some(norm) = map.normal {
-                norm
-            } else {
-                image::ImageBuffer::from_pixel(width, height, image::Rgb {
-                    data: [127u8, 127, 255],
-                })
-            };
-            assert!(normal_map.dimensions() == dims);
-            normal.push(RawImage2d::from_raw_rgb_reversed(&normal_map, dims));
+            // let normal_map = if let Some(norm) = map.normal {
+            //     norm
+            // } else {
+            //     image::ImageBuffer::from_pixel(width, height, image::Rgb {
+            //         data: [127u8, 127, 255],
+            //     })
+            // };
+            // assert!(normal_map.dimensions() == dims);
+            // normal.push(RawImage2d::from_raw_rgb_reversed(&normal_map,
+            // dims));
 
-            let extra_map = if let Some(extra) = map.extra {
-                extra
-            } else {
-                image::ImageBuffer::from_pixel(width, height, image::Rgb { data: [0u8, 0, 0] })
-            };
-            assert!(extra_map.dimensions() == dims);
-            extra.push(RawImage2d::from_raw_rgb_reversed(&extra_map, dims));
+            // let extra_map = if let Some(extra) = map.extra {
+            //     extra
+            // } else {
+            //     image::ImageBuffer::from_pixel(width, height, image::Rgb {
+            // data: [0u8, 0, 0] }) };
+            // assert!(extra_map.dimensions() == dims);
+            // extra.push(RawImage2d::from_raw_rgb_reversed(&extra_map, dims));
         }
 
         let albedo = err2s!(SrgbTexture2dArray::with_mipmaps(
@@ -462,100 +452,111 @@ impl TerrainRenderContext {
             albedo,
             MipmapsOption::NoMipmap
         ))?;
-        let normal = err2s!(Texture2dArray::with_mipmaps(
-            &*display,
-            normal,
-            MipmapsOption::NoMipmap
-        ))?;
-        let extra = err2s!(Texture2dArray::with_mipmaps(
-            &*display,
-            extra,
-            MipmapsOption::NoMipmap
-        ))?;
+        // let normal = err2s!(Texture2dArray::with_mipmaps(
+        //     &*display,
+        //     normal,
+        //     MipmapsOption::NoMipmap
+        // ))?;
+        // let extra = err2s!(Texture2dArray::with_mipmaps(
+        //     &*display,
+        //     extra,
+        //     MipmapsOption::NoMipmap
+        // ))?;
+
+        let (mesh_events_tx, mesh_events_rx) = crossbeam_channel::unbounded();
+        world.subscribe(mesh_events_tx, legion::component::<TerrainMesh>());
 
         Ok(TerrainRenderContext {
-            new_meshes: Default::default(),
-            current_meshes: Default::default(),
-            meshes: Default::default(),
-            mesh_reader,
+            needs_rebuild: Default::default(),
+            built_meshes: Default::default(),
+            mesh_events: mesh_events_rx,
             program,
             albedo,
-            normal,
-            extra,
+            // normal,
+            // extra,
             display,
         })
     }
 
-    fn draw<S: Surface>(&mut self, target: &mut S, world: &mut World) -> Result<(), String> {
-        let cameras = world.read_storage::<Camera>();
-        let global = world.read_storage::<comp::GlobalTransform>();
-
-        // Either get the active camera, or the first camera we can find.
-        let camera_entity = world.read_resource::<ActiveCamera>().0;
-        let camera = get_camera(camera_entity, &cameras, &global);
+    fn draw<S: Surface>(
+        &mut self,
+        target: &mut S,
+        world: &mut World,
+        resources: &mut Resources,
+    ) -> Result<(), String> {
+        let camera = get_camera(world, resources);
 
         // If we don't have any cameras anywhere, then just put it at the origin.
         let (width, height) = self.display.get_framebuffer_dimensions();
         let (view, proj) = get_proj_view(width, height, camera);
 
-        for (transform, idx) in (&global, &self.current_meshes).join() {
-            let buffers = &self.meshes[&idx];
-            target
-                .draw(
-                    buffers.glium_verts(),
-                    &buffers.index,
-                    &self.program,
-                    &uniform! {
-                        // tfms: &self.transform_buffer,
-                        model: array4x4(transform.0.to_matrix()),
-                        albedo_maps: self.albedo.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
-                        normal_maps: self.normal.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
-                        extra_maps: self.extra.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
-                        view: array4x4(view),
-                        projection: array4x4(proj.to_homogeneous()),
-                    },
-                    &glium::DrawParameters {
-                        depth: glium::Depth {
-                            test: glium::DepthTest::IfLess,
-                            write: true,
+        let mut transforms = Read::<GlobalTransform>::query();
+        for (&entity, buffers) in self.built_meshes.iter() {
+            if let Ok(transform) = transforms.get(world, entity) {
+                target
+                    .draw(
+                        buffers.glium_verts(),
+                        &buffers.index,
+                        &self.program,
+                        &uniform! {
+                            // tfms: &self.transform_buffer,
+                            model: array4x4(transform.0.to_matrix()),
+                            albedo_maps: self.albedo.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
+                            // normal_maps: self.normal.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
+                            // extra_maps: self.extra.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
+                            view: array4x4(view),
+                            projection: array4x4(proj.to_homogeneous()),
+                        },
+                        &glium::DrawParameters {
+                            depth: glium::Depth {
+                                test: glium::DepthTest::IfLess,
+                                write: true,
+                                ..Default::default()
+                            },
+                            // backface_culling: glium::BackfaceCullingMode::CullCounterClockwise,
                             ..Default::default()
                         },
-                        // backface_culling: glium::BackfaceCullingMode::CullCounterClockwise,
-                        ..Default::default()
-                    },
-                )
-                .map_err(|err| format!("{:?}", err))?;
+                    )
+                    .map_err(|err| format!("{:?}", err))?;
+            }
         }
+
         Ok(())
     }
 
     /// Synchronize the World state and the GPU meshes
     fn update_meshes<F: Facade>(&mut self, ctx: &F, world: &mut World) -> Result<(), String> {
-        self.new_meshes.clear();
-        for &event in world
-            .read_storage::<TerrainMesh>()
-            .channel()
-            .read(&mut self.mesh_reader)
-        {
+        self.needs_rebuild.clear();
+
+        for event in self.mesh_events.try_iter() {
             match event {
-                ComponentEvent::Inserted(id) => {
-                    self.new_meshes.add(id);
-                    self.current_meshes.add(id);
+                Event::ArchetypeCreated(_) => {}
+
+                Event::EntityInserted(entity, _) => {
+                    self.needs_rebuild.insert(entity);
                 }
-                ComponentEvent::Modified(id) => {
-                    self.meshes.remove(&id);
-                    self.new_meshes.add(id);
-                }
-                ComponentEvent::Removed(id) => {
-                    self.meshes.remove(&id);
-                    self.current_meshes.remove(id);
+
+                Event::EntityRemoved(entity, _) => {
+                    self.built_meshes.remove(&entity);
                 }
             }
         }
 
-        for (mesh, idx) in (&world.read_storage::<TerrainMesh>(), &self.new_meshes).join() {
-            self.meshes
-                .insert(idx, TerrainBuffers::immutable(ctx, &mesh)?);
+        let mut mesh_query = Read::<TerrainMesh>::query();
+        let mut changed_query = Entity::query().filter(legion::maybe_changed::<TerrainMesh>());
+
+        for &entity in changed_query.iter(world) {
+            if let Ok(_mesh) = mesh_query.get(world, entity) {
+                self.built_meshes.remove(&entity);
+                self.needs_rebuild.insert(entity);
+            }
+        }
+
+        for &entity in self.needs_rebuild.iter() {
+            if let Ok(mesh) = mesh_query.get(world, entity) {
+                self.built_meshes
+                    .insert(entity, TerrainBuffers::immutable(ctx, &mesh)?);
+            }
         }
         Ok(())
     }

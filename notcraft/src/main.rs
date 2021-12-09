@@ -8,300 +8,310 @@ pub mod handle;
 pub mod util;
 
 use crate::engine::{
-    audio::AudioManager,
     components as comp,
-    input::{keys, InputHandler, InputState},
+    input::{keys, InputState},
     render::{
         camera::{ActiveCamera, Camera},
-        mesher::ChunkMesher,
+        renderer::Renderer,
     },
     resources as res,
     world::{VoxelWorld, WorldPos},
 };
-use shrev::EventChannel;
-use specs::prelude::*;
-pub use specs::shred;
-use std::time::Duration;
+use engine::{components::Transform, prelude::block::BlockRegistry};
+use glium::{
+    glutin::{
+        event::{DeviceEvent, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
+        event_loop::{ControlFlow, EventLoop},
+        window::WindowBuilder,
+        ContextBuilder,
+    },
+    Display,
+};
+use legion::{systems::CommandBuffer, world::SubWorld, *};
+use std::{
+    rc::Rc,
+    time::{Duration, Instant},
+};
+
+#[legion::system(for_each)]
+fn player_movement(
+    #[resource] input: &InputState,
+    transform: &mut Transform,
+    _player: &comp::Player,
+) {
+    use std::f32::consts::PI;
+    let (dx, dy) = input.cursor_delta();
+
+    // X - roll -> pitch
+    // Y - pitch -> yaw
+    // Z - yaw -> roll
+    let pitch = dy * (PI / 180.0);
+    let yaw = dx * (PI / 180.0);
+
+    // roll pitch yaw
+    // let rot = nalgebra::UnitQuaternion::from_euler_angles(pitch, yaw, 0.0);
+    // transform.iso.rotation = nalgebra::UnitQuaternion::face_towards(
+    //     &transform.iso.translation.vector,
+    //     &nalgebra::Vector3::y(),
+    // );
+    // let rot = nalgebra::UnitQuaternion::from_euler_angles(pitch, yaw, 0.0);
+    transform.rotation.x -= pitch;
+    transform.rotation.x = f32::min(transform.rotation.x, PI / 2.0);
+    transform.rotation.x = f32::max(transform.rotation.x, -PI / 2.0);
+    transform.rotation.y -= yaw;
+
+    // if input.is_pressed(keys::ARROW_UP, None) {
+    //     transform.rotation.z += 1.0 * (PI / 180.0);
+    // }
+    // if input.is_pressed(keys::ARROW_DOWN, None) {
+    //     transform.rotation.z -= 1.0 * (PI / 180.0);
+    // }
+    // if input.is_rising(keys::ARROW_LEFT, None) {
+    //     let rot = nalgebra::UnitQuaternion::from_euler_angles(0.0, 5.0 * (PI /
+    // 180.0), 0.0);     transform.rotate(&rot);
+    // }
+    // if input.is_rising(keys::ARROW_RIGHT, None) {
+    //     let rot = nalgebra::UnitQuaternion::from_euler_angles(0.0, -5.0 * (PI /
+    // 180.0), 0.0);     transform.rotate(&rot);
+    // }
+
+    if input.is_pressed(keys::FORWARD, None) {
+        comp::creative_flight(transform, nalgebra::vector!(0.0, -0.05));
+    }
+    if input.is_pressed(keys::BACKWARD, None) {
+        comp::creative_flight(transform, nalgebra::vector!(0.0, 0.05));
+    }
+    if input.is_pressed(keys::RIGHT, None) {
+        comp::creative_flight(transform, nalgebra::vector!(0.05, 0.0));
+    }
+    if input.is_pressed(keys::LEFT, None) {
+        comp::creative_flight(transform, nalgebra::vector!(-0.05, 0.0));
+    }
+    if input.is_pressed(keys::UP, None) {
+        transform.translate_global(&nalgebra::vector!(0.0, 0.05, 0.0).into());
+    }
+    if input.is_pressed(keys::DOWN, None) {
+        transform.translate_global(&nalgebra::vector!(0.0, -0.05, 0.0).into());
+    }
+}
+
+#[legion::system(for_each)]
+fn load_chunks(
+    #[resource] world: &mut VoxelWorld,
+    _player: &comp::Player,
+    transform: &comp::Transform,
+) {
+    let pos = WorldPos(transform.translation.vector.into()).into();
+    crate::engine::world::load_chunks(world, pos, 5);
+}
+
+fn setup_world(cmd: &mut CommandBuffer) {
+    let player = cmd.push((comp::Player, comp::Transform::default()));
+
+    let camera_entity = cmd.push((
+        comp::Parent(player),
+        Camera::default(),
+        comp::Transform::default(),
+    ));
+
+    cmd.exec_mut(move |_, res| {
+        res.insert(ActiveCamera(Some(camera_entity)));
+
+        res.insert(engine::input::InputState::default());
+        res.insert(res::StopGameLoop(false));
+        res.insert(res::Dt(Duration::from_secs(1)));
+
+        let registry = BlockRegistry::load_from_file("resources/blocks.json").unwrap();
+        let voxel_world = VoxelWorld::new(registry);
+
+        res.insert(voxel_world);
+    });
+}
+
+struct MainContext {
+    duration_samples: Option<Vec<Duration>>,
+    start_instant: Option<Instant>,
+
+    schedule: Schedule,
+    world: World,
+    resources: Resources,
+
+    display: Rc<Display>,
+    renderer: Renderer,
+}
+
+fn start_frame(ctx: &mut MainContext) {
+    ctx.start_instant = Some(Instant::now());
+}
+
+fn end_frame_processing(ctx: &mut MainContext) {
+    assert!(ctx.start_instant.is_some(), "sample was not started!");
+
+    let elapsed = ctx.start_instant.unwrap().elapsed();
+    if let Some(samples) = ctx.duration_samples.as_mut() {
+        samples.push(elapsed);
+    }
+}
+
+fn end_frame(ctx: &mut MainContext) {
+    assert!(ctx.start_instant.is_some(), "sample was not started!");
+
+    let dt = ctx.start_instant.unwrap().elapsed();
+    *ctx.resources.get_mut::<res::Dt>().unwrap() = res::Dt(dt);
+}
+
+fn report_frame_samples(ctx: &mut MainContext) {
+    if let Some(samples) = ctx.duration_samples.as_mut() {
+        if samples.len() >= 1000 {
+            let len = samples.len() as u32;
+            let average_duration = samples.drain(..).sum::<Duration>() / len;
+
+            log::debug!(
+                "Frame took {} ms on average ({} fps)",
+                average_duration.as_secs_f64() * 1000.0,
+                1.0 / average_duration.as_secs_f64()
+            );
+        }
+    }
+}
+
+fn run_frame(ctx: &mut MainContext) {
+    start_frame(ctx);
+
+    // update
+    ctx.schedule.execute(&mut ctx.world, &mut ctx.resources);
+
+    // draw
+    // TODO: might want to integrate this into ECS, might not
+    let mut frame = ctx.display.draw();
+    ctx.renderer
+        .draw(&mut frame, &mut ctx.world, &mut ctx.resources)
+        .unwrap();
+
+    end_frame_processing(ctx);
+
+    frame.finish().unwrap();
+
+    end_frame(ctx);
+    report_frame_samples(ctx);
+}
+
+#[derive(Debug)]
+pub enum InputEvent {
+    MouseMovement {
+        dx: f64,
+        dy: f64,
+    },
+    KayboardInput {
+        input: KeyboardInput,
+        synthetic: bool,
+    },
+}
 
 fn main() {
     simple_logger::init_with_level(log::Level::Debug).unwrap();
 
-    let mut event_loop = glium::glutin::EventsLoop::new();
-
     let mut world = World::default();
-    world.register::<comp::Player>();
-    // world.register::<crate::engine::physics::RigidBody>();
-    // world.register::<crate::engine::physics::Collidable>();
-    world.register::<engine::render::mesher::TerrainMesh>();
-    world.register::<comp::Parent>();
-    world.register::<comp::Transform>();
-    world.register::<comp::GlobalTransform>();
-    world.register::<Camera>();
+    let mut resources = Resources::default();
 
-    let mut window_events = shrev::EventChannel::new();
+    {
+        let mut setup_buf = CommandBuffer::new(&world);
+        setup_world(&mut setup_buf);
+        setup_buf.flush(&mut world, &mut resources);
+    }
 
-    // world.register::<Handle<::engine::render::terrain::GpuChunkMesh>>();
+    let event_loop = EventLoop::new();
+    let (window_events_tx, window_events_rx) = crossbeam_channel::unbounded();
 
-    let registry = BlockRegistry::load_from_file("resources/blocks.json").unwrap();
-    let voxel_world = VoxelWorld::new(registry);
+    let window = WindowBuilder::new().with_title("Notcraft™");
+    let ctx = ContextBuilder::new().with_depth_buffer(24);
 
-    let player = world
-        .create_entity()
-        .with(comp::Player)
-        .with(comp::Transform::default())
-        // .with(Collidable {
-        //     aabb: Aabb3::new(Point3::new(-0.4, -1.6, -0.4), Point3::new(0.4, 0.2, 0.4)),
-        // })
-        // .with(RigidBody {
-        //     mass: 100.0,
-        //     drag: na::Vector3::new(3.0, 6.0, 3.0),
-        //     velocity: na::Vector3::new(0.0, 0.0, 0.0),
-        // })
+    let display = Rc::new(Display::new(window, ctx, &event_loop).unwrap());
+
+    let renderer = Renderer::new(Rc::clone(&display), &mut world, &mut resources).unwrap();
+
+    let schedule = Schedule::builder()
+        .add_system(engine::input::input_compiler_system(window_events_rx))
+        .add_thread_local(engine::audio::intermittent_music_system(
+            engine::audio::MusicState::new(),
+        ))
+        .add_system(engine::render::mesher::chunk_mesher_system(
+            Default::default(),
+        ))
+        .flush()
+        .add_system(player_movement_system())
+        .add_system(load_chunks_system())
+        .flush()
+        .add_system(engine::components::transform_hierarchy_system())
         .build();
 
-    let camera_entity = world
-        .create_entity()
-        .with(comp::Parent(player))
-        .with(Camera::default())
-        .with(comp::Transform::default())
-        .build();
+    let mut main_ctx = MainContext {
+        duration_samples: Some(vec![]),
+        start_instant: None,
+        schedule,
+        world,
+        resources,
+        display: Rc::clone(&display),
+        renderer,
+    };
 
-    world.add_resource(ActiveCamera(Some(camera_entity)));
-
-    fn duration_as_ms(duration: Duration) -> f64 {
-        (duration.as_secs() as f64 + duration.subsec_nanos() as f64 * 1e-9) * 1000.0
-    }
-
-    struct TraceSystem<S> {
-        inner: S,
-        name: &'static str,
-        samples: Vec<Duration>,
-    }
-
-    impl<S> TraceSystem<S> {
-        fn new(inner: S, name: &'static str) -> Self {
-            TraceSystem {
-                inner,
-                name,
-                samples: Vec::new(),
-            }
-        }
-    }
-
-    impl<'a, S> System<'a> for TraceSystem<S>
-    where
-        S: System<'a>,
-    {
-        type SystemData = S::SystemData;
-
-        fn run(&mut self, data: Self::SystemData) {
-            if self.samples.len() >= 100 {
-                let len = self.samples.len() as f64;
-                let sum: f64 = self.samples.drain(..).map(duration_as_ms).sum();
-
-                log::trace!(
-                    "Timing: Took {} ms on average for system \"{}\" ",
-                    sum / len,
-                    self.name,
-                );
+    event_loop.run(move |event, target, cf| match event {
+        // Event::WindowEvent { window_id, event } => {}
+        // Event::DeviceEvent { device_id, event } => {}
+        Event::WindowEvent { event, .. } => match event {
+            // TODO: move close handling code somewhere else mayhaps
+            WindowEvent::CloseRequested => {
+                *cf = ControlFlow::Exit;
             }
 
-            let before = Instant::now();
-            self.inner.run(data);
-            let after = Instant::now();
+            WindowEvent::KeyboardInput {
+                input:
+                    KeyboardInput {
+                        virtual_keycode: Some(VirtualKeyCode::Escape),
+                        ..
+                    },
+                ..
+            } => {
+                *cf = ControlFlow::Exit;
+            }
 
-            self.samples.push(after - before);
+            WindowEvent::KeyboardInput {
+                input,
+                is_synthetic,
+                ..
+            } => {
+                window_events_tx
+                    .send(InputEvent::KayboardInput {
+                        input,
+                        synthetic: is_synthetic,
+                    })
+                    .unwrap();
+            }
+
+            // WindowEvent::CursorMoved {position, ..}
+            _ => (),
+        },
+
+        Event::DeviceEvent { event, .. } => match event {
+            DeviceEvent::MouseMotion { delta: (x, y) } => {
+                window_events_tx
+                    .send(InputEvent::MouseMovement { dx: x, dy: y })
+                    .unwrap();
+            }
+            _ => (),
+        },
+
+        Event::MainEventsCleared => display.gl_window().window().request_redraw(),
+        Event::RedrawRequested(id) if id == display.gl_window().window().id() => {
+            run_frame(&mut main_ctx);
         }
-    }
+        _ => {}
+    });
 
-    fn attach_system<'a, 'b, T>(
-        builder: DispatcherBuilder<'a, 'b>,
-        sys: T,
-        name: &'static str,
-        deps: &[&str],
-    ) -> DispatcherBuilder<'a, 'b>
-    where
-        T: for<'c> System<'c> + Send + 'a,
-    {
-        builder.with(TraceSystem::new(sys, name), name, deps)
-    }
+    // while !resources
+    //     .get::<res::StopGameLoop>()
+    //     .map_or(true, |val| val.0)
+    // {
 
-    fn attach_system_sync<'a, 'b, T>(
-        builder: DispatcherBuilder<'a, 'b>,
-        sys: T,
-        name: &'static str,
-    ) -> DispatcherBuilder<'a, 'b>
-    where
-        T: for<'c> System<'c> + 'b,
-    {
-        builder.with_thread_local(TraceSystem::new(sys, name))
-    }
-
-    let mut builder = DispatcherBuilder::new();
-    builder = attach_system(builder, AudioManager::new(), "audio manager", &[]);
-    // builder = attach_system(
-    //     builder,
-    //     crate::engine::physics::Physics::new(),
-    //     "physics",
-    //     &[],
-    // );
-
-    builder = attach_system(builder, ChunkMesher::default(), "chunk mesher", &[]);
-    builder = attach_system(
-        builder,
-        comp::TransformHierarchyManager::new(),
-        "global transform manager",
-        &["chunk mesher"],
-    );
-    builder = attach_system_sync(
-        builder,
-        InputHandler::new(&mut window_events),
-        "input handler",
-    );
-
-    let mut dispatcher = builder.build();
-
-    dispatcher.setup(&mut world.res);
-
-    world.add_resource(res::StopGameLoop(false));
-    world.add_resource(window_events);
-    world.add_resource(res::Dt(Duration::from_secs(1)));
-    world.add_resource(voxel_world);
-    // world.add_resource(DebugAccumulator::default());
-
-    println!("World set up");
-
-    use crate::engine::world::block::BlockRegistry;
-    use std::time::Instant;
-
-    let mut samples = vec![];
-
-    let mut renderer = engine::render::renderer::Renderer::new(&event_loop, &mut world).unwrap();
-
-    while !world.res.fetch::<res::StopGameLoop>().0 {
-        let frame_start = Instant::now();
-
-        world.exec(
-            |mut channel: Write<'_, EventChannel<glium::glutin::Event>>| {
-                event_loop.poll_events(|event| channel.single_write(event))
-            },
-        );
-
-        world.exec(
-            |(input, mut transforms): (
-                ReadExpect<'_, InputState>,
-                WriteStorage<'_, comp::Transform>,
-                // WriteStorage<'a, comp::RigidBody>,
-            )| {
-                use std::f32::consts::PI;
-                let (dx, dy) = input.cursor_delta();
-                if let Some(mut transform) = transforms.get_mut(player) {
-                    if dx != 0.0 || dy != 0.0 {
-                        println!("cursor movement: {}, {}", dx, dy);
-                    }
-
-                    // X - roll -> pitch
-                    // Y - pitch -> yaw
-                    // Z - yaw -> roll
-                    let pitch = dy * (PI / 180.0);
-                    let yaw = dx * (PI / 180.0);
-
-                    // roll pitch yaw
-                    // let rot = nalgebra::UnitQuaternion::from_euler_angles(pitch, yaw, 0.0);
-                    // transform.iso.rotation = nalgebra::UnitQuaternion::face_towards(
-                    //     &transform.iso.translation.vector,
-                    //     &nalgebra::Vector3::y(),
-                    // );
-                    // let rot = nalgebra::UnitQuaternion::from_euler_angles(pitch, yaw, 0.0);
-                    transform.rotation.x -= pitch;
-                    transform.rotation.x = f32::min(transform.rotation.x, PI / 2.0);
-                    transform.rotation.x = f32::max(transform.rotation.x, -PI / 2.0);
-                    transform.rotation.y -= yaw;
-
-                    if input.is_pressed(keys::ARROW_UP, None) {
-                        transform.rotation.z += 1.0 * (PI / 180.0);
-                    }
-                    if input.is_pressed(keys::ARROW_DOWN, None) {
-                        transform.rotation.z -= 1.0 * (PI / 180.0);
-                    }
-                    // if input.is_rising(keys::ARROW_LEFT, None) {
-                    //     let rot = nalgebra::UnitQuaternion::from_euler_angles(
-                    //         0.0,
-                    //         5.0 * (PI / 180.0),
-                    //         0.0,
-                    //     );
-                    //     transform.rotate(&rot);
-                    // }
-                    // if input.is_rising(keys::ARROW_RIGHT, None) {
-                    //     let rot = nalgebra::UnitQuaternion::from_euler_angles(
-                    //         0.0,
-                    //         -5.0 * (PI / 180.0),
-                    //         0.0,
-                    //     );
-                    //     transform.rotate(&rot);
-                    // }
-
-                    if input.is_pressed(keys::FORWARD, None) {
-                        comp::creative_flight(&mut transform, nalgebra::Vector2::new(0.0, -0.05));
-                    }
-                    if input.is_pressed(keys::BACKWARD, None) {
-                        comp::creative_flight(&mut transform, nalgebra::Vector2::new(0.0, 0.05));
-                    }
-                    if input.is_pressed(keys::RIGHT, None) {
-                        comp::creative_flight(&mut transform, nalgebra::Vector2::new(0.05, 0.0));
-                    }
-                    if input.is_pressed(keys::LEFT, None) {
-                        comp::creative_flight(&mut transform, nalgebra::Vector2::new(-0.05, 0.0));
-                    }
-                    if input.is_pressed(keys::UP, None) {
-                        transform.translate_global(&nalgebra::Vector3::new(0.0, 0.05, 0.0).into());
-                    }
-                    if input.is_pressed(keys::DOWN, None) {
-                        transform.translate_global(&nalgebra::Vector3::new(0.0, -0.05, 0.0).into());
-                    }
-                }
-            },
-        );
-
-        world.exec(
-            |(mut world, players, transforms): (
-                WriteExpect<'_, VoxelWorld>,
-                ReadStorage<'_, comp::Player>,
-                ReadStorage<'_, comp::Transform>,
-            )| {
-                for (_, transform) in (&players, &transforms).join() {
-                    let pos = WorldPos(transform.translation.vector.into()).into();
-                    crate::engine::world::load_chunks(&mut world, pos, 5);
-                }
-            },
-        );
-
-        // Update systems and the world.
-        world.maintain();
-        world.res.insert(res::StopGameLoop(false));
-        dispatcher.dispatch(&world.res);
-
-        renderer.draw(&mut world).unwrap();
-
-        let processing_end = Instant::now();
-
-        // TODO: Swap the backbuffer
-
-        let frame_end = Instant::now();
-        let dt = frame_end - frame_start;
-        *world.write_resource::<res::Dt>() = res::Dt(dt);
-
-        samples.push(processing_end - frame_start);
-
-        if samples.len() >= 1000 {
-            let len = samples.len() as f64;
-            let sum: f64 = samples.drain(..).map(duration_as_ms).sum();
-
-            log::debug!(
-                "Frame took {} ms on average ({} fps)",
-                sum / len,
-                1000.0 * len / sum
-            );
-        }
-    }
+    // }
 }

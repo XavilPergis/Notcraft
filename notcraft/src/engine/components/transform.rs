@@ -1,11 +1,13 @@
-use nalgebra::{Matrix4, Point3, Rotation3, Translation3, Unit, UnitQuaternion, Vector2, Vector3};
-use specs::prelude::*;
+use legion::{query::ComponentFilter, systems::CommandBuffer, world::SubWorld, *};
+use nalgebra::{
+    vector, Matrix4, Point3, Rotation3, Translation3, Unit, UnitQuaternion, Vector2, Vector3,
+};
 
 // FIXME: roll doesn't work right so we just don't do that...
 fn euler_to_quat(x: f32, y: f32, z: f32) -> UnitQuaternion<f32> {
-    let rx = UnitQuaternion::from_axis_angle(&Unit::new_unchecked(Vector3::new(1.0, 0.0, 0.0)), x);
-    let ry = UnitQuaternion::from_axis_angle(&Unit::new_unchecked(Vector3::new(0.0, 1.0, 0.0)), y);
-    // let rz = UnitQuaternion::from_axis_angle(&Unit::new_unchecked(Vector3::new(0.
+    let rx = UnitQuaternion::from_axis_angle(&Unit::new_unchecked(vector!(1.0, 0.0, 0.0)), x);
+    let ry = UnitQuaternion::from_axis_angle(&Unit::new_unchecked(vector!(0.0, 1.0, 0.0)), y);
+    // let rz = UnitQuaternion::from_axis_angle(&Unit::new_unchecked(vector!(0.
     // 0, 0.0, 1.0)), z);
 
     ry * rx
@@ -24,10 +26,6 @@ pub struct Transform {
     pub rotation: Vector3<f32>,
     pub translation: Translation3<f32>,
     pub scale: Vector3<f32>,
-}
-
-impl Component for Transform {
-    type Storage = DenseVecStorage<Self>;
 }
 
 impl Transform {
@@ -64,7 +62,7 @@ impl Transform {
         // We have to translate and then rotate so that the object is at the origin when
         // the rotation happens. Otherwise, it'd orbit around the origin instead of
         // rotating in-place.
-        let inv_scale = Vector3::new(1.0 / self.scale.x, 1.0 / self.scale.y, 1.0 / self.scale.z);
+        let inv_scale = vector!(1.0 / self.scale.x, 1.0 / self.scale.y, 1.0 / self.scale.z);
         euler_to_rotation(self.rotation.x, self.rotation.y, self.rotation.z)
             .inverse()
             .to_homogeneous()
@@ -76,7 +74,7 @@ impl Transform {
 /// Note that `axis` is really in the XZ plane and not the XY plane.
 pub fn creative_flight(transform: &mut Transform, translation_xz: Vector2<f32>) {
     let lateral_rotation = euler_to_quat(0.0, transform.rotation.y, 0.0);
-    let local_translation = Vector3::new(translation_xz.x, 0.0, translation_xz.y);
+    let local_translation = vector!(translation_xz.x, 0.0, translation_xz.y);
     let translation = Translation3::from(lateral_rotation * local_translation);
     transform.translate_global(&translation);
 }
@@ -84,9 +82,9 @@ pub fn creative_flight(transform: &mut Transform, translation_xz: Vector2<f32>) 
 impl Default for Transform {
     fn default() -> Self {
         Transform {
-            rotation: Vector3::new(0.0, 0.0, 0.0),
-            translation: Translation3::from(Vector3::new(0.0, 0.0, 0.0)),
-            scale: Vector3::new(1.0, 1.0, 1.0),
+            rotation: vector!(0.0, 0.0, 0.0),
+            translation: Translation3::from(vector!(0.0, 0.0, 0.0)),
+            scale: vector!(1.0, 1.0, 1.0),
         }
     }
 }
@@ -95,8 +93,8 @@ impl From<Point3<f32>> for Transform {
     fn from(point: Point3<f32>) -> Self {
         Transform {
             translation: Translation3::from(point.coords),
-            rotation: Vector3::new(0.0, 0.0, 0.0),
-            scale: Vector3::new(1.0, 1.0, 1.0),
+            rotation: vector!(0.0, 0.0, 0.0),
+            scale: vector!(1.0, 1.0, 1.0),
         }
     }
 }
@@ -105,28 +103,24 @@ impl From<Point3<f32>> for Transform {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct GlobalTransform(pub Transform);
 
-impl Component for GlobalTransform {
-    type Storage = DenseVecStorage<Self>;
-}
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Parent(pub Entity);
 
-impl Component for Parent {
-    type Storage = DenseVecStorage<Self>;
-}
-
 fn calculate_global_transform(
     entity: Entity,
-    parents: &ReadStorage<'_, Parent>,
-    transforms: &ReadStorage<'_, Transform>,
+    world: &SubWorld,
+    // parents: &ReadStorage<'_, Parent>,
+    // transforms: &ReadStorage<'_, Transform>,
 ) -> GlobalTransform {
     let mut accum = Transform::default();
 
+    let mut transform_query = Read::<Transform>::query();
+    let mut parent_query = Read::<Parent>::query();
+
     let mut current_entity = entity;
-    while let Some(transform) = transforms.get(current_entity) {
+    while let Ok(transform) = transform_query.get(world, current_entity) {
         accum.apply(transform);
-        if let Some(parent) = parents.get(current_entity) {
+        if let Ok(parent) = parent_query.get(world, current_entity) {
             current_entity = parent.0;
         } else {
             break;
@@ -136,31 +130,46 @@ fn calculate_global_transform(
     GlobalTransform(accum)
 }
 
-#[derive(Debug)]
-pub struct TransformHierarchyManager;
+// TODO: dont recompute all transforms every frame lol
+#[legion::system]
+#[read_component(Parent)]
+#[read_component(Transform)]
+#[write_component(GlobalTransform)]
+pub fn transform_hierarchy(cmd: &mut CommandBuffer, world: &mut SubWorld) {
+    let mut query = Entity::query().filter(component::<Transform>());
 
-impl TransformHierarchyManager {
-    pub fn new() -> Self {
-        TransformHierarchyManager
-    }
+    query.for_each(world, |&entity| {
+        let global = calculate_global_transform(entity, world);
+        cmd.add_component(entity, global);
+    });
 }
 
-impl<'a> System<'a> for TransformHierarchyManager {
-    type SystemData = (
-        Entities<'a>,
-        ReadStorage<'a, Parent>,
-        ReadStorage<'a, Transform>,
-        WriteStorage<'a, GlobalTransform>,
-    );
+// #[derive(Debug)]
+// pub struct TransformHierarchyManager;
 
-    fn run(&mut self, (entities, parents, transforms, mut computed): Self::SystemData) {
-        // TODO: caching
-        for (entity, _transform) in (&entities, &transforms).join() {
-            let global = calculate_global_transform(entity, &parents, &transforms);
+// impl TransformHierarchyManager {
+//     pub fn new() -> Self {
+//         TransformHierarchyManager
+//     }
+// }
 
-            computed
-                .insert(entity, global)
-                .expect("Failed to insert computed transform.");
-        }
-    }
-}
+// impl<'a> System<'a> for TransformHierarchyManager {
+//     type SystemData = (
+//         Entities<'a>,
+//         ReadStorage<'a, Parent>,
+//         ReadStorage<'a, Transform>,
+//         WriteStorage<'a, GlobalTransform>,
+//     );
+
+//     fn run(&mut self, (entities, parents, transforms, mut computed):
+// Self::SystemData) {         // TODO: caching
+//         for (entity, _transform) in (&entities, &transforms).join() {
+//             let global = calculate_global_transform(entity, &parents,
+// &transforms);
+
+//             computed
+//                 .insert(entity, global)
+//                 .expect("Failed to insert computed transform.");
+//         }
+//     }
+// }

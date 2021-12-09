@@ -1,4 +1,4 @@
-use nalgebra::{Point3, Vector3};
+use nalgebra::{vector, Point3, Vector3};
 use std::cmp::Ordering;
 
 // pub fn aspect_ratio(window: &GlWindow) -> Option<f32> {
@@ -17,7 +17,7 @@ pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
 }
 
 pub fn lerp_vec(a: Vector3<f32>, b: Vector3<f32>, t: f32) -> Vector3<f32> {
-    Vector3::new(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t))
+    vector![lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t)]
 }
 
 /// Version of `min` that only requires `PartialOrd`

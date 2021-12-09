@@ -51,7 +51,7 @@
             "top_bottom": {
                 "top": {
                     "random_orientation": true,
-                    "texture": "grass_top"
+                    "texture": "grass_block_top"
                 },
                 "bottom": {
                     "random_orientation": true,
@@ -59,7 +59,7 @@
                 },
                 "side": {
                     "random_orientation": false,
-                    "texture": "grass_side"
+                    "texture": "grass_block_side"
                 }
             }
         }
@@ -228,7 +228,7 @@
         "textures": {
             "same": {
                 "random_orientation": true,
-                "texture": "stonebrick"
+                "texture": "stone_bricks"
             }
         }
     },
@@ -252,7 +252,7 @@
         "textures": {
             "same": {
                 "random_orientation": true,
-                "texture": "ice_packed"
+                "texture": "packed_ice"
             }
         }
     },
@@ -296,28 +296,6 @@
                 "side": {
                     "random_orientation": false,
                     "texture": "quartz_block_side"
-                }
-            }
-        }
-    },
-    {
-        "name": "chiseled_quartz_block",
-        "collidable": true,
-        "opaque": true,
-        "liquid": false,
-        "textures": {
-            "top_bottom": {
-                "top": {
-                    "random_orientation": false,
-                    "texture": "quartz_block_chiseled_top"
-                },
-                "bottom": {
-                    "random_orientation": false,
-                    "texture": "quartz_block_chiseled"
-                },
-                "side": {
-                    "random_orientation": false,
-                    "texture": "quartz_block_chiseled"
                 }
             }
         }

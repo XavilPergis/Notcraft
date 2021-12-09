@@ -1,21 +1,9 @@
-use crate::engine::prelude::*;
-use glium::glutin::{
+use crate::{engine::prelude::*, InputEvent};
+use crossbeam_channel::Receiver;
+use glium::glutin::event::{
     DeviceEvent, ElementState, Event, KeyboardInput, ModifiersState, VirtualKeyCode, WindowEvent,
 };
-use shrev::EventChannel;
 use std::collections::{HashMap, HashSet};
-
-pub struct InputHandler {
-    events_handle: ReaderId<Event>,
-}
-
-impl InputHandler {
-    pub fn new(event_channel: &mut EventChannel<Event>) -> Self {
-        InputHandler {
-            events_handle: event_channel.register_reader(),
-        }
-    }
-}
 
 pub enum Key {
     Physical(u32),
@@ -98,10 +86,10 @@ impl Modifiers {
 impl From<ModifiersState> for Modifiers {
     fn from(state: ModifiersState) -> Self {
         Modifiers {
-            shift: state.shift,
-            ctrl: state.ctrl,
-            alt: state.alt,
-            sup: state.logo,
+            shift: state.shift(),
+            ctrl: state.ctrl(),
+            alt: state.alt(),
+            sup: state.logo(),
         }
     }
 }
@@ -265,7 +253,7 @@ impl InputState {
 }
 
 pub mod keys {
-    use glium::glutin::VirtualKeyCode;
+    use glium::glutin::event::VirtualKeyCode;
 
     pub const FORWARD: u32 = 0x11;
     pub const BACKWARD: u32 = 0x1F;
@@ -286,50 +274,22 @@ pub mod keys {
 // (VirtualKeyCode::P, "physics"),
 // (VirtualKeyCode::I, "interaction"),
 
-impl<'a> System<'a> for InputHandler {
-    type SystemData = (
-        Read<'a, EventChannel<Event>>,
-        Write<'a, res::StopGameLoop>,
-        Write<'a, InputState>,
-        // WriteExpect<'a, DebugAccumulator>,
-    );
+#[legion::system]
+pub fn input_compiler(
+    #[resource] state: &mut InputState,
+    #[resource] stop_flag: &mut res::StopGameLoop,
+    #[state] events: &mut Receiver<InputEvent>,
+) {
+    state.update();
 
-    fn run(&mut self, (window_events, mut stop_flag, mut input_state): Self::SystemData) {
-        input_state.update();
-
-        for event in window_events.read(&mut self.events_handle) {
-            match event {
-                Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::CloseRequested => {
-                        stop_flag.0 = true;
-                    }
-
-                    WindowEvent::KeyboardInput {
-                        input:
-                            KeyboardInput {
-                                virtual_keycode: Some(VirtualKeyCode::Escape),
-                                ..
-                            },
-                        ..
-                    } => {
-                        stop_flag.0 = true;
-                    }
-
-                    WindowEvent::KeyboardInput { input, .. } => {
-                        input_state.update_keyboard_inputs(*input)
-                    }
-
-                    // WindowEvent::CursorMoved {position, ..}
-                    _ => (),
-                },
-                Event::DeviceEvent { event, .. } => match event {
-                    DeviceEvent::MouseMotion { delta: (x, y) } => {
-                        input_state.cursor_dx = *x as f32;
-                        input_state.cursor_dy = *y as f32;
-                    }
-                    _ => (),
-                },
-                _ => (),
+    for event in events.try_iter() {
+        match event {
+            InputEvent::MouseMovement { dx, dy } => {
+                state.cursor_dx = dx as f32;
+                state.cursor_dy = dy as f32;
+            }
+            InputEvent::KayboardInput { input, .. } => {
+                state.update_keyboard_inputs(input);
             }
         }
     }
