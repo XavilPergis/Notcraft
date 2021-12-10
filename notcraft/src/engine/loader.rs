@@ -24,6 +24,25 @@ pub enum TextureLoadError {
     MismatchedDimensions(HashSet<(u32, u32)>),
 }
 
+impl std::error::Error for TextureLoadError {}
+impl std::fmt::Display for TextureLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "texture load error: ")?;
+        match self {
+            TextureLoadError::Io(err) => write!(f, "io: {}", err)?,
+            TextureLoadError::Image(err) => write!(f, "image: {}", err)?,
+            TextureLoadError::Texture(err) => write!(f, "texture: {}", err)?,
+            TextureLoadError::MismatchedDimensions(dims) => {
+                write!(f, "mismatched dimensions: ")?;
+                for (x, y) in dims {
+                    write!(f, "({}, {}), ", x, y)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 err_from! { TextureLoadError => ImageError = Image }
 err_from! { TextureLoadError => std::io::Error = Io }
 err_from! { TextureLoadError => TextureCreationError = Texture }
@@ -42,11 +61,10 @@ pub fn load_block_textures<'a, P, I>(
 where
     P: AsRef<Path>,
     I: IntoIterator<Item = &'a str>,
-    I::IntoIter: ExactSizeIterator,
 {
     let base_path = base_path.as_ref();
     let names = names.into_iter();
-    let mut textures = Vec::with_capacity(names.len());
+    let mut textures = Vec::new();
 
     let mut dims = HashSet::new();
 
@@ -102,6 +120,20 @@ pub enum ShaderLoadError {
     Program(ProgramCreationError),
     MissingFragment,
     MissingVertex,
+}
+
+impl std::error::Error for ShaderLoadError {}
+
+impl std::fmt::Display for ShaderLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "shader load error: ")?;
+        match self {
+            ShaderLoadError::Io(err) => write!(f, "{}", err),
+            ShaderLoadError::Program(err) => write!(f, "{}", err),
+            ShaderLoadError::MissingFragment => write!(f, "missing fragment stage"),
+            ShaderLoadError::MissingVertex => write!(f, "missing vertex stage"),
+        }
+    }
 }
 
 err_from! { ShaderLoadError => std::io::Error = Io }

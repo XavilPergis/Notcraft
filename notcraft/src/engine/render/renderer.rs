@@ -38,77 +38,15 @@ macro_rules! err2s {
 }
 
 struct PipelineBuffers {
-    gdepth: DepthTexture2d,
-    // RGB -> XYZ
-    gposition: Texture2d,
-    // RGB
-    gcolor: Texture2d,
-    // RGB -> XYZ
-    gnormal: Texture2d,
-    // RGB
-    gemissive: Texture2d,
-    // R -> Roughness, G -> Metallic
-    gextra: Texture2d,
-
-    // Shadow map
-    shadow: DepthTexture2d,
-    // Ao map
-    ao: Texture2d,
-
-    // TODO: post-processing n stuff
-    composite: Texture2d,
+    depth_buffer: DepthTexture2d,
+    color_buffer: Texture2d,
 }
 
 impl PipelineBuffers {
-    fn new<F: Facade>(ctx: &F, width: u32, height: u32) -> Result<Self, TextureCreationError> {
+    fn new<F: Facade>(ctx: &F, width: u32, height: u32) -> anyhow::Result<Self> {
         Ok(PipelineBuffers {
-            gdepth: DepthTexture2d::empty(ctx, width, height)?,
-            gposition: Texture2d::empty_with_format(
-                ctx,
-                UncompressedFloatFormat::F32F32F32,
-                MipmapsOption::NoMipmap,
-                width,
-                height,
-            )?,
-            gcolor: Texture2d::empty_with_format(
-                ctx,
-                UncompressedFloatFormat::F32F32F32,
-                MipmapsOption::NoMipmap,
-                width,
-                height,
-            )?,
-            gnormal: Texture2d::empty_with_format(
-                ctx,
-                UncompressedFloatFormat::F32F32F32,
-                MipmapsOption::NoMipmap,
-                width,
-                height,
-            )?,
-            gemissive: Texture2d::empty_with_format(
-                ctx,
-                UncompressedFloatFormat::F32F32F32,
-                MipmapsOption::NoMipmap,
-                width,
-                height,
-            )?,
-            gextra: Texture2d::empty_with_format(
-                ctx,
-                UncompressedFloatFormat::F32F32F32,
-                MipmapsOption::NoMipmap,
-                width,
-                height,
-            )?,
-
-            shadow: DepthTexture2d::empty(ctx, width, height)?,
-            ao: Texture2d::empty_with_format(
-                ctx,
-                UncompressedFloatFormat::F32,
-                MipmapsOption::NoMipmap,
-                width,
-                height,
-            )?,
-
-            composite: Texture2d::empty_with_format(
+            depth_buffer: DepthTexture2d::empty(ctx, width, height)?,
+            color_buffer: Texture2d::empty_with_format(
                 ctx,
                 UncompressedFloatFormat::F32F32F32,
                 MipmapsOption::NoMipmap,
@@ -121,47 +59,24 @@ impl PipelineBuffers {
 
 use glium::framebuffer::{MultiOutputFrameBuffer, ValidationError};
 
-fn get_deferred_render_target<'a, F: Facade>(
+fn get_terrain_render_target<'a, F: Facade>(
     ctx: &F,
     buffers: &'a PipelineBuffers,
 ) -> Result<MultiOutputFrameBuffer<'a>, ValidationError> {
     MultiOutputFrameBuffer::with_depth_buffer(
         ctx,
-        [
-            ("gposition", &buffers.gposition),
-            ("gcolor", &buffers.gcolor),
-            ("gnormal", &buffers.gnormal),
-            ("gemissive", &buffers.gemissive),
-            ("gextra", &buffers.gextra),
-        ]
-        .iter()
-        .cloned(),
-        &buffers.gdepth,
+        [("b_color", &buffers.color_buffer)].iter().cloned(),
+        &buffers.depth_buffer,
     )
 }
-
-fn get_ao_render_target<'a, F: Facade>(
-    ctx: &F,
-    buffers: &'a PipelineBuffers,
-) -> Result<SimpleFrameBuffer<'a>, ValidationError> {
-    SimpleFrameBuffer::new(ctx, &buffers.ao)
-}
-
-const AO_KERNEL_SIZE: usize = 64;
-const NUM_LIGHTS: usize = 64;
 
 pub struct Renderer {
     display: Rc<Display>,
     terrain_render: TerrainRenderContext,
+    fullscreen_quad: VertexBuffer<Tex>,
     buffers: PipelineBuffers,
 
-    compose_program: Program,
-    ao_program: Program,
-    fullscreen_quad: VertexBuffer<Tex>,
-    ao_kernel: UniformBuffer<[[f32; 4]; AO_KERNEL_SIZE]>,
-
-    light_positions: UniformBuffer<[[f32; 4]; NUM_LIGHTS]>,
-    light_colors: UniformBuffer<[[f32; 4]; NUM_LIGHTS]>,
+    post_program: Program,
 }
 
 impl Renderer {
@@ -169,70 +84,29 @@ impl Renderer {
         display: Rc<Display>,
         world: &mut World,
         resources: &mut Resources,
-    ) -> Result<Self, String> {
+    ) -> anyhow::Result<Self> {
         let terrain_render = TerrainRenderContext::new(Rc::clone(&display), world, resources)?;
 
         let (width, height) = display.get_framebuffer_dimensions();
-        let buffers =
-            PipelineBuffers::new(&*display, width, height).map_err(|err| format!("{:?}", err))?;
+        let buffers = PipelineBuffers::new(&*display, width, height)?;
 
-        let compose_program = err2s!(loader::load_shader(&*display, "resources/shaders/compose"))?;
-        let ao_program = err2s!(loader::load_shader(&*display, "resources/shaders/ssao"))?;
+        let post_program = loader::load_shader(&*display, "resources/shaders/post")?;
 
-        let fullscreen_quad = err2s!(VertexBuffer::immutable(&*display, &[
+        let fullscreen_quad = VertexBuffer::immutable(&*display, &[
             Tex { uv: [-1.0, 1.0] },
             Tex { uv: [1.0, 1.0] },
             Tex { uv: [-1.0, -1.0] },
             Tex { uv: [1.0, 1.0] },
             Tex { uv: [-1.0, -1.0] },
             Tex { uv: [1.0, -1.0] },
-        ]))?;
-
-        use rand::Rng;
-
-        let mut ao_samples = [[0.0f32; 4]; AO_KERNEL_SIZE];
-        let mut rng = rand::thread_rng();
-        let mut rand = |low| rng.gen_range(low, 1.0f32);
-        for i in 0..AO_KERNEL_SIZE {
-            let sample =
-                rand(0.0) * Vector4::new(rand(-1.0), rand(-1.0), rand(0.0), 0.0).normalize();
-            ao_samples[i] = sample.into();
-        }
-
-        let ao_kernel = err2s!(UniformBuffer::new(&*display, ao_samples))?;
-
-        let mut light_positions = [[0.0; 4]; NUM_LIGHTS];
-        let mut light_colors = [[0.0; 4]; NUM_LIGHTS];
-
-        let mut rng = rand::thread_rng();
-        for i in 0..NUM_LIGHTS {
-            light_positions[i] = [
-                rng.gen_range(-64.0, 64.0),
-                rng.gen_range(10.0, 20.0),
-                rng.gen_range(-64.0, 64.0),
-                1.0,
-            ];
-            light_colors[i] = [
-                rng.gen_range(0.0, 1.0),
-                rng.gen_range(0.0, 1.0),
-                rng.gen_range(0.0, 1.0),
-                1.0,
-            ];
-        }
-
-        let light_positions = err2s!(UniformBuffer::dynamic(&*display, light_positions))?;
-        let light_colors = err2s!(UniformBuffer::dynamic(&*display, light_colors))?;
+        ])?;
 
         Ok(Renderer {
             display,
             terrain_render,
-            buffers,
-            compose_program,
             fullscreen_quad,
-            ao_kernel,
-            ao_program,
-            light_positions,
-            light_colors,
+            buffers,
+            post_program,
         })
     }
 
@@ -241,18 +115,17 @@ impl Renderer {
         target: &mut S,
         world: &mut World,
         resources: &mut Resources,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         // Upload/delete etc meshes to keep in sync with the world.
         self.terrain_render
             .update_meshes(&*self.display, world)
             .unwrap();
 
-        // Render terrain to gbuffers
+        // render terrain to terrain buffer
         {
-            // let mut target = err2s!(get_deferred_render_target(&*self.display,
-            // &self.buffers))?;
-            target.clear_color_and_depth((0.0, 0.0, 0.0, 1.0), 1.0);
-            self.terrain_render.draw(target, world, resources)?;
+            let mut target = get_terrain_render_target(&*self.display, &self.buffers)?;
+            target.clear_color_and_depth((0.0, 0.0, 0.0, 0.0), 1.0);
+            self.terrain_render.draw(&mut target, world, resources)?;
         }
 
         let cam_transform = get_camera(world, resources);
@@ -260,51 +133,23 @@ impl Renderer {
         let (view, proj) = get_proj_view(width, height, cam_transform);
         let cam_pos = get_cam_pos(cam_transform);
 
-        // AO render pass
-        // {
-        //     let mut target = err2s!(get_ao_render_target(&*self.display,
-        // &self.buffers))?;     target.clear_color(1.0, 1.0, 1.0, 1.0);
-        //     err2s!(target.draw(
-        //         &self.fullscreen_quad,
-        //         glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
-        //         &self.ao_program,
-        //         &uniform! {
-        //             gdepth: self.buffers.gdepth.sampled(),
-        //             gnormal: self.buffers.gnormal.sampled(),
-        //             gposition: self.buffers.gposition.sampled(),
+        // post
+        target.clear_color(0.1, 0.3, 0.3, 1.0);
+        target.draw(
+            &self.fullscreen_quad,
+            glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
+            &self.post_program,
+            &uniform! {
+                b_color: self.buffers.color_buffer.sampled(),
+                b_depth: self.buffers.depth_buffer.sampled(),
 
-        //             samples: &self.ao_kernel,
-        //             projection_matrix: array4x4(proj.to_homogeneous()),
-        //             view_matrix: array4x4(view),
-        //         },
-        //         &Default::default(),
-        //     ))?;
-        // }
+                camera_pos: array3(cam_pos),
+                projection_matrix: array4x4(proj.to_homogeneous()),
+                view_matrix: array4x4(view),
+            },
+            &Default::default(),
+        )?;
 
-        // Compose
-        // target.clear_color(0.1, 0.3, 0.3, 1.0);
-        // err2s!(target.draw(
-        //     &self.fullscreen_quad,
-        //     glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
-        //     &self.compose_program,
-        //     &uniform! {
-        //         gcolor: self.buffers.gcolor.sampled(),
-        //         gposition: self.buffers.gposition.sampled(),
-        //         gnormal: self.buffers.gnormal.sampled(),
-        //         gemissive: self.buffers.gemissive.sampled(),
-        //         gdepth: self.buffers.gdepth.sampled(),
-        //         gextra: self.buffers.gextra.sampled(),
-        //         ao: self.buffers.ao.sampled(),
-
-        //         light_position_buffer: &self.light_positions,
-        //         light_color_buffer: &self.light_colors,
-
-        //         camera_pos: array3(cam_pos),
-        //         projection_matrix: array4x4(proj.to_homogeneous()),
-        //         view_matrix: array4x4(view),
-        //     },
-        //     &Default::default(),
-        // ))?;
         Ok(())
     }
 }
@@ -403,15 +248,14 @@ impl TerrainRenderContext {
         display: Rc<Display>,
         world: &mut World,
         resources: &mut Resources,
-    ) -> Result<Self, String> {
-        let program = err2s!(loader::load_shader(&*display, "resources/shaders/simple"))?;
-
+    ) -> anyhow::Result<Self> {
         let voxel_world = resources.get::<VoxelWorld>().unwrap();
-        let paths = voxel_world.registry.texture_paths();
-        let (width, height, maps) = err2s!(loader::load_block_textures(
+
+        let program = loader::load_shader(&*display, "resources/shaders/simple")?;
+        let (width, height, maps) = loader::load_block_textures(
             "resources/textures/blocks",
-            paths.iter().map(|s| &**s)
-        ))?;
+            voxel_world.registry.texture_paths(),
+        )?;
         let dims = (width, height);
 
         log::debug!("Texture dimensions: {:?}", dims);
@@ -447,11 +291,7 @@ impl TerrainRenderContext {
             // extra.push(RawImage2d::from_raw_rgb_reversed(&extra_map, dims));
         }
 
-        let albedo = err2s!(SrgbTexture2dArray::with_mipmaps(
-            &*display,
-            albedo,
-            MipmapsOption::NoMipmap
-        ))?;
+        let albedo = SrgbTexture2dArray::with_mipmaps(&*display, albedo, MipmapsOption::NoMipmap)?;
         // let normal = err2s!(Texture2dArray::with_mipmaps(
         //     &*display,
         //     normal,
@@ -483,7 +323,7 @@ impl TerrainRenderContext {
         target: &mut S,
         world: &mut World,
         resources: &mut Resources,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         let camera = get_camera(world, resources);
 
         // If we don't have any cameras anywhere, then just put it at the origin.
@@ -493,31 +333,29 @@ impl TerrainRenderContext {
         let mut transforms = Read::<GlobalTransform>::query();
         for (&entity, buffers) in self.built_meshes.iter() {
             if let Ok(transform) = transforms.get(world, entity) {
-                target
-                    .draw(
-                        buffers.glium_verts(),
-                        &buffers.index,
-                        &self.program,
-                        &uniform! {
-                            // tfms: &self.transform_buffer,
-                            model: array4x4(transform.0.to_matrix()),
-                            albedo_maps: self.albedo.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
-                            // normal_maps: self.normal.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
-                            // extra_maps: self.extra.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
-                            view: array4x4(view),
-                            projection: array4x4(proj.to_homogeneous()),
-                        },
-                        &glium::DrawParameters {
-                            depth: glium::Depth {
-                                test: glium::DepthTest::IfLess,
-                                write: true,
-                                ..Default::default()
-                            },
-                            // backface_culling: glium::BackfaceCullingMode::CullCounterClockwise,
+                target.draw(
+                    buffers.glium_verts(),
+                    &buffers.index,
+                    &self.program,
+                    &uniform! {
+                        // tfms: &self.transform_buffer,
+                        model: array4x4(transform.0.to_matrix()),
+                        albedo_maps: self.albedo.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
+                        // normal_maps: self.normal.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
+                        // extra_maps: self.extra.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
+                        view: array4x4(view),
+                        projection: array4x4(proj.to_homogeneous()),
+                    },
+                    &glium::DrawParameters {
+                        depth: glium::Depth {
+                            test: glium::DepthTest::IfLess,
+                            write: true,
                             ..Default::default()
                         },
-                    )
-                    .map_err(|err| format!("{:?}", err))?;
+                        // backface_culling: glium::BackfaceCullingMode::CullCounterClockwise,
+                        ..Default::default()
+                    },
+                )?;
             }
         }
 

@@ -281,11 +281,11 @@ pub fn load_chunks(world: &mut VoxelWorld, pos: ChunkPos, radius: i32) {
         .chain(1..radius)
         .flat_map(|x| once(-x).chain(once(x)))
     {
-        for yoff in once(0)
+        for zoff in once(0)
             .chain(1..radius)
             .flat_map(|y| once(-y).chain(once(y)))
         {
-            for zoff in once(0)
+            for yoff in once(0)
                 .chain(1..radius)
                 .flat_map(|z| once(-z).chain(once(z)))
             {

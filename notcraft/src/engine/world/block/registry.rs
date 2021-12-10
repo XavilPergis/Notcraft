@@ -249,8 +249,8 @@ impl BlockRegistry {
         self.opaque.len()
     }
 
-    pub fn texture_paths(&self) -> &[String] {
-        &self.texture_paths
+    pub fn texture_paths<'a>(&'a self) -> impl Iterator<Item = &'a str> {
+        self.texture_paths.iter().map(|s| &**s)
     }
 
     #[inline(always)]
