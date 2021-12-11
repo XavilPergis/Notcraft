@@ -8,9 +8,11 @@ use crate::engine::{
     transform::GlobalTransform,
     world::registry::BlockRegistry,
 };
+use anyhow::Result;
 use crossbeam_channel::Receiver;
 use glium::{
     backend::Facade,
+    framebuffer::{MultiOutputFrameBuffer, ValidationError},
     index::{IndexBuffer, PrimitiveType},
     texture::{
         DepthTexture2d, MipmapsOption, RawImage2d, SrgbTexture2dArray, Texture2d,
@@ -29,21 +31,16 @@ use std::{
     sync::Arc,
 };
 
-/// Map error to a string
-macro_rules! err2s {
-    ($e:expr) => {
-        $e.map_err(|err| format!("{:?}", err))
-    };
-}
+use super::{mesher::TerrainVertex, Tex};
 
-struct PipelineBuffers {
+struct TerrainFramebuffers {
     depth_buffer: DepthTexture2d,
     color_buffer: Texture2d,
 }
 
-impl PipelineBuffers {
-    fn new<F: Facade>(ctx: &F, width: u32, height: u32) -> anyhow::Result<Self> {
-        Ok(PipelineBuffers {
+impl TerrainFramebuffers {
+    fn new<F: Facade>(ctx: &F, width: u32, height: u32) -> Result<Self> {
+        Ok(TerrainFramebuffers {
             depth_buffer: DepthTexture2d::empty(ctx, width, height)?,
             color_buffer: Texture2d::empty_with_format(
                 ctx,
@@ -56,44 +53,13 @@ impl PipelineBuffers {
     }
 }
 
-use glium::framebuffer::{MultiOutputFrameBuffer, ValidationError};
-
-use super::{mesher::TerrainVertex, Tex};
-
-fn get_terrain_render_target<'a, F: Facade>(
-    ctx: &F,
-    buffers: &'a PipelineBuffers,
-) -> Result<MultiOutputFrameBuffer<'a>, ValidationError> {
-    MultiOutputFrameBuffer::with_depth_buffer(
-        ctx,
-        [("b_color", &buffers.color_buffer)].iter().cloned(),
-        &buffers.depth_buffer,
-    )
-}
-
-pub struct Renderer {
+struct SharedState {
     display: Rc<Display>,
-    terrain_render: TerrainRenderContext,
     fullscreen_quad: VertexBuffer<Tex>,
-
-    terrain_target_framebuffer: PipelineBuffers,
-
-    post_program: Program,
 }
 
-impl Renderer {
-    pub fn new(
-        display: Rc<Display>,
-        registry: Arc<BlockRegistry>,
-        world: &mut World,
-    ) -> anyhow::Result<Self> {
-        let terrain_render = TerrainRenderContext::new(Rc::clone(&display), registry, world)?;
-
-        let (width, height) = display.get_framebuffer_dimensions();
-        let buffers = PipelineBuffers::new(&*display, width, height)?;
-
-        let post_program = loader::load_shader(&*display, "resources/shaders/post")?;
-
+impl SharedState {
+    pub fn new(display: Rc<Display>) -> Result<Rc<Self>> {
         let fullscreen_quad = VertexBuffer::immutable(&*display, &[
             Tex { uv: [-1.0, 1.0] },
             Tex { uv: [1.0, 1.0] },
@@ -103,12 +69,61 @@ impl Renderer {
             Tex { uv: [1.0, -1.0] },
         ])?;
 
-        Ok(Renderer {
+        Ok(Rc::new(Self {
             display,
-            terrain_render,
             fullscreen_quad,
-            terrain_target_framebuffer: buffers,
-            post_program,
+        }))
+    }
+
+    pub fn display(&self) -> &Display {
+        &*self.display
+    }
+}
+
+pub struct Renderer {
+    shared: Rc<SharedState>,
+
+    terrain_renderer: TerrainRenderer,
+    post_renderer: PostProcessRenderer,
+}
+
+fn render_all<S: Surface>(
+    ctx: &mut Renderer,
+    target: &mut S,
+    world: &mut World,
+    resources: &mut Resources,
+) -> anyhow::Result<()> {
+    // upload/delete etc meshes to keep in sync with the world.
+    ctx.terrain_renderer.update_meshes(world).unwrap();
+
+    // render terrain to terrain buffer
+    render_terrain(
+        &mut ctx.terrain_renderer,
+        &mut ctx.post_renderer.render_target()?,
+        world,
+        resources,
+    )?;
+
+    render_post(&mut ctx.post_renderer, target, world, resources)?;
+
+    Ok(())
+}
+
+impl Renderer {
+    pub fn new(
+        display: Rc<Display>,
+        registry: Arc<BlockRegistry>,
+        world: &mut World,
+    ) -> Result<Self> {
+        let shared = SharedState::new(display)?;
+
+        let terrain_render = TerrainRenderer::new(Rc::clone(&shared), registry, world)?;
+        let post_renderer = PostProcessRenderer::new(Rc::clone(&shared))?;
+
+        Ok(Renderer {
+            shared,
+            terrain_renderer: terrain_render,
+            post_renderer,
         })
     }
 
@@ -117,44 +132,70 @@ impl Renderer {
         target: &mut S,
         world: &mut World,
         resources: &mut Resources,
-    ) -> anyhow::Result<()> {
-        // Upload/delete etc meshes to keep in sync with the world.
-        self.terrain_render
-            .update_meshes(&*self.display, world)
-            .unwrap();
-
-        // render terrain to terrain buffer
-        {
-            let mut target =
-                get_terrain_render_target(&*self.display, &self.terrain_target_framebuffer)?;
-            target.clear_color_and_depth((0.0, 0.0, 0.0, 0.0), 1.0);
-            self.terrain_render.draw(&mut target, world, resources)?;
-        }
-
-        let cam_transform = get_camera(world, resources);
-        let (width, height) = self.display.get_framebuffer_dimensions();
-        let (view, proj) = get_proj_view(width, height, cam_transform);
-        let cam_pos = get_cam_pos(cam_transform);
-
-        // post
-        target.clear_color(0.1, 0.3, 0.3, 1.0);
-        target.draw(
-            &self.fullscreen_quad,
-            glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
-            &self.post_program,
-            &uniform! {
-                b_color: self.terrain_target_framebuffer.color_buffer.sampled(),
-                b_depth: self.terrain_target_framebuffer.depth_buffer.sampled(),
-
-                camera_pos: array3(cam_pos),
-                projection_matrix: array4x4(proj.to_homogeneous()),
-                view_matrix: array4x4(view),
-            },
-            &Default::default(),
-        )?;
-
-        Ok(())
+    ) -> Result<()> {
+        render_all(self, target, world, resources)
     }
+}
+
+struct PostProcessRenderer {
+    shared: Rc<SharedState>,
+    post_program: Program,
+    post_process_source: TerrainFramebuffers,
+}
+
+impl PostProcessRenderer {
+    pub fn new(shared: Rc<SharedState>) -> Result<Self> {
+        let post_program = loader::load_shader(shared.display(), "resources/shaders/post")?;
+        let (width, height) = shared.display().get_framebuffer_dimensions();
+        let post_process_source = TerrainFramebuffers::new(shared.display(), width, height)?;
+
+        Ok(Self {
+            shared,
+            post_program,
+            post_process_source,
+        })
+    }
+
+    fn render_target(&self) -> Result<MultiOutputFrameBuffer, ValidationError> {
+        MultiOutputFrameBuffer::with_depth_buffer(
+            self.shared.display(),
+            [("b_color", &self.post_process_source.color_buffer)]
+                .iter()
+                .cloned(),
+            &self.post_process_source.depth_buffer,
+        )
+    }
+}
+
+fn render_post<S: Surface>(
+    ctx: &mut PostProcessRenderer,
+    target: &mut S,
+    world: &mut World,
+    resources: &mut Resources,
+) -> anyhow::Result<()> {
+    let cam_transform = get_camera(world, resources);
+    let (width, height) = ctx.shared.display().get_framebuffer_dimensions();
+    let (view, proj) = get_proj_view(width, height, cam_transform);
+    let cam_pos = get_cam_pos(cam_transform);
+
+    // post
+    target.clear_color(0.1, 0.3, 0.3, 1.0);
+    target.draw(
+        &ctx.shared.fullscreen_quad,
+        glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
+        &ctx.post_program,
+        &uniform! {
+            b_color: ctx.post_process_source.color_buffer.sampled(),
+            b_depth: ctx.post_process_source.depth_buffer.sampled(),
+
+            camera_pos: array3(cam_pos),
+            projection_matrix: array4x4(proj.to_homogeneous()),
+            view_matrix: array4x4(view),
+        },
+        &Default::default(),
+    )?;
+
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -165,14 +206,10 @@ struct TerrainBuffers {
 }
 
 impl TerrainBuffers {
-    fn immutable<F: Facade>(ctx: &F, mesh: &TerrainMesh) -> Result<Self, String> {
+    fn immutable<F: Facade>(ctx: &F, mesh: &TerrainMesh) -> Result<Self> {
         Ok(TerrainBuffers {
-            indices: err2s!(IndexBuffer::immutable(
-                ctx,
-                PrimitiveType::TrianglesList,
-                &mesh.indices
-            ))?,
-            vertices: err2s!(VertexBuffer::immutable(ctx, &mesh.vertices))?,
+            indices: IndexBuffer::immutable(ctx, PrimitiveType::TrianglesList, &mesh.indices)?,
+            vertices: VertexBuffer::immutable(ctx, &mesh.vertices)?,
         })
     }
 
@@ -212,7 +249,9 @@ fn get_cam_pos(cam_transform: Option<(&Camera, &GlobalTransform)>) -> Vector3<f3
     }
 }
 
-struct TerrainRenderContext {
+struct TerrainRenderer {
+    shared: Rc<SharedState>,
+
     // entities with `TerrainMesh` that need to be rebuilt
     needs_rebuild: HashSet<Entity>,
 
@@ -224,16 +263,15 @@ struct TerrainRenderContext {
 
     block_textures: SrgbTexture2dArray,
     terrain_program: Program,
-    display: Rc<Display>,
 }
 
-impl TerrainRenderContext {
+impl TerrainRenderer {
     fn new(
-        display: Rc<Display>,
+        shared: Rc<SharedState>,
         registry: Arc<BlockRegistry>,
         world: &mut World,
-    ) -> anyhow::Result<Self> {
-        let program = loader::load_shader(&*display, "resources/shaders/simple")?;
+    ) -> Result<Self> {
+        let program = loader::load_shader(shared.display(), "resources/shaders/simple")?;
         let (width, height, maps) =
             loader::load_block_textures("resources/textures/blocks", registry.texture_paths())?;
         let dims = (width, height);
@@ -248,67 +286,24 @@ impl TerrainRenderContext {
             ));
         }
 
-        let albedo = SrgbTexture2dArray::with_mipmaps(&*display, albedo, MipmapsOption::NoMipmap)?;
+        let albedo =
+            SrgbTexture2dArray::with_mipmaps(shared.display(), albedo, MipmapsOption::NoMipmap)?;
 
         let (mesh_events_tx, mesh_events_rx) = crossbeam_channel::unbounded();
         world.subscribe(mesh_events_tx, legion::component::<TerrainMesh>());
 
-        Ok(TerrainRenderContext {
+        Ok(TerrainRenderer {
             needs_rebuild: Default::default(),
             built_meshes: Default::default(),
             mesh_events: mesh_events_rx,
             terrain_program: program,
             block_textures: albedo,
-            display,
+            shared,
         })
     }
 
-    fn draw<S: Surface>(
-        &mut self,
-        target: &mut S,
-        world: &mut World,
-        resources: &mut Resources,
-    ) -> anyhow::Result<()> {
-        let camera = get_camera(world, resources);
-
-        // If we don't have any cameras anywhere, then just put it at the origin.
-        let (width, height) = self.display.get_framebuffer_dimensions();
-        let (view, proj) = get_proj_view(width, height, camera);
-
-        let mut transforms = Read::<GlobalTransform>::query();
-        for (&entity, buffers) in self.built_meshes.iter() {
-            if let Ok(transform) = transforms.get(world, entity) {
-                target.draw(
-                    buffers.glium_verts(),
-                    &buffers.indices,
-                    &self.terrain_program,
-                    &uniform! {
-                        // tfms: &self.transform_buffer,
-                        model: array4x4(transform.0.to_matrix()),
-                        albedo_maps: self.block_textures.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
-                        // normal_maps: self.normal.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
-                        // extra_maps: self.extra.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
-                        view: array4x4(view),
-                        projection: array4x4(proj.to_homogeneous()),
-                    },
-                    &glium::DrawParameters {
-                        depth: glium::Depth {
-                            test: glium::DepthTest::IfLess,
-                            write: true,
-                            ..Default::default()
-                        },
-                        // backface_culling: glium::BackfaceCullingMode::CullCounterClockwise,
-                        ..Default::default()
-                    },
-                )?;
-            }
-        }
-
-        Ok(())
-    }
-
     /// Synchronize the World state and the GPU meshes
-    fn update_meshes<F: Facade>(&mut self, ctx: &F, world: &mut World) -> Result<(), String> {
+    fn update_meshes(&mut self, world: &mut World) -> Result<()> {
         self.needs_rebuild.clear();
 
         for event in self.mesh_events.try_iter() {
@@ -338,8 +333,10 @@ impl TerrainRenderContext {
         for &entity in self.needs_rebuild.iter() {
             if let Ok(mesh) = mesh_query.get(world, entity) {
                 if !mesh.indices.is_empty() {
-                    self.built_meshes
-                        .insert(entity, TerrainBuffers::immutable(ctx, &mesh)?);
+                    self.built_meshes.insert(
+                        entity,
+                        TerrainBuffers::immutable(self.shared.display(), &mesh)?,
+                    );
                 } else {
                     self.built_meshes.remove(&entity);
                 }
@@ -349,67 +346,48 @@ impl TerrainRenderContext {
     }
 }
 
-// #[derive(Clone, Debug, PartialEq)]
-// pub struct MeshBuilder {
-//     // Indices are special
-//     indices: Option<IndexBuffer>,
-//     attributes: HashMap<Cow<'static, str>, AttributeBuffer>,
-//     primitive: Primitive,
-// }
+fn render_terrain<S: Surface>(
+    ctx: &mut TerrainRenderer,
+    target: &mut S,
+    world: &mut World,
+    resources: &mut Resources,
+) -> anyhow::Result<()> {
+    let camera = get_camera(world, resources);
 
-// impl MeshBuilder {
-//     pub fn new(primitive: Primitive) -> Self {
-//         Mesh {
-//             indices: None,
-//             attributes: HashMap::new(),
-//             primitive,
-//         }
-//     }
+    target.clear_color_and_depth((0.0, 0.0, 0.0, 0.0), 1.0);
 
-//     pub fn with_indices<T>(mut self, indices: T) -> Self
-//     where
-//         T: Into<IndexBuffer>,
-//     {
-//         self.indices = indices.into();
-//         self
-//     }
+    // If we don't have any cameras anywhere, then just put it at the origin.
+    let (width, height) = ctx.shared.display().get_framebuffer_dimensions();
+    let (view, proj) = get_proj_view(width, height, camera);
 
-//     pub fn with<T, K>(mut self, name: K, buf: T) -> Self
-//     where
-//         T: Into<AttributeBuffer>,
-//         K: Into<Cow<'static, str>>,
-//     {
-//         self.attributes.insert(name.into(), buf.into());
-//         self
-//     }
+    let mut transforms = Read::<GlobalTransform>::query();
+    for (&entity, buffers) in ctx.built_meshes.iter() {
+        if let Ok(transform) = transforms.get(world, entity) {
+            target.draw(
+                buffers.glium_verts(),
+                &buffers.indices,
+                &ctx.terrain_program,
+                &uniform! {
+                    model: array4x4(transform.0.to_matrix()),
+                    albedo_maps: ctx.block_textures.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
+                    view: array4x4(view),
+                    projection: array4x4(proj.to_homogeneous()),
+                },
+                &glium::DrawParameters {
+                    depth: glium::Depth {
+                        test: glium::DepthTest::IfLess,
+                        write: true,
+                        ..Default::default()
+                    },
+                    // backface_culling: glium::BackfaceCullingMode::CullCounterClockwise,
+                    ..Default::default()
+                },
+            )?;
+        }
+    }
 
-//     pub fn build(self) -> Result<Mesh, (Self, MeshBuildError)> {
-//         // TODO: validate that `indices` doesn't point to anything OOB
-//     }
-// }
-
-// impl StaticMesh {}
-
-// // fn foo() {
-// //     // StaticMesh is meant for geometry that will stay in GPU memory for
-// long //     // periods of time, and will have very fast GPU access.
-// //     let mesh1 = MeshBuilder::new(Primitive::TriangleList)
-// //         .with("position", (3, pos_buffer))
-// //         .with("uv", (uv_buffer))
-// //         .with_norm_tang();
-
-// //     chunk_meshes.insert(chunk, mesh1);
-// //     chunk_materials.insert(chunk, self.chunk_material); // Handle to
-// terrain // shader n stuff }
-
-// //     // DynamicMesh will be in CPU-visible memory, so it's better suited
-// for // geometry     // that will be updated frequently.
-// //     let mesh2 = DynamicMesh::empty(&ctx, Primitive::TriangleList)
-// //         .with::<Position>(pos_buffer)
-// //         .with::<Uv>(uv_buffer);
-
-// //     let shader = Shader::new("resources/shaders/lava");
-// // }
+    Ok(())
+}
 
 pub fn array4x4<T: Into<[[U; 4]; 4]>, U>(mat: T) -> [[U; 4]; 4] {
     mat.into()
