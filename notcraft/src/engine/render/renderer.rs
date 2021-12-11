@@ -19,7 +19,7 @@ use glium::{
         TextureCreationError, UncompressedFloatFormat,
     },
     uniform,
-    uniforms::UniformBuffer,
+    uniforms::{MagnifySamplerFilter, UniformBuffer},
     vertex::VertexBuffer,
     Display, Program, Surface,
 };
@@ -58,6 +58,8 @@ impl PipelineBuffers {
 }
 
 use glium::framebuffer::{MultiOutputFrameBuffer, ValidationError};
+
+use super::mesher::TerrainVertex;
 
 fn get_terrain_render_target<'a, F: Facade>(
     ctx: &F,
@@ -157,41 +159,24 @@ impl Renderer {
 #[derive(Debug)]
 struct TerrainBuffers {
     // TODO: use u16 when we can
-    index: IndexBuffer<u32>,
-    pos: VertexBuffer<Pos>,
-    tex: VertexBuffer<Tex>,
-    norm: VertexBuffer<Norm>,
-    tang: VertexBuffer<Tang>,
-    ao: VertexBuffer<Ao>,
-    tex_id: VertexBuffer<TexId>,
+    indices: IndexBuffer<u32>,
+    vertices: VertexBuffer<TerrainVertex>,
 }
 
 impl TerrainBuffers {
     fn immutable<F: Facade>(ctx: &F, mesh: &TerrainMesh) -> Result<Self, String> {
         Ok(TerrainBuffers {
-            index: err2s!(IndexBuffer::immutable(
+            indices: err2s!(IndexBuffer::immutable(
                 ctx,
                 PrimitiveType::TrianglesList,
-                &mesh.index
+                &mesh.indices
             ))?,
-            pos: err2s!(VertexBuffer::immutable(ctx, &mesh.pos))?,
-            tex: err2s!(VertexBuffer::immutable(ctx, &mesh.tex))?,
-            norm: err2s!(VertexBuffer::immutable(ctx, &mesh.norm))?,
-            tang: err2s!(VertexBuffer::immutable(ctx, &mesh.tang))?,
-            ao: err2s!(VertexBuffer::immutable(ctx, &mesh.ao))?,
-            tex_id: err2s!(VertexBuffer::immutable(ctx, &mesh.id))?,
+            vertices: err2s!(VertexBuffer::immutable(ctx, &mesh.vertices))?,
         })
     }
 
     fn glium_verts(&self) -> impl glium::vertex::MultiVerticesSource<'_> {
-        (
-            &self.pos,
-            &self.tex,
-            &self.norm,
-            &self.tang,
-            &self.ao,
-            &self.tex_id,
-        )
+        &self.vertices
     }
 }
 
@@ -335,12 +320,12 @@ impl TerrainRenderContext {
             if let Ok(transform) = transforms.get(world, entity) {
                 target.draw(
                     buffers.glium_verts(),
-                    &buffers.index,
+                    &buffers.indices,
                     &self.program,
                     &uniform! {
                         // tfms: &self.transform_buffer,
                         model: array4x4(transform.0.to_matrix()),
-                        albedo_maps: self.albedo.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
+                        albedo_maps: self.albedo.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
                         // normal_maps: self.normal.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
                         // extra_maps: self.extra.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
                         view: array4x4(view),
@@ -392,7 +377,7 @@ impl TerrainRenderContext {
 
         for &entity in self.needs_rebuild.iter() {
             if let Ok(mesh) = mesh_query.get(world, entity) {
-                if !mesh.index.is_empty() {
+                if !mesh.indices.is_empty() {
                     self.built_meshes
                         .insert(entity, TerrainBuffers::immutable(ctx, &mesh)?);
                 } else {

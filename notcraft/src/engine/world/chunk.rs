@@ -170,6 +170,9 @@ macro_rules! gen_index {
     };
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ChunkIndex(usize);
+
 impl Index<usize> for Chunk {
     type Output = BlockId;
 
@@ -180,6 +183,20 @@ impl Index<usize> for Chunk {
 
 impl IndexMut<usize> for Chunk {
     fn index_mut(&mut self, idx: usize) -> &mut BlockId {
+        &mut self.data[idx]
+    }
+}
+
+impl Index<ChunkIndex> for Chunk {
+    type Output = BlockId;
+
+    fn index(&self, ChunkIndex(idx): ChunkIndex) -> &BlockId {
+        &self.data[idx]
+    }
+}
+
+impl IndexMut<ChunkIndex> for Chunk {
+    fn index_mut(&mut self, ChunkIndex(idx): ChunkIndex) -> &mut BlockId {
         &mut self.data[idx]
     }
 }

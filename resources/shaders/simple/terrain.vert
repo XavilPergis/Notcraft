@@ -1,11 +1,7 @@
 #version 330 core
 
-in vec3 pos;
-in vec2 uv;
-in vec3 normal;
-in vec3 tangent;
-in float ao;
-in int id;
+in uint pos_ao;
+in uint uv_id;
 
 uniform mat4 model;
 uniform mat4 view;
@@ -17,6 +13,23 @@ flat out int v_id;
 
 void main()
 {
+    // unpack attributes
+    uint bao = pos_ao & uint(3);
+    float ao = float(bao) / 3.0;
+
+    uint bz = (pos_ao >> 2) & uint(1023);
+    uint by = (pos_ao >> 12) & uint(1023);
+    uint bx = (pos_ao >> 22) & uint(1023);
+    vec3 pos = vec3(float(bx), float(by), float(bz));
+
+    uint bid = uv_id & uint(65535);
+    int id = int(bid);
+    
+    uint bv = (uv_id >> 22) & uint(31);
+    uint bu = (uv_id >> 27) & uint(31);
+    vec2 uv = vec2(float(bu), float(bv));
+
+    // normal shader code
     gl_Position = projection * view * model * vec4(pos, 1.0);
 
     float ao_strength = (1.0 - ao) * 0.9;
