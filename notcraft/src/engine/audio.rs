@@ -1,5 +1,5 @@
 use rand::prelude::*;
-use rodio::{Decoder, Device, OutputStream, Sink, Source};
+use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -13,11 +13,6 @@ fn random_duration() -> Duration {
     Duration::from_millis(
         rand::thread_rng().gen_range(MIN_MUSIC_GAP_MILLISECS, MAX_MUSIC_GAP_MILLISECS),
     )
-}
-
-struct AudioManagerInner {
-    _device: Device,
-    music_sink: Sink,
 }
 
 fn walk_dirs(path: impl AsRef<Path>) -> io::Result<Vec<PathBuf>> {
@@ -49,7 +44,7 @@ fn select_audio_file<P: AsRef<Path>>(dir: P) -> io::Result<Option<Decoder<fs::Fi
 
 pub struct MusicState {
     music_sink: Sink,
-    output_stream: OutputStream,
+    _output_stream: OutputStream,
 }
 
 impl MusicState {
@@ -59,7 +54,7 @@ impl MusicState {
 
         Self {
             music_sink: sink,
-            output_stream: os,
+            _output_stream: os,
         }
     }
 }
@@ -69,7 +64,7 @@ pub fn intermittent_music(#[state] state: &mut MusicState) {
     if state.music_sink.empty() {
         if let Some(Some(source)) = select_audio_file("resources/audio").ok() {
             let duration = random_duration();
-            debug!("Playing music in {} seconds", duration.as_secs_f64());
+            debug!("playing music in {} seconds", duration.as_secs_f64());
             state.music_sink.append(source.delay(duration));
         }
     }

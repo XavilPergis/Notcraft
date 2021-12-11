@@ -1,33 +1,32 @@
 use crate::engine::{
-    components::{GlobalTransform, Transform},
     loader,
-    prelude::*,
+    math::*,
     render::{
         camera::{ActiveCamera, Camera},
         mesher::TerrainMesh,
-        Ao, Norm, Pos, Tang, Tex, TexId,
     },
-    world::VoxelWorld,
+    transform::GlobalTransform,
+    world::registry::BlockRegistry,
 };
 use crossbeam_channel::Receiver;
 use glium::{
     backend::Facade,
-    framebuffer::SimpleFrameBuffer,
     index::{IndexBuffer, PrimitiveType},
     texture::{
-        DepthTexture2d, MipmapsOption, RawImage2d, SrgbTexture2dArray, Texture2d, Texture2dArray,
-        TextureCreationError, UncompressedFloatFormat,
+        DepthTexture2d, MipmapsOption, RawImage2d, SrgbTexture2dArray, Texture2d,
+        UncompressedFloatFormat,
     },
     uniform,
-    uniforms::{MagnifySamplerFilter, UniformBuffer},
+    uniforms::MagnifySamplerFilter,
     vertex::VertexBuffer,
     Display, Program, Surface,
 };
-use legion::{world::Event, Entity, IntoQuery, Query, Read, Resources, SystemBuilder, World};
+use legion::{world::Event, Entity, IntoQuery, Read, Resources, World};
 use nalgebra::{self as na, Perspective3};
 use std::{
     collections::{HashMap, HashSet},
     rc::Rc,
+    sync::Arc,
 };
 
 /// Map error to a string
@@ -59,7 +58,7 @@ impl PipelineBuffers {
 
 use glium::framebuffer::{MultiOutputFrameBuffer, ValidationError};
 
-use super::mesher::TerrainVertex;
+use super::{mesher::TerrainVertex, Tex};
 
 fn get_terrain_render_target<'a, F: Facade>(
     ctx: &F,
@@ -76,7 +75,8 @@ pub struct Renderer {
     display: Rc<Display>,
     terrain_render: TerrainRenderContext,
     fullscreen_quad: VertexBuffer<Tex>,
-    buffers: PipelineBuffers,
+
+    terrain_target_framebuffer: PipelineBuffers,
 
     post_program: Program,
 }
@@ -84,10 +84,10 @@ pub struct Renderer {
 impl Renderer {
     pub fn new(
         display: Rc<Display>,
+        registry: Arc<BlockRegistry>,
         world: &mut World,
-        resources: &mut Resources,
     ) -> anyhow::Result<Self> {
-        let terrain_render = TerrainRenderContext::new(Rc::clone(&display), world, resources)?;
+        let terrain_render = TerrainRenderContext::new(Rc::clone(&display), registry, world)?;
 
         let (width, height) = display.get_framebuffer_dimensions();
         let buffers = PipelineBuffers::new(&*display, width, height)?;
@@ -107,7 +107,7 @@ impl Renderer {
             display,
             terrain_render,
             fullscreen_quad,
-            buffers,
+            terrain_target_framebuffer: buffers,
             post_program,
         })
     }
@@ -125,7 +125,8 @@ impl Renderer {
 
         // render terrain to terrain buffer
         {
-            let mut target = get_terrain_render_target(&*self.display, &self.buffers)?;
+            let mut target =
+                get_terrain_render_target(&*self.display, &self.terrain_target_framebuffer)?;
             target.clear_color_and_depth((0.0, 0.0, 0.0, 0.0), 1.0);
             self.terrain_render.draw(&mut target, world, resources)?;
         }
@@ -142,8 +143,8 @@ impl Renderer {
             glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
             &self.post_program,
             &uniform! {
-                b_color: self.buffers.color_buffer.sampled(),
-                b_depth: self.buffers.depth_buffer.sampled(),
+                b_color: self.terrain_target_framebuffer.color_buffer.sampled(),
+                b_depth: self.terrain_target_framebuffer.depth_buffer.sampled(),
 
                 camera_pos: array3(cam_pos),
                 projection_matrix: array4x4(proj.to_homogeneous()),
@@ -221,33 +222,23 @@ struct TerrainRenderContext {
 
     mesh_events: Receiver<Event>,
 
-    albedo: SrgbTexture2dArray,
-    // normal: Texture2dArray,
-    // extra: Texture2dArray,
-    program: Program,
+    block_textures: SrgbTexture2dArray,
+    terrain_program: Program,
     display: Rc<Display>,
 }
 
 impl TerrainRenderContext {
     fn new(
         display: Rc<Display>,
+        registry: Arc<BlockRegistry>,
         world: &mut World,
-        resources: &mut Resources,
     ) -> anyhow::Result<Self> {
-        let voxel_world = resources.get::<VoxelWorld>().unwrap();
-
         let program = loader::load_shader(&*display, "resources/shaders/simple")?;
-        let (width, height, maps) = loader::load_block_textures(
-            "resources/textures/blocks",
-            voxel_world.registry.texture_paths(),
-        )?;
+        let (width, height, maps) =
+            loader::load_block_textures("resources/textures/blocks", registry.texture_paths())?;
         let dims = (width, height);
 
-        log::debug!("Texture dimensions: {:?}", dims);
-
         let mut albedo = vec![];
-        // let mut normal = vec![];
-        // let mut extra = vec![];
 
         for map in maps {
             assert!(map.albedo.dimensions() == dims);
@@ -255,38 +246,9 @@ impl TerrainRenderContext {
                 &map.albedo.into_raw(),
                 dims,
             ));
-
-            // let normal_map = if let Some(norm) = map.normal {
-            //     norm
-            // } else {
-            //     image::ImageBuffer::from_pixel(width, height, image::Rgb {
-            //         data: [127u8, 127, 255],
-            //     })
-            // };
-            // assert!(normal_map.dimensions() == dims);
-            // normal.push(RawImage2d::from_raw_rgb_reversed(&normal_map,
-            // dims));
-
-            // let extra_map = if let Some(extra) = map.extra {
-            //     extra
-            // } else {
-            //     image::ImageBuffer::from_pixel(width, height, image::Rgb {
-            // data: [0u8, 0, 0] }) };
-            // assert!(extra_map.dimensions() == dims);
-            // extra.push(RawImage2d::from_raw_rgb_reversed(&extra_map, dims));
         }
 
         let albedo = SrgbTexture2dArray::with_mipmaps(&*display, albedo, MipmapsOption::NoMipmap)?;
-        // let normal = err2s!(Texture2dArray::with_mipmaps(
-        //     &*display,
-        //     normal,
-        //     MipmapsOption::NoMipmap
-        // ))?;
-        // let extra = err2s!(Texture2dArray::with_mipmaps(
-        //     &*display,
-        //     extra,
-        //     MipmapsOption::NoMipmap
-        // ))?;
 
         let (mesh_events_tx, mesh_events_rx) = crossbeam_channel::unbounded();
         world.subscribe(mesh_events_tx, legion::component::<TerrainMesh>());
@@ -295,10 +257,8 @@ impl TerrainRenderContext {
             needs_rebuild: Default::default(),
             built_meshes: Default::default(),
             mesh_events: mesh_events_rx,
-            program,
-            albedo,
-            // normal,
-            // extra,
+            terrain_program: program,
+            block_textures: albedo,
             display,
         })
     }
@@ -321,11 +281,11 @@ impl TerrainRenderContext {
                 target.draw(
                     buffers.glium_verts(),
                     &buffers.indices,
-                    &self.program,
+                    &self.terrain_program,
                     &uniform! {
                         // tfms: &self.transform_buffer,
                         model: array4x4(transform.0.to_matrix()),
-                        albedo_maps: self.albedo.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
+                        albedo_maps: self.block_textures.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
                         // normal_maps: self.normal.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
                         // extra_maps: self.extra.sampled(), //.magnify_filter(MagnifySamplerFilter::Nearest),
                         view: array4x4(view),

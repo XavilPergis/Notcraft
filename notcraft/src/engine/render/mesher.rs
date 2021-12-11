@@ -1,44 +1,17 @@
 use crate::engine::{
-    components::Transform,
-    prelude::*,
-    render::{Ao, Norm, Pos, Tang, Tex, TexId},
+    math::*,
+    transform::Transform,
     world::{
-        block::{BlockId, BlockRegistry},
         chunk::{ChunkType, PaddedChunk, SIZE},
+        registry::{BlockId, BlockRegistry},
         ChunkPos, VoxelWorld,
     },
     Side,
 };
 use crossbeam_channel::Receiver;
-use legion::{systems::CommandBuffer, world::SubWorld, Entity, Query};
+use legion::{systems::CommandBuffer, Entity};
 use na::point;
-// use specs::{prelude::*, world::EntitiesRes};
 use std::collections::{HashMap, HashSet};
-
-/*
-
-_   _   _   _   _   _   _
-
-_   _   _   _   _   _   _
-      \ | /
-_   _ - 8 - _   _   _   _
-      / | \
-_   _   _   _   _   _   _
-
-_   _   _   _   _   _   _
-
-_   _   _   _   _   _   _
-
-_   _   _   _   _   _   _
-
-
-new chunk:
-    for anything waiting on chunk:
-        decrease waiting count
-        if waiting count is 0:
-            add to mesh set
-
-*/
 
 #[derive(Debug)]
 pub struct MesherContext {
@@ -155,11 +128,7 @@ pub struct ChunkMesher {}
 pub fn mesh_chunk(pos: ChunkPos, world: &VoxelWorld) -> TerrainMesh {
     let mut mesher = Mesher::new(pos, world);
     mesher.mesh();
-
-    let mut terrain = mesher.mesh_constructor.terrain_mesh;
-    // terrain.recalculate_norm_tang();
-
-    terrain
+    mesher.mesh_constructor.terrain_mesh
 }
 
 type ChunkAxis = u16;
@@ -459,91 +428,6 @@ pub struct TerrainMesh {
     pub indices: Vec<u32>,
 }
 
-impl TerrainMesh {
-    // pub fn recalculate_norm_tang(&mut self) {
-    //     // Zero vertex normal and tangent vectors
-    //     self.norm.clear();
-    //     self.tang.clear();
-    //     self.norm.resize(self.pos.len(), Default::default());
-    //     self.tang.resize(self.pos.len(), Default::default());
-
-    //     // sub-assign
-    //     fn arr3_sub(lhs: &mut [f32; 3], rhs: &[f32; 3]) {
-    //         lhs[0] -= rhs[0];
-    //         lhs[1] -= rhs[1];
-    //         lhs[2] -= rhs[2];
-    //     }
-
-    //     // normalize
-    //     fn arr3_norm(arr: &mut [f32; 3]) {
-    //         let (a, b, c) = (arr[0], arr[1], arr[2]);
-    //         let mag = f32::sqrt(a * a + b * b + c * c);
-    //         arr[0] /= mag;
-    //         arr[1] /= mag;
-    //         arr[2] /= mag;
-    //     }
-
-    //     // Sum all the unit normals and tangents for each vertex. for non-"flat"
-    // meshes     // where different indices point to the same vertex, the
-    // vector will not be a     // normal vector after the summation. We
-    // compensate for this, though, in the     // next step by normalizing all
-    // the basis vectors     for (a, b, c) in self
-    //         .index
-    //         .chunks(3)
-    //         .map(|i| (i[0] as usize, i[1] as usize, i[2] as usize))
-    //     {
-    //         let triangle_norm = triangle_normal(self, a, b, c).into();
-    //         let triangle_tang = triangle_tangent(self, a, b, c).into();
-
-    //         arr3_sub(&mut self.norm[a].normal, &triangle_norm);
-    //         arr3_sub(&mut self.norm[b].normal, &triangle_norm);
-    //         arr3_sub(&mut self.norm[c].normal, &triangle_norm);
-
-    //         arr3_sub(&mut self.tang[a].tangent, &triangle_tang);
-    //         arr3_sub(&mut self.tang[b].tangent, &triangle_tang);
-    //         arr3_sub(&mut self.tang[c].tangent, &triangle_tang);
-    //     }
-
-    //     // Normalize the normals and tangents
-    //     self.norm
-    //         .iter_mut()
-    //         .for_each(|norm| arr3_norm(&mut norm.normal));
-    //     self.tang
-    //         .iter_mut()
-    //         .for_each(|tang| arr3_norm(&mut tang.tangent));
-    // }
-}
-
-// fn triangle_normal(mesh: &TerrainMesh, a: usize, b: usize, c: usize) ->
-// Vector3<f32> {     let pa = Vector3::from(mesh.pos[a].pos);
-//     let pb = Vector3::from(mesh.pos[b].pos);
-//     let pc = Vector3::from(mesh.pos[c].pos);
-
-//     let edge_b = pb - pa;
-//     let edge_c = pc - pa;
-
-//     edge_b.cross(&edge_c)
-// }
-
-// fn triangle_tangent(mesh: &TerrainMesh, a: usize, b: usize, c: usize) ->
-// Vector3<f32> {     let p1 = Vector3::from(mesh.pos[a].pos);
-//     let p2 = Vector3::from(mesh.pos[b].pos);
-//     let p3 = Vector3::from(mesh.pos[c].pos);
-
-//     let t1 = Vector2::from(mesh.tex[a].uv);
-//     let t2 = Vector2::from(mesh.tex[b].uv);
-//     let t3 = Vector2::from(mesh.tex[c].uv);
-
-//     let delta_pos_2 = p2 - p1;
-//     let delta_pos_3 = p3 - p1;
-
-//     let delta_uv_2 = t2 - t1;
-//     let delta_uv_3 = t3 - t1;
-
-//     let r = 1.0 / (delta_uv_2.x * delta_uv_3.y - delta_uv_2.y *
-// delta_uv_3.x);     r * (delta_pos_2 * delta_uv_3.y - delta_pos_3 *
-// delta_uv_2.y) }
-
 #[derive(Debug)]
 struct MeshConstructor<'w> {
     // liquid_mesh: LiquidMesh,
@@ -553,106 +437,7 @@ struct MeshConstructor<'w> {
 
 impl<'w> MeshConstructor<'w> {
     fn add_liquid(&mut self, _quad: VoxelQuad, _side: Side, _pos: Point3<ChunkAxis>) {
-        // let pos: Point3<f32> = pos.cast().unwrap();
-
-        // let clockwise = match side {
-        //     Side::Top => false,
-        //     Side::Bottom => true,
-        //     Side::Front => true,
-        //     Side::Back => false,
-        //     Side::Right => false,
-        //     Side::Left => true,
-        // };
-
-        // let indices = if clockwise {
-        //     NORMAL_QUAD_CW
-        // } else {
-        //     NORMAL_QUAD_CCW
-        // };
-
-        // let normal = side.normal();
-
-        // let face = self.registry.block_texture(quad.id, side).unwrap();
-        // let _tex_id = *face.texture.select() as i32;
-
-        // let h = if side.facing_positive() { 1.0 } else { 0.0 };
-        // let qw = quad.width as f32;
-        // let qh = quad.height as f32;
-
-        // let vert = |offset, uv| {
-        //     LiquidVertex::default()
-        //         .with_pos(pos + offset)
-        //         .with_uv(uv)
-        //         .with_normal(normal)
-        // };
-
-        // let uvs = UV_VARIANT_1;
-
-        // if !self.liquid_mesh.add(
-        //     match side {
-        //         Side::Top | Side::Bottom => [
-        //             vert(
-        //                 na::vector!(0.0, h, qh),
-        //                 na::vector!(uvs[0].x * qw, uvs[0].y * qh),
-        //             ),
-        //             vert(
-        //                 na::vector!(qw, h, qh),
-        //                 na::vector!(uvs[1].x * qw, uvs[1].y * qh),
-        //             ),
-        //             vert(
-        //                 na::vector!(0.0, h, 0.0),
-        //                 na::vector!(uvs[2].x * qw, uvs[2].y * qh),
-        //             ),
-        //             vert(
-        //                 na::vector!(qw, h, 0.0),
-        //                 na::vector!(uvs[3].x * qw, uvs[3].y * qh),
-        //             ),
-        //         ],
-
-        //         Side::Left | Side::Right => [
-        //             vert(
-        //                 na::vector!(h, qw, 0.0),
-        //                 na::vector!(uvs[0].x * qh, uvs[0].y * qw),
-        //             ),
-        //             vert(
-        //                 na::vector!(h, qw, qh),
-        //                 na::vector!(uvs[1].x * qh, uvs[1].y * qw),
-        //             ),
-        //             vert(
-        //                 na::vector!(h, 0.0, 0.0),
-        //                 na::vector!(uvs[2].x * qh, uvs[2].y * qw),
-        //             ),
-        //             vert(
-        //                 na::vector!(h, 0.0, qh),
-        //                 na::vector!(uvs[3].x * qh, uvs[3].y * qw),
-        //             ),
-        //         ],
-
-        //         Side::Front | Side::Back => [
-        //             vert(
-        //                 na::vector!(0.0, qh, h),
-        //                 na::vector!(uvs[0].x * qw, uvs[0].y * qh),
-        //             ),
-        //             vert(
-        //                 na::vector!(qw, qh, h),
-        //                 na::vector!(uvs[1].x * qw, uvs[1].y * qh),
-        //             ),
-        //             vert(
-        //                 na::vector!(0.0, 0.0, h),
-        //                 na::vector!(uvs[2].x * qw, uvs[2].y * qh),
-        //             ),
-        //             vert(
-        //                 na::vector!(qw, 0.0, h),
-        //                 na::vector!(uvs[3].x * qw, uvs[3].y * qh),
-        //             ),
-        //         ],
-        //     }
-        //     .iter()
-        //     .cloned(),
-        //     indices.iter().cloned(),
-        // ) {
-        //     panic!("Mesh could not be created");
-        // }
+        // TODO: liquid meshing
     }
 
     fn add_terrain(&mut self, quad: VoxelQuad, side: Side, pos: Point3<ChunkAxis>) {

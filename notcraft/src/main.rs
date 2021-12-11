@@ -4,24 +4,24 @@ extern crate log;
 extern crate serde_derive;
 
 pub mod engine;
-pub mod handle;
 pub mod util;
 
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub struct Player;
+
 use crate::engine::{
-    components as comp,
     input::{keys, InputState},
     render::{
         camera::{ActiveCamera, Camera},
         renderer::Renderer,
     },
-    resources as res,
-    world::{VoxelWorld, WorldPos},
+    world::VoxelWorld,
 };
 use engine::{
-    components::Transform,
-    prelude::{block::BlockRegistry, ChunkPos},
     render::mesher::MesherContext,
-    world::ChunkLoader,
+    transform::{Parent, Transform},
+    world::{registry::BlockRegistry, ChunkLoader},
+    Dt, StopGameLoop,
 };
 use glium::{
     glutin::{
@@ -32,19 +32,15 @@ use glium::{
     },
     Display,
 };
-use legion::{systems::CommandBuffer, world::SubWorld, *};
+use legion::{systems::CommandBuffer, *};
 use std::{
-    collections::HashMap,
     rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 #[legion::system(for_each)]
-fn player_movement(
-    #[resource] input: &InputState,
-    transform: &mut Transform,
-    _player: &comp::Player,
-) {
+fn player_movement(#[resource] input: &InputState, transform: &mut Transform, _player: &Player) {
     use std::f32::consts::PI;
     let (dx, dy) = input.cursor_delta();
 
@@ -82,16 +78,16 @@ fn player_movement(
     // }
 
     if input.is_pressed(keys::FORWARD, None) {
-        comp::creative_flight(transform, nalgebra::vector!(0.0, -0.4));
+        engine::transform::creative_flight(transform, nalgebra::vector!(0.0, -0.4));
     }
     if input.is_pressed(keys::BACKWARD, None) {
-        comp::creative_flight(transform, nalgebra::vector!(0.0, 0.4));
+        engine::transform::creative_flight(transform, nalgebra::vector!(0.0, 0.4));
     }
     if input.is_pressed(keys::RIGHT, None) {
-        comp::creative_flight(transform, nalgebra::vector!(0.4, 0.0));
+        engine::transform::creative_flight(transform, nalgebra::vector!(0.4, 0.0));
     }
     if input.is_pressed(keys::LEFT, None) {
-        comp::creative_flight(transform, nalgebra::vector!(-0.4, 0.0));
+        engine::transform::creative_flight(transform, nalgebra::vector!(-0.4, 0.0));
     }
     if input.is_pressed(keys::UP, None) {
         transform.translate_global(&nalgebra::vector!(0.0, 0.4, 0.0).into());
@@ -102,22 +98,16 @@ fn player_movement(
 }
 
 fn setup_world(cmd: &mut CommandBuffer) {
-    let player = cmd.push((comp::Transform::default(), comp::Player, ChunkLoader {
-        radius: 3,
-    }));
+    let player = cmd.push((Transform::default(), Player, ChunkLoader { radius: 3 }));
 
-    let camera_entity = cmd.push((
-        comp::Parent(player),
-        Camera::default(),
-        comp::Transform::default(),
-    ));
+    let camera_entity = cmd.push((Parent(player), Camera::default(), Transform::default()));
 
     cmd.exec_mut(move |_, res| {
         res.insert(ActiveCamera(Some(camera_entity)));
 
         res.insert(engine::input::InputState::default());
-        res.insert(res::StopGameLoop(false));
-        res.insert(res::Dt(Duration::from_secs(1)));
+        res.insert(StopGameLoop(false));
+        res.insert(Dt(Duration::from_secs(1)));
     });
 }
 
@@ -150,7 +140,7 @@ fn end_frame(ctx: &mut MainContext) {
     assert!(ctx.start_instant.is_some(), "sample was not started!");
 
     let dt = ctx.start_instant.unwrap().elapsed();
-    *ctx.resources.get_mut::<res::Dt>().unwrap() = res::Dt(dt);
+    *ctx.resources.get_mut::<Dt>().unwrap() = Dt(dt);
 }
 
 fn report_frame_samples(ctx: &mut MainContext) {
@@ -208,7 +198,7 @@ fn main() {
     let mut resources = Resources::default();
 
     let registry = BlockRegistry::load_from_file("resources/blocks.json").unwrap();
-    let voxel_world = VoxelWorld::new(registry);
+    let voxel_world = VoxelWorld::new(Arc::clone(&registry));
 
     let mesher_ctx = MesherContext::new(&voxel_world);
 
@@ -228,7 +218,7 @@ fn main() {
 
     let display = Rc::new(Display::new(window, ctx, &event_loop).unwrap());
 
-    let renderer = Renderer::new(Rc::clone(&display), &mut world, &mut resources).unwrap();
+    let renderer = Renderer::new(Rc::clone(&display), Arc::clone(&registry), &mut world).unwrap();
 
     let schedule = Schedule::builder()
         .add_system(engine::input::input_compiler_system(window_events_rx))
@@ -243,7 +233,7 @@ fn main() {
             engine::world::ChunkLoaderContext::new(),
         ))
         .flush()
-        .add_system(engine::components::transform_hierarchy_system())
+        .add_system(engine::transform::transform_hierarchy_system())
         .build();
 
     let mut main_ctx = MainContext {
@@ -256,7 +246,7 @@ fn main() {
         renderer,
     };
 
-    event_loop.run(move |event, target, cf| match event {
+    event_loop.run(move |event, _target, cf| match event {
         // Event::WindowEvent { window_id, event } => {}
         // Event::DeviceEvent { device_id, event } => {}
         Event::WindowEvent { event, .. } => match event {

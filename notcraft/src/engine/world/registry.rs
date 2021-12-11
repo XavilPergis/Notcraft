@@ -1,6 +1,6 @@
-use crate::engine::{world::block::Faces, Side};
+use crate::engine::Side;
 use rand::prelude::*;
-use std::{collections::HashMap, error::Error, path::Path};
+use std::{collections::HashMap, error::Error, path::Path, sync::Arc};
 
 pub const AIR: BlockId = BlockId(0);
 pub const STONE: BlockId = BlockId(1);
@@ -8,6 +8,32 @@ pub const DIRT: BlockId = BlockId(2);
 pub const GRASS: BlockId = BlockId(3);
 pub const SAND: BlockId = BlockId(4);
 pub const WATER: BlockId = BlockId(5);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]
+pub struct Faces<T> {
+    pub top: T,
+    pub bottom: T,
+    pub right: T,
+    pub left: T,
+    pub front: T,
+    pub back: T,
+}
+
+impl<T> Faces<T> {
+    fn map<U, F>(self, mut func: F) -> Faces<U>
+    where
+        F: FnMut(T) -> U,
+    {
+        Faces {
+            top: func(self.top),
+            bottom: func(self.bottom),
+            left: func(self.left),
+            right: func(self.right),
+            front: func(self.front),
+            back: func(self.back),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(untagged)]
@@ -197,8 +223,6 @@ impl BlockRegistryBuilder {
     pub fn build(self) -> BlockRegistry {
         let mut registry = BlockRegistry::default();
 
-        debug!("builder: {:#?}", &self);
-
         registry.name_map = self
             .names
             .into_iter()
@@ -227,26 +251,20 @@ pub struct BlockRegistry {
 }
 
 impl BlockRegistry {
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
+    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Arc<Self>, Box<dyn Error>> {
         let entries: Vec<BlockRegistryEntry> =
             serde_json::from_reader(::std::fs::File::open(path)?)?;
         let mut builder = BlockRegistryBuilder::default();
 
-        // could probably use Iterator::fold here for extra cool points :sunglasses:
         for entry in entries {
-            debug!("Adding {:#?}", entry);
             builder.register(entry);
         }
 
-        Ok(builder.build())
+        Ok(Arc::new(builder.build()))
     }
 
     pub fn get_id(&self, name: &str) -> BlockId {
         self.name_map[name]
-    }
-
-    pub(crate) fn num_entries(&self) -> usize {
-        self.opaque.len()
     }
 
     pub fn texture_paths<'a>(&'a self) -> impl Iterator<Item = &'a str> {

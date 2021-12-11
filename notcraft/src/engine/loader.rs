@@ -73,8 +73,8 @@ where
         let normal_path = base_path.join(format!("{}_n.png", entry));
         let extra_path = base_path.join(format!("{}_s.png", entry));
 
-        log::debug!(
-            "Loading `{name}` - `{base_path}`",
+        log::trace!(
+            "loading block texture '{name}' from '{base_path}'",
             name = entry,
             base_path = albedo_path.display()
         );
@@ -103,8 +103,6 @@ where
             extra: extra.map(|img| img.to_rgb()),
         });
     }
-
-    log::debug!("Texture sizes: {:?}", dims);
 
     if dims.len() > 1 {
         Err(TextureLoadError::MismatchedDimensions(dims))

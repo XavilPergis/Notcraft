@@ -1,10 +1,10 @@
-use legion::{query::ComponentFilter, systems::CommandBuffer, world::SubWorld, *};
+use legion::{systems::CommandBuffer, world::SubWorld, *};
 use nalgebra::{
     vector, Matrix4, Point3, Rotation3, Translation3, Unit, UnitQuaternion, Vector2, Vector3,
 };
 
 // FIXME: roll doesn't work right so we just don't do that...
-fn euler_to_quat(x: f32, y: f32, z: f32) -> UnitQuaternion<f32> {
+fn euler_to_quat(x: f32, y: f32, _z: f32) -> UnitQuaternion<f32> {
     let rx = UnitQuaternion::from_axis_angle(&Unit::new_unchecked(vector!(1.0, 0.0, 0.0)), x);
     let ry = UnitQuaternion::from_axis_angle(&Unit::new_unchecked(vector!(0.0, 1.0, 0.0)), y);
     // let rz = UnitQuaternion::from_axis_angle(&Unit::new_unchecked(vector!(0.

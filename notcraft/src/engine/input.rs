@@ -1,8 +1,6 @@
-use crate::{engine::prelude::*, InputEvent};
+use crate::InputEvent;
 use crossbeam_channel::Receiver;
-use glium::glutin::event::{
-    DeviceEvent, ElementState, Event, KeyboardInput, ModifiersState, VirtualKeyCode, WindowEvent,
-};
+use glium::glutin::event::{ElementState, KeyboardInput, ModifiersState, VirtualKeyCode};
 use std::collections::{HashMap, HashSet};
 
 pub enum Key {
@@ -268,16 +266,9 @@ pub mod keys {
     pub const ARROW_RIGHT: VirtualKeyCode = VirtualKeyCode::Right;
 }
 
-// (VirtualKeyCode::C, "chunk grid"),
-// (VirtualKeyCode::T, "terrain generation"),
-// (VirtualKeyCode::M, "mesher"),
-// (VirtualKeyCode::P, "physics"),
-// (VirtualKeyCode::I, "interaction"),
-
 #[legion::system]
 pub fn input_compiler(
     #[resource] state: &mut InputState,
-    #[resource] stop_flag: &mut res::StopGameLoop,
     #[state] events: &mut Receiver<InputEvent>,
 ) {
     state.update();

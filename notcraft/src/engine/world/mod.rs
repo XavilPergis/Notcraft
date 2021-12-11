@@ -1,7 +1,4 @@
-use crate::engine::world::{
-    block::BlockRegistry,
-    chunk::{ChunkType, SIZE},
-};
+use crate::engine::world::chunk::{ChunkType, SIZE};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::{point, vector, Point3, Vector3};
 use rayon::ThreadPool;
@@ -11,14 +8,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use self::block::BlockId;
 pub use self::chunk::Chunk;
+use self::registry::{BlockId, BlockRegistry, RegistryRef};
 
-use super::components::Transform;
+use super::transform::Transform;
 
-pub mod block;
 pub mod chunk;
 pub mod gen;
+pub mod registry;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ChunkPos(pub Point3<i32>);
@@ -179,7 +176,7 @@ fn iter_pos(start: BlockPos, end: BlockPos, mut func: impl FnMut(BlockPos)) {
 }
 
 impl VoxelWorld {
-    pub fn new(registry: BlockRegistry) -> Self {
+    pub fn new(registry: Arc<BlockRegistry>) -> Self {
         let generator_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
@@ -190,7 +187,7 @@ impl VoxelWorld {
 
         VoxelWorld {
             noise_generator: Arc::new(gen::NoiseGenerator::new_default(&registry)),
-            registry: Arc::new(registry),
+            registry,
             chunks: Default::default(),
             chunk_producer: KeyedThreadedProducer::new(generator_pool),
 
@@ -205,8 +202,6 @@ impl VoxelWorld {
         if !does_chunk_need_loading(self, pos) {
             return;
         }
-
-        log::debug!("loading chunk {:?}", pos);
 
         let noise = Arc::clone(&self.noise_generator);
         self.chunk_producer
@@ -268,7 +263,7 @@ impl VoxelWorld {
         })
     }
 
-    pub fn registry(&self, pos: BlockPos) -> Option<block::RegistryRef> {
+    pub fn registry(&self, pos: BlockPos) -> Option<RegistryRef> {
         self.get_block_id(pos).map(|id| self.registry.get_ref(id))
     }
 
@@ -339,39 +334,20 @@ pub struct ChunkLoader {
 
 #[derive(Debug)]
 pub struct ChunkLoaderContext {
-    loader_heatmap: HashMap<ChunkPos, Vector3<usize>>,
+    _loader_heatmap: HashMap<ChunkPos, Vector3<usize>>,
 }
-
-impl ChunkLoaderContext {
-    // fn
-}
-
-/*
-
-B -> A
-C -> B
-
-A  A  A  A  A
-A  A  A  A  A  C
-A  A  Aa A  Ac B  B  B
-A  A  A  A  A  B  B  B
-A  A  A  A  A  Bb B  B
-         B  B  B  B  B
-         B  B  B  B  B
-
-*/
 
 impl ChunkLoaderContext {
     pub fn new() -> Self {
         Self {
-            loader_heatmap: Default::default(),
+            _loader_heatmap: Default::default(),
         }
     }
 }
 
 #[legion::system(for_each)]
 pub fn load_chunks(
-    #[state] ctx: &mut ChunkLoaderContext,
+    #[state] _ctx: &mut ChunkLoaderContext,
     #[resource] world: &mut VoxelWorld,
     chunk_loader: &ChunkLoader,
     transform: &Transform,

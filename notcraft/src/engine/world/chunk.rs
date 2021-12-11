@@ -1,7 +1,4 @@
-use crate::engine::world::{
-    block::{self, BlockId},
-    ChunkPos, VoxelWorld,
-};
+use crate::engine::world::{registry::BlockId, ChunkPos, VoxelWorld};
 use nalgebra::{point, Point3, Vector3};
 
 // The width of the chunk is `2 ^ SIZE_BITS`
@@ -48,19 +45,6 @@ pub fn make_padded(world: &VoxelWorld, pos: ChunkPos) -> Option<PaddedChunk> {
         }
     }
 
-    // // back
-    // for x in 0..SIZE {
-    //     let dest_base_x = padded_size * padded_size * (x + 1);
-    //     let src_base_x = SIZE * SIZE * x;
-    //     for y in 0..SIZE {
-    //         let dest_base_y = padded_size * (y + 1);
-    //         let src_base_y = SIZE * y;
-    //         data[dest_base_x + dest_base_y + dest_base_z] =
-    //             chunk.data[src_base_x + src_base_y + src_base_z];
-    //     }
-    // }
-    // data[]
-
     Some(PaddedChunk { data: data.into() })
 }
 
@@ -94,7 +78,7 @@ impl Chunk {
     /// An UNCOMPRESSED empty chunk. This is probably not what you want.
     pub fn empty() -> Self {
         Chunk {
-            data: vec![block::AIR; VOLUME].into(),
+            data: vec![super::registry::AIR; VOLUME].into(),
         }
     }
 
