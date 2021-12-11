@@ -1,99 +1,77 @@
 use crate::engine::prelude::*;
-use na::vector;
-use noise::{MultiFractal, NoiseFn, RidgedMulti, SuperSimplex};
+use na::{vector, OPoint};
+use simdnoise::{NoiseBuilder, RidgeSettings};
 use std::collections::HashSet;
+
+use super::chunk::ChunkType;
+
+struct NoiseOptions {}
+
+// fn
+
+fn generate_noise(opts: NoiseOptions, out: &mut [f32]) {}
 
 #[derive(Clone, Debug)]
 pub struct NoiseGenerator {
-    noise: RidgedMulti,
-    biome_noise: SuperSimplex,
+    stone_id: BlockId,
+    dirt_id: BlockId,
+    grass_id: BlockId,
 }
 
 impl NoiseGenerator {
-    pub fn new_default() -> Self {
-        let noise = RidgedMulti::default()
-            .set_frequency(0.001)
-            .set_lacunarity(4.0)
-            // .set_attenuation(0.01)
-            .set_persistence(0.7);
-        let biome_noise = SuperSimplex::new();
-        NoiseGenerator { noise, biome_noise }
-    }
-
-    fn block_at(&self, x: f64, y: f64, z: f64, registry: &block::BlockRegistry) -> BlockId {
-        let noise = 20.0 * self.noise.get([x, z]);
-
-        if noise - 2.0 > y {
-            block::STONE
-        } else if noise - 1.0 > y {
-            if y < -15.0 {
-                block::SAND
-            } else {
-                block::DIRT
-            }
-        } else if noise > y {
-            if y < -15.0 {
-                block::SAND
-            } else {
-                block::GRASS
-            }
-        } else {
-            if y < -18.0 {
-                block::WATER
-            } else {
-                block::AIR
-            }
+    pub fn new_default(registry: &block::BlockRegistry) -> Self {
+        Self {
+            stone_id: registry.get_id("stone"),
+            dirt_id: registry.get_id("dirt"),
+            grass_id: registry.get_id("grass"),
         }
     }
 
-    pub fn make_chunk(&self, pos: ChunkPos, registry: &block::BlockRegistry) -> Chunk {
-        use rand::Rng;
-        let size = chunk::SIZE as i32;
-        let mut vec = Vec::with_capacity(chunk::VOLUME);
+    fn block_from_surface_dist(&self, distance: f32) -> BlockId {
+        if distance < -4.0 {
+            self.stone_id
+        } else if distance < -1.0 {
+            self.dirt_id
+        } else if distance < 0.0 {
+            self.grass_id
+        } else {
+            block::AIR
+        }
+    }
+
+    pub fn make_chunk(&self, pos: ChunkPos) -> ChunkType {
         let base = pos.base().0;
-        // let gold_id = registry.get_id("gold_block");
-        let mut rng = rand::thread_rng();
-        let mut rand_id = || BlockId(rng.gen_range(1, registry.num_entries() - 1));
-        for x in 0..size {
-            for y in 0..size {
-                for z in 0..size {
-                    let pos = base + vector!(x, y, z);
+        let noise = NoiseBuilder::gradient_2d_offset(
+            base.x as f32,
+            chunk::SIZE,
+            base.z as f32,
+            chunk::SIZE,
+        )
+        .with_freq(0.01)
+        // .with_octaves(5)
+        .with_seed(1337)
+        // .with_lacunarity(0.5)
+        .generate_scaled(-10.0, 10.0);
 
-                    vec.push({
-                        let noise: f64 = 20.0 * self.noise.get([x as f64, z as f64]);
+        // if base.y as f32 - noise_min > 0.0 {
+        //     return ChunkType::Homogeneous(block::AIR);
+        // }
 
-                        if noise > pos.y as f64 {
-                            rand_id()
-                        } else {
-                            block::AIR
-                        }
+        let mut chunk_data = Vec::with_capacity(chunk::VOLUME);
+        for x in 0..chunk::SIZE {
+            for z in 0..chunk::SIZE {
+                let surface_height = noise[x as usize * chunk::SIZE + z];
 
-                        // if noise - 2.0 > y {
-                        //     block::STONE
-                        // } else if noise - 1.0 > y {
-                        //     if y < -15.0 {
-                        //         block::SAND
-                        //     } else {
-                        //         block::DIRT
-                        //     }
-                        // } else if noise > y {
-                        //     if y < -15.0 {
-                        //         block::SAND
-                        //     } else {
-                        //         block::GRASS
-                        //     }
-                        // } else {
-                        //     if y < -18.0 {
-                        //         block::WATER
-                        //     } else {
-                        //         block::AIR
-                        //     }
-                        // }
-                    });
+                for y in 0..chunk::SIZE {
+                    let id =
+                        self.block_from_surface_dist(base.y as f32 + y as f32 - surface_height);
+                    chunk_data.push(id);
                 }
             }
         }
-        Chunk::new(vec)
+
+        assert!(!chunk_data.is_empty());
+        ChunkType::Array(Chunk::new(chunk_data))
     }
 }
 

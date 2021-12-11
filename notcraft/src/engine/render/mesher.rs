@@ -9,38 +9,129 @@ use crate::engine::{
     },
     Side,
 };
+use crossbeam_channel::Receiver;
 use legion::{systems::CommandBuffer, world::SubWorld, Entity, Query};
+use na::point;
 // use specs::{prelude::*, world::EntitiesRes};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/*
+
+_   _   _   _   _   _   _
+
+_   _   _   _   _   _   _
+      \ | /
+_   _ - 8 - _   _   _   _
+      / | \
+_   _   _   _   _   _   _
+
+_   _   _   _   _   _   _
+
+_   _   _   _   _   _   _
+
+_   _   _   _   _   _   _
+
+
+new chunk:
+    for anything waiting on chunk:
+        decrease waiting count
+        if waiting count is 0:
+            add to mesh set
+
+*/
+
+#[derive(Debug)]
+pub struct MesherContext {
+    terrain_entities: HashMap<ChunkPos, Entity>,
+
+    have_data: HashSet<ChunkPos>,
+    waiters: HashMap<ChunkPos, HashSet<ChunkPos>>,
+    waiting_counts: HashMap<ChunkPos, usize>,
+    needs_mesh: HashSet<ChunkPos>,
+    completed_meshes: HashSet<ChunkPos>,
+
+    new_chunk_rx: Receiver<ChunkPos>,
+    modified_chunk_rx: Receiver<ChunkPos>,
+}
+
+impl MesherContext {
+    pub fn new(voxel_world: &VoxelWorld) -> Self {
+        Self {
+            terrain_entities: Default::default(),
+            have_data: Default::default(),
+            waiters: Default::default(),
+            waiting_counts: Default::default(),
+            needs_mesh: Default::default(),
+            completed_meshes: Default::default(),
+            new_chunk_rx: voxel_world.new_chunks_notifier.clone(),
+            modified_chunk_rx: voxel_world.modified_chunks_notifier.clone(),
+        }
+    }
+}
+
+fn neighborhood<F>(pos: ChunkPos, mut func: F)
+where
+    F: FnMut(ChunkPos),
+{
+    for x in pos.0.x - 1..=pos.0.x + 1 {
+        for y in pos.0.y - 1..=pos.0.y + 1 {
+            for z in pos.0.z - 1..=pos.0.z + 1 {
+                func(ChunkPos(point!(x, y, z)));
+            }
+        }
+    }
+}
 
 #[legion::system]
 pub fn chunk_mesher(
     cmd: &mut CommandBuffer,
-    #[state] terrain_entities: &mut HashMap<ChunkPos, Entity>,
+    #[state] ctx: &mut MesherContext,
     #[resource] voxel_world: &mut VoxelWorld,
 ) {
-    // let mut section = debug.section("mesher");
-    while let Some(pos) = voxel_world.get_dirty_chunk() {
-        // log::debug!("meshing chunk {:?}", pos);
-        match voxel_world.chunk(pos) {
-            Some(ChunkType::Homogeneous(id)) => {
-                // lol this fucking if statment
-                if !voxel_world.registry.opaque(*id) {
-                    // Don't do anything lole
+    for chunk in ctx.new_chunk_rx.try_iter() {
+        ctx.have_data.insert(chunk);
+
+        // setup waiting count and register this chunk to the surrounding waiters
+        let mut unknown_neighbor_count = 0;
+        neighborhood(chunk, |pos| {
+            if pos != chunk && !ctx.have_data.contains(&pos) {
+                unknown_neighbor_count += 1;
+                ctx.waiters.entry(pos).or_default().insert(chunk);
+            }
+        });
+        ctx.waiting_counts.insert(chunk, unknown_neighbor_count);
+
+        // update waiters and add finished waiters to the mesh queue
+        if let Some(waiters) = ctx.waiters.get(&chunk) {
+            for &pos in waiters {
+                match ctx.waiting_counts.get_mut(&pos).unwrap() {
+                    1 => drop(ctx.needs_mesh.insert(pos)),
+                    count => *count -= 1,
                 }
+            }
+        }
+        ctx.waiters.remove(&chunk);
+    }
 
-                // FIXME: we can get some pretty weird inconsistencies here if we don't mesh
-                // homogeneous solid chunks. could we just generate one big cube or smth?
-                voxel_world.clean_chunk(pos);
+    for chunk in ctx.modified_chunk_rx.try_iter() {
+        if ctx.completed_meshes.remove(&chunk) {
+            ctx.needs_mesh.insert(chunk);
+        }
+    }
 
-                continue;
+    if let Some(&pos) = ctx.needs_mesh.iter().next() {
+        match voxel_world.chunk(pos) {
+            Some(ChunkType::Homogeneous(_id)) => {
+                // FIXME: causes holes when a solid homogeneous chunk touches air
+                ctx.needs_mesh.remove(&pos);
             }
 
             Some(ChunkType::Array(_)) => {
                 let mesh = mesh_chunk(pos, &voxel_world);
                 let transform = Transform::from(pos.base().base().0);
 
-                let entity = terrain_entities
+                let entity = ctx
+                    .terrain_entities
                     .get(&pos)
                     .copied()
                     .unwrap_or_else(|| cmd.push(()));
@@ -48,14 +139,12 @@ pub fn chunk_mesher(
                 cmd.add_component(entity, mesh);
                 cmd.add_component(entity, transform);
 
-                // println!("Inserted mesh! {:?} {:?}", entity, pos);
-                voxel_world.clean_chunk(pos);
-
-                break;
+                ctx.needs_mesh.remove(&pos);
             }
 
-            // wat
-            _ => unreachable!(),
+            None => {
+                ctx.needs_mesh.remove(&pos);
+            }
         }
     }
 }

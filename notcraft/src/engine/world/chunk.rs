@@ -5,7 +5,7 @@ use crate::engine::world::{
 use nalgebra::{point, Point3, Vector3};
 
 // The width of the chunk is `2 ^ SIZE_BITS`
-pub const SIZE_BITS: usize = 4;
+pub const SIZE_BITS: usize = 5;
 pub const SIZE_BITS_2: usize = SIZE_BITS * 2;
 pub const SIZE: usize = 1 << SIZE_BITS;
 
@@ -18,11 +18,11 @@ pub fn in_chunk_bounds(side_len: usize, pos: Point3<i32>) -> bool {
 }
 
 const fn index_for_coord(x: usize, y: usize, z: usize) -> usize {
-    (x << SIZE_BITS_2) + (y << SIZE_BITS) + z
+    (x << SIZE_BITS_2) + (z << SIZE_BITS) + y
 }
 
 const fn index_for_coord_size(size: usize, x: usize, y: usize, z: usize) -> usize {
-    x * size * size + y * size + z
+    x * size * size + z * size + y
 }
 
 // TODO: could we possibly find a better design?
@@ -39,8 +39,8 @@ pub fn make_padded(world: &VoxelWorld, pos: ChunkPos) -> Option<PaddedChunk> {
     let base = pos.base();
 
     for x in 0..padded_size {
-        for y in 0..padded_size {
-            for z in 0..padded_size {
+        for z in 0..padded_size {
+            for y in 0..padded_size {
                 let block =
                     world.get_block_id(base.offset(x as i32 - 1, y as i32 - 1, z as i32 - 1))?;
                 data.push(block);
@@ -75,16 +75,6 @@ impl ChunkType {
         match self {
             ChunkType::Homogeneous(_) => true,
             _ => false,
-        }
-    }
-}
-
-impl From<Chunk> for ChunkType {
-    fn from(chunk: Chunk) -> ChunkType {
-        if chunk.data.iter().all(|&item| item == chunk[0]) {
-            ChunkType::Homogeneous(chunk[0])
-        } else {
-            ChunkType::Array(chunk)
         }
     }
 }

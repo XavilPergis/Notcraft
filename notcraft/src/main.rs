@@ -17,7 +17,12 @@ use crate::engine::{
     resources as res,
     world::{VoxelWorld, WorldPos},
 };
-use engine::{components::Transform, prelude::block::BlockRegistry};
+use engine::{
+    components::Transform,
+    prelude::{block::BlockRegistry, ChunkPos},
+    render::mesher::MesherContext,
+    world::ChunkLoader,
+};
 use glium::{
     glutin::{
         event::{DeviceEvent, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
@@ -29,6 +34,7 @@ use glium::{
 };
 use legion::{systems::CommandBuffer, world::SubWorld, *};
 use std::{
+    collections::HashMap,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -76,37 +82,29 @@ fn player_movement(
     // }
 
     if input.is_pressed(keys::FORWARD, None) {
-        comp::creative_flight(transform, nalgebra::vector!(0.0, -0.05));
+        comp::creative_flight(transform, nalgebra::vector!(0.0, -0.4));
     }
     if input.is_pressed(keys::BACKWARD, None) {
-        comp::creative_flight(transform, nalgebra::vector!(0.0, 0.05));
+        comp::creative_flight(transform, nalgebra::vector!(0.0, 0.4));
     }
     if input.is_pressed(keys::RIGHT, None) {
-        comp::creative_flight(transform, nalgebra::vector!(0.05, 0.0));
+        comp::creative_flight(transform, nalgebra::vector!(0.4, 0.0));
     }
     if input.is_pressed(keys::LEFT, None) {
-        comp::creative_flight(transform, nalgebra::vector!(-0.05, 0.0));
+        comp::creative_flight(transform, nalgebra::vector!(-0.4, 0.0));
     }
     if input.is_pressed(keys::UP, None) {
-        transform.translate_global(&nalgebra::vector!(0.0, 0.05, 0.0).into());
+        transform.translate_global(&nalgebra::vector!(0.0, 0.4, 0.0).into());
     }
     if input.is_pressed(keys::DOWN, None) {
-        transform.translate_global(&nalgebra::vector!(0.0, -0.05, 0.0).into());
+        transform.translate_global(&nalgebra::vector!(0.0, -0.4, 0.0).into());
     }
-}
-
-#[legion::system(for_each)]
-fn load_chunks(
-    #[resource] world: &mut VoxelWorld,
-    _player: &comp::Player,
-    transform: &comp::Transform,
-) {
-    let pos = WorldPos(transform.translation.vector.into()).into();
-    crate::engine::world::load_chunks(world, pos, 5);
 }
 
 fn setup_world(cmd: &mut CommandBuffer) {
-    let player = cmd.push((comp::Player, comp::Transform::default()));
+    let player = cmd.push((comp::Transform::default(), comp::Player, ChunkLoader {
+        radius: 3,
+    }));
 
     let camera_entity = cmd.push((
         comp::Parent(player),
@@ -120,11 +118,6 @@ fn setup_world(cmd: &mut CommandBuffer) {
         res.insert(engine::input::InputState::default());
         res.insert(res::StopGameLoop(false));
         res.insert(res::Dt(Duration::from_secs(1)));
-
-        let registry = BlockRegistry::load_from_file("resources/blocks.json").unwrap();
-        let voxel_world = VoxelWorld::new(registry);
-
-        res.insert(voxel_world);
     });
 }
 
@@ -214,10 +207,17 @@ fn main() {
     let mut world = World::default();
     let mut resources = Resources::default();
 
+    let registry = BlockRegistry::load_from_file("resources/blocks.json").unwrap();
+    let voxel_world = VoxelWorld::new(registry);
+
+    let mesher_ctx = MesherContext::new(&voxel_world);
+
     {
         let mut setup_buf = CommandBuffer::new(&world);
         setup_world(&mut setup_buf);
         setup_buf.flush(&mut world, &mut resources);
+
+        resources.insert(voxel_world);
     }
 
     let event_loop = EventLoop::new();
@@ -235,12 +235,13 @@ fn main() {
         .add_thread_local(engine::audio::intermittent_music_system(
             engine::audio::MusicState::new(),
         ))
-        .add_system(engine::render::mesher::chunk_mesher_system(
-            Default::default(),
-        ))
+        .add_system(engine::render::mesher::chunk_mesher_system(mesher_ctx))
+        .add_system(engine::world::update_world_system())
         .flush()
         .add_system(player_movement_system())
-        .add_system(load_chunks_system())
+        .add_system(engine::world::load_chunks_system(
+            engine::world::ChunkLoaderContext::new(),
+        ))
         .flush()
         .add_system(engine::components::transform_hierarchy_system())
         .build();

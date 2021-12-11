@@ -392,8 +392,12 @@ impl TerrainRenderContext {
 
         for &entity in self.needs_rebuild.iter() {
             if let Ok(mesh) = mesh_query.get(world, entity) {
-                self.built_meshes
-                    .insert(entity, TerrainBuffers::immutable(ctx, &mesh)?);
+                if !mesh.index.is_empty() {
+                    self.built_meshes
+                        .insert(entity, TerrainBuffers::immutable(ctx, &mesh)?);
+                } else {
+                    self.built_meshes.remove(&entity);
+                }
             }
         }
         Ok(())
