@@ -4,7 +4,7 @@ use crate::engine::{
     world::{
         chunk::{ChunkType, PaddedChunk, SIZE},
         registry::{BlockId, BlockRegistry},
-        ChunkPos, VoxelWorld,
+        ChunkEvent, ChunkPos, VoxelWorld,
     },
     Side,
 };
@@ -14,42 +14,148 @@ use na::point;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug)]
+struct MeshTracker {
+    constraining: HashMap<ChunkPos, HashSet<ChunkPos>>,
+    constrained_by: HashMap<ChunkPos, HashSet<ChunkPos>>,
+    unconstrained: HashSet<ChunkPos>,
+
+    have_data: HashSet<ChunkPos>,
+}
+
+impl MeshTracker {
+    fn new() -> Self {
+        Self {
+            constraining: Default::default(),
+            constrained_by: Default::default(),
+            unconstrained: Default::default(),
+            have_data: Default::default(),
+        }
+    }
+
+    // INVARIANT: if `have_data` does not contain X, then `constrained_by` also does
+    // not contain X
+
+    // INVARIANT: if `have_data` contains X, then `constraining` does NOT contain X
+
+    // INVARIANT: for a chunk X and each value Y of `constraining[X]`,
+    // `constrained_by[Y]` must contain X
+
+    fn chunk_added(&mut self, chunk: ChunkPos) {
+        self.have_data.insert(chunk);
+
+        // set up constraints for the newly-added chunk
+        neighbors(chunk, |neighbor| {
+            if !self.have_data.contains(&neighbor) {
+                self.constraining.entry(neighbor).or_default().insert(chunk);
+                self.constrained_by
+                    .entry(chunk)
+                    .or_default()
+                    .insert(neighbor);
+            }
+        });
+
+        // it may be the case that we get a new chunk where all its neighbors already
+        // have data, in which case the new chunk is already unconstrained.
+        if !self.constrained_by.contains_key(&chunk) {
+            self.unconstrained.insert(chunk);
+        }
+
+        // remove constraints for neighbors that depended on us
+        if let Some(constraining) = self.constraining.get_mut(&chunk) {
+            for &neighbor in constraining.iter() {
+                let neighbor_constraints = self
+                    .constrained_by
+                    .get_mut(&neighbor)
+                    .expect("(add) constraints not bidirectional");
+
+                neighbor_constraints.remove(&chunk);
+                if neighbor_constraints.is_empty() {
+                    self.unconstrained.insert(neighbor);
+                    self.constrained_by.remove(&neighbor);
+                }
+            }
+
+            self.constraining.remove(&chunk);
+        }
+
+        assert!(!self.constraining.contains_key(&chunk));
+    }
+
+    fn chunk_removed(&mut self, chunk: ChunkPos) {
+        self.have_data.remove(&chunk);
+
+        // add constraints to neighbors of the newly-removed chunk
+        neighbors(chunk, |neighbor| {
+            if self.have_data.contains(&neighbor) {
+                self.constraining.entry(chunk).or_default().insert(neighbor);
+                self.constrained_by
+                    .entry(neighbor)
+                    .or_default()
+                    .insert(chunk);
+
+                self.unconstrained.remove(&neighbor);
+            }
+        });
+
+        // remove old `constraining` entries that pointed to the removed chunk,
+        // upholding one of our `have_data` invariants.
+        if let Some(constrainers) = self.constrained_by.get(&chunk) {
+            for &constrainer in constrainers.iter() {
+                let neighbor_constraining = self
+                    .constraining
+                    .get_mut(&constrainer)
+                    .expect("(remove) constraints not bidirectional");
+
+                neighbor_constraining.remove(&chunk);
+                if neighbor_constraining.is_empty() {
+                    self.constraining.remove(&constrainer);
+                }
+            }
+        }
+
+        // uphold our second `have_data` invariant.
+        self.constrained_by.remove(&chunk);
+    }
+}
+
+#[derive(Debug)]
 pub struct MesherContext {
     terrain_entities: HashMap<ChunkPos, Entity>,
 
+    tracker: MeshTracker,
+
     have_data: HashSet<ChunkPos>,
-    waiters: HashMap<ChunkPos, HashSet<ChunkPos>>,
-    waiting_counts: HashMap<ChunkPos, usize>,
-    needs_mesh: HashSet<ChunkPos>,
     completed_meshes: HashSet<ChunkPos>,
 
-    new_chunk_rx: Receiver<ChunkPos>,
-    modified_chunk_rx: Receiver<ChunkPos>,
+    chunk_event_rx: Receiver<ChunkEvent>,
 }
 
 impl MesherContext {
     pub fn new(voxel_world: &VoxelWorld) -> Self {
         Self {
             terrain_entities: Default::default(),
+
+            tracker: MeshTracker::new(),
+
             have_data: Default::default(),
-            waiters: Default::default(),
-            waiting_counts: Default::default(),
-            needs_mesh: Default::default(),
             completed_meshes: Default::default(),
-            new_chunk_rx: voxel_world.new_chunks_notifier.clone(),
-            modified_chunk_rx: voxel_world.modified_chunks_notifier.clone(),
+
+            chunk_event_rx: voxel_world.chunk_event_notifier.clone(),
         }
     }
 }
 
-fn neighborhood<F>(pos: ChunkPos, mut func: F)
+fn neighbors<F>(pos: ChunkPos, mut func: F)
 where
     F: FnMut(ChunkPos),
 {
     for x in pos.0.x - 1..=pos.0.x + 1 {
         for y in pos.0.y - 1..=pos.0.y + 1 {
             for z in pos.0.z - 1..=pos.0.z + 1 {
-                func(ChunkPos(point!(x, y, z)));
+                let neighbor = ChunkPos(point!(x, y, z));
+                if neighbor != pos {
+                    func(neighbor);
+                }
             }
         }
     }
@@ -61,63 +167,52 @@ pub fn chunk_mesher(
     #[state] ctx: &mut MesherContext,
     #[resource] voxel_world: &mut VoxelWorld,
 ) {
-    for chunk in ctx.new_chunk_rx.try_iter() {
-        ctx.have_data.insert(chunk);
-
-        // setup waiting count and register this chunk to the surrounding waiters
-        let mut unknown_neighbor_count = 0;
-        neighborhood(chunk, |pos| {
-            if pos != chunk && !ctx.have_data.contains(&pos) {
-                unknown_neighbor_count += 1;
-                ctx.waiters.entry(pos).or_default().insert(chunk);
+    for event in ctx.chunk_event_rx.try_iter() {
+        match event {
+            ChunkEvent::Added(chunk) => ctx.tracker.chunk_added(chunk),
+            ChunkEvent::Removed(chunk) => {
+                ctx.tracker.chunk_removed(chunk);
+                if let Some(entity) = ctx.terrain_entities.remove(&chunk) {
+                    cmd.remove(entity);
+                }
             }
-        });
-        ctx.waiting_counts.insert(chunk, unknown_neighbor_count);
-
-        // update waiters and add finished waiters to the mesh queue
-        if let Some(waiters) = ctx.waiters.get(&chunk) {
-            for &pos in waiters {
-                match ctx.waiting_counts.get_mut(&pos).unwrap() {
-                    1 => drop(ctx.needs_mesh.insert(pos)),
-                    count => *count -= 1,
+            ChunkEvent::Modified(chunk) => {
+                if ctx.tracker.constrained_by.contains_key(&chunk) {
+                    if let Some(entity) = ctx.terrain_entities.remove(&chunk) {
+                        cmd.remove(entity);
+                    }
+                } else if ctx.tracker.have_data.contains(&chunk) {
+                    ctx.tracker.unconstrained.insert(chunk);
                 }
             }
         }
-        ctx.waiters.remove(&chunk);
     }
 
-    for chunk in ctx.modified_chunk_rx.try_iter() {
-        if ctx.completed_meshes.remove(&chunk) {
-            ctx.needs_mesh.insert(chunk);
-        }
-    }
+    if let Some(&pos) = ctx.tracker.unconstrained.iter().next() {
+        ctx.tracker.unconstrained.remove(&pos);
 
-    if let Some(&pos) = ctx.needs_mesh.iter().next() {
         match voxel_world.chunk(pos) {
             Some(ChunkType::Homogeneous(_id)) => {
-                // FIXME: causes holes when a solid homogeneous chunk touches air
-                ctx.needs_mesh.remove(&pos);
+                // FIXME: causes holes when a solid homogeneous chunk touches
+                // air
             }
 
             Some(ChunkType::Array(_)) => {
                 let mesh = mesh_chunk(pos, &voxel_world);
                 let transform = Transform::from(pos.base().base().0);
 
-                let entity = ctx
+                let entity = *ctx
                     .terrain_entities
-                    .get(&pos)
-                    .copied()
-                    .unwrap_or_else(|| cmd.push(()));
+                    .entry(pos)
+                    .or_insert_with(|| cmd.push(()));
 
                 cmd.add_component(entity, mesh);
                 cmd.add_component(entity, transform);
 
-                ctx.needs_mesh.remove(&pos);
+                ctx.completed_meshes.insert(pos);
             }
 
-            None => {
-                ctx.needs_mesh.remove(&pos);
-            }
+            _ => {}
         }
     }
 }

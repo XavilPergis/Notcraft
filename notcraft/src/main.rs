@@ -81,7 +81,7 @@ fn player_movement(
 }
 
 fn setup_world(cmd: &mut CommandBuffer) {
-    let player = cmd.push((Transform::default(), Player, ChunkLoader { radius: 5 }));
+    let player = cmd.push((Transform::default(), Player, ChunkLoader { radius: 3 }));
 
     let camera_entity = cmd.push((Parent(player), Camera::default(), Transform::default()));
 
@@ -213,7 +213,7 @@ fn main() {
         .flush()
         .add_system(player_movement_system())
         .add_system(engine::world::load_chunks_system(
-            engine::world::ChunkLoaderContext::new(),
+            engine::world::ChunkLoaderContext::new(&mut world),
         ))
         .flush()
         .add_system(engine::transform::transform_hierarchy_system())
