@@ -164,14 +164,32 @@ impl PostProcessRenderer {
     }
 }
 
+fn recreate_post_textures(ctx: &mut PostProcessRenderer, width: u32, height: u32) -> Result<()> {
+    ctx.post_process_color = Texture2d::empty_with_format(
+        ctx.shared.display(),
+        UncompressedFloatFormat::F32F32F32,
+        MipmapsOption::NoMipmap,
+        width,
+        height,
+    )?;
+    ctx.post_process_depth = DepthTexture2d::empty(ctx.shared.display(), width, height)?;
+
+    Ok(())
+}
+
 fn render_post<S: Surface>(
     ctx: &mut PostProcessRenderer,
     target: &mut S,
     world: &mut World,
     resources: &mut Resources,
 ) -> anyhow::Result<()> {
+    let (width, height) = target.get_dimensions();
+    let (buf_width, buf_height) = ctx.post_process_depth.dimensions();
+    if buf_width != width || buf_height != height {
+        recreate_post_textures(ctx, width, height)?;
+    }
+
     let cam_transform = get_camera(world, resources);
-    let (width, height) = ctx.shared.display().get_framebuffer_dimensions();
     let (view, proj) = get_proj_view(width, height, cam_transform);
     let cam_pos = get_cam_pos(cam_transform);
 
