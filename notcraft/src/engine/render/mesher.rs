@@ -382,23 +382,37 @@ pub struct TerrainVertex {
     // AO only has 3 possible values, [0,3]
     pub pos_ao: u32,
 
-    // - 12 bits for tex coords
-    // each axis is 5 bits because chunks are 32 blocks or 2^5 bits across, so each face can be 32
-    // blocks long at most. actual UVs will be calculated in the shader by casting each axis to a
-    // float and getting the fractional part.
-    // (5 bit residual)
+    // (13 bit residual)
+    // - 1 bit for side
+    // - 2 bits for axis
+    // we can compute the UV coordinates from the surface normal and the world position, and we can
+    // get the normal via a lookup table using the side
     // - 16 bits for block id
     // this seems substantial enough to never ever be a problem
-    pub uv_id: u32,
+    pub side_id: u32,
 }
 
-glium::implement_vertex!(TerrainVertex, pos_ao, uv_id);
+glium::implement_vertex!(TerrainVertex, pos_ao, side_id);
+
+fn pack_side(side: Side) -> u8 {
+    match side {
+        // sides with positive facing normals wrt their own axes have a 0 in their MSB
+        Side::Top => 0b001,
+        Side::Left => 0b000,
+        Side::Front => 0b010,
+        // sides with negative facing normals have a 1 in their MSB
+        Side::Bottom => 0b101,
+        Side::Right => 0b100,
+        Side::Back => 0b110,
+    }
+}
 
 impl TerrainVertex {
-    pub fn pack(pos: [u16; 3], uv: [u8; 2], id: u16, ao: u8) -> Self {
+    pub fn pack(pos: [u16; 3], side: Side, id: u16, ao: u8) -> Self {
         let [x, y, z] = pos;
         let mut pos_ao = 0u32;
         // while 10 bits are reserved for each axis, we only use 5 of them currently.
+        // xxxx xXXX XXyy  yyyY YYYY zzzz zZZZ ZZAA
         pos_ao |= x as u32 & 0x7ff;
         pos_ao <<= 10;
         pos_ao |= y as u32 & 0x7ff;
@@ -407,17 +421,13 @@ impl TerrainVertex {
         pos_ao <<= 2;
         pos_ao |= ao as u32;
 
-        let [u, v] = uv;
-        let mut uv_id = 0u32;
-        uv_id |= u as u32 & 0x3f;
-        uv_id <<= 6;
-        uv_id |= v as u32 & 0x3f;
-        uv_id <<= 4;
-        // reserved
-        uv_id <<= 16;
-        uv_id |= id as u32;
+        // .... .... .... .DSS  IIII IIII IIII IIII
+        let mut side_id = 0u32;
+        side_id |= pack_side(side) as u32;
+        side_id <<= 16;
+        side_id |= id as u32;
 
-        Self { pos_ao, uv_id }
+        Self { pos_ao, side_id }
     }
 }
 
@@ -475,24 +485,15 @@ impl<'w> MeshConstructor<'w> {
             .indices
             .extend(indices.iter().copied().map(|idx| idx_start + idx));
 
-        // let normal = side.normal::<f32>();
-
         let face = self.registry.block_texture(quad.id, side).unwrap();
         let tex_id = *face.texture.select() as u16;
 
-        let mut vert = |offset: Vector3<_>, uv: Vector2<_>, ao| {
+        let mut vert = |offset: Vector3<_>, ao| {
             let pos = pos + offset;
             self.terrain_mesh
                 .vertices
-                .push(TerrainVertex::pack(pos.into(), uv.into(), tex_id, ao));
+                .push(TerrainVertex::pack(pos.into(), side, tex_id, ao));
         };
-
-        let uvs = &[
-            na::vector!(1, 1),
-            na::vector!(0, 1),
-            na::vector!(1, 0),
-            na::vector!(0, 0),
-        ];
 
         let h = if side.facing_positive() { 1 } else { 0 };
         let qw = quad.width;
@@ -502,72 +503,24 @@ impl<'w> MeshConstructor<'w> {
         // axis... I bet someone more qualified could tell me :>
         match side {
             Side::Left | Side::Right => {
-                vert(
-                    na::vector!(h, qw, 0),
-                    na::vector!(uvs[0].x * qh as u8, uvs[0].y * qw as u8),
-                    ao_pn,
-                );
-                vert(
-                    na::vector!(h, qw, qh),
-                    na::vector!(uvs[1].x * qh as u8, uvs[1].y * qw as u8),
-                    ao_pp,
-                );
-                vert(
-                    na::vector!(h, 0, 0),
-                    na::vector!(uvs[2].x * qh as u8, uvs[2].y * qw as u8),
-                    ao_nn,
-                );
-                vert(
-                    na::vector!(h, 0, qh),
-                    na::vector!(uvs[3].x * qh as u8, uvs[3].y * qw as u8),
-                    ao_np,
-                );
+                vert(na::vector!(h, qw, 0), ao_pn);
+                vert(na::vector!(h, qw, qh), ao_pp);
+                vert(na::vector!(h, 0, 0), ao_nn);
+                vert(na::vector!(h, 0, qh), ao_np);
             }
 
             Side::Top | Side::Bottom => {
-                vert(
-                    na::vector!(0, h, qh),
-                    na::vector!(uvs[0].x * qw as u8, uvs[0].y * qh as u8),
-                    ao_pn,
-                );
-                vert(
-                    na::vector!(qw, h, qh),
-                    na::vector!(uvs[1].x * qw as u8, uvs[1].y * qh as u8),
-                    ao_pp,
-                );
-                vert(
-                    na::vector!(0, h, 0),
-                    na::vector!(uvs[2].x * qw as u8, uvs[2].y * qh as u8),
-                    ao_nn,
-                );
-                vert(
-                    na::vector!(qw, h, 0),
-                    na::vector!(uvs[3].x * qw as u8, uvs[3].y * qh as u8),
-                    ao_np,
-                );
+                vert(na::vector!(0, h, qh), ao_pn);
+                vert(na::vector!(qw, h, qh), ao_pp);
+                vert(na::vector!(0, h, 0), ao_nn);
+                vert(na::vector!(qw, h, 0), ao_np);
             }
 
             Side::Front | Side::Back => {
-                vert(
-                    na::vector!(0, qh, h),
-                    na::vector!(uvs[0].x * qw as u8, uvs[0].y * qh as u8),
-                    ao_np,
-                );
-                vert(
-                    na::vector!(qw, qh, h),
-                    na::vector!(uvs[1].x * qw as u8, uvs[1].y * qh as u8),
-                    ao_pp,
-                );
-                vert(
-                    na::vector!(0, 0, h),
-                    na::vector!(uvs[2].x * qw as u8, uvs[2].y * qh as u8),
-                    ao_nn,
-                );
-                vert(
-                    na::vector!(qw, 0, h),
-                    na::vector!(uvs[3].x * qw as u8, uvs[3].y * qh as u8),
-                    ao_pn,
-                );
+                vert(na::vector!(0, qh, h), ao_np);
+                vert(na::vector!(qw, qh, h), ao_pp);
+                vert(na::vector!(0, 0, h), ao_nn);
+                vert(na::vector!(qw, 0, h), ao_pn);
             }
         };
     }

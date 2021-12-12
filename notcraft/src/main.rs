@@ -40,7 +40,12 @@ use std::{
 };
 
 #[legion::system(for_each)]
-fn player_movement(#[resource] input: &InputState, transform: &mut Transform, _player: &Player) {
+fn player_movement(
+    #[resource] input: &InputState,
+    #[resource] Dt(dt): &Dt,
+    transform: &mut Transform,
+    _player: &Player,
+) {
     use std::f32::consts::PI;
     let (dx, dy) = input.cursor_delta();
 
@@ -53,28 +58,30 @@ fn player_movement(#[resource] input: &InputState, transform: &mut Transform, _p
 
     transform.rotation.y -= yaw;
 
+    let speed = 100.0 * dt.as_secs_f32();
+
     if input.is_pressed(keys::FORWARD, None) {
-        engine::transform::creative_flight(transform, nalgebra::vector!(0.0, -0.4));
+        engine::transform::creative_flight(transform, nalgebra::vector!(0.0, -speed));
     }
     if input.is_pressed(keys::BACKWARD, None) {
-        engine::transform::creative_flight(transform, nalgebra::vector!(0.0, 0.4));
+        engine::transform::creative_flight(transform, nalgebra::vector!(0.0, speed));
     }
     if input.is_pressed(keys::RIGHT, None) {
-        engine::transform::creative_flight(transform, nalgebra::vector!(0.4, 0.0));
+        engine::transform::creative_flight(transform, nalgebra::vector!(speed, 0.0));
     }
     if input.is_pressed(keys::LEFT, None) {
-        engine::transform::creative_flight(transform, nalgebra::vector!(-0.4, 0.0));
+        engine::transform::creative_flight(transform, nalgebra::vector!(-speed, 0.0));
     }
     if input.is_pressed(keys::UP, None) {
-        transform.translate_global(&nalgebra::vector!(0.0, 0.4, 0.0).into());
+        transform.translate_global(&nalgebra::vector!(0.0, speed, 0.0).into());
     }
     if input.is_pressed(keys::DOWN, None) {
-        transform.translate_global(&nalgebra::vector!(0.0, -0.4, 0.0).into());
+        transform.translate_global(&nalgebra::vector!(0.0, -speed, 0.0).into());
     }
 }
 
 fn setup_world(cmd: &mut CommandBuffer) {
-    let player = cmd.push((Transform::default(), Player, ChunkLoader { radius: 3 }));
+    let player = cmd.push((Transform::default(), Player, ChunkLoader { radius: 5 }));
 
     let camera_entity = cmd.push((Parent(player), Camera::default(), Transform::default()));
 

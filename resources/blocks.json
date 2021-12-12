@@ -51,7 +51,7 @@
             "top_bottom": {
                 "top": {
                     "random_orientation": true,
-                    "texture": "grass_block_top"
+                    "texture": "moss_block"
                 },
                 "bottom": {
                     "random_orientation": true,
@@ -59,7 +59,7 @@
                 },
                 "side": {
                     "random_orientation": false,
-                    "texture": "grass_block_side"
+                    "texture": "moss_block"
                 }
             }
         }
