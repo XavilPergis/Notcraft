@@ -1,6 +1,7 @@
 use legion::{systems::CommandBuffer, world::SubWorld, *};
 use nalgebra::{
-    vector, Matrix4, Point3, Rotation3, Translation3, Unit, UnitQuaternion, Vector2, Vector3,
+    vector, AbstractRotation, Matrix4, Point3, Rotation3, Translation3, Unit, UnitQuaternion,
+    Vector2, Vector3,
 };
 
 // FIXME: roll doesn't work right so we just don't do that...
@@ -49,7 +50,7 @@ impl Transform {
     pub fn to_matrix(&self) -> Matrix4<f32> {
         // The model/world matrix takes points in local space and vonverts them to world
         // space.
-        euler_to_rotation(-self.rotation.x, -self.rotation.y, -self.rotation.z)
+        euler_to_rotation(self.rotation.x, self.rotation.y, self.rotation.z)
             .to_homogeneous()
             .append_translation(&self.translation.vector)
             .prepend_nonuniform_scaling(&self.scale)
@@ -58,16 +59,7 @@ impl Transform {
     pub fn view_matrix(&self) -> Matrix4<f32> {
         // The view matrix is the inverse of the world matrix, as it "undoes" all of the
         // transformations that the world matrix did.
-        //
-        // We have to translate and then rotate so that the object is at the origin when
-        // the rotation happens. Otherwise, it'd orbit around the origin instead of
-        // rotating in-place.
-        let inv_scale = vector!(1.0 / self.scale.x, 1.0 / self.scale.y, 1.0 / self.scale.z);
-        euler_to_rotation(self.rotation.x, self.rotation.y, self.rotation.z)
-            .inverse()
-            .to_homogeneous()
-            .append_nonuniform_scaling(&inv_scale)
-            .prepend_translation(&-self.translation.vector)
+        self.to_matrix().try_inverse().unwrap()
     }
 }
 

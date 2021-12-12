@@ -41,12 +41,12 @@ impl NoiseGenerator {
 
     pub fn make_chunk(&self, pos: ChunkPos) -> ChunkType {
         let base = pos.base().0;
-        let noise = NoiseBuilder::gradient_2d_offset(base.x as f32, SIZE, base.z as f32, SIZE)
-            .with_freq(0.01)
-            // .with_octaves(5)
-            .with_seed(1337)
-            // .with_lacunarity(0.5)
-            .generate_scaled(-10.0, 10.0);
+        // let noise = NoiseBuilder::gradient_2d_offset(base.x as f32, SIZE, base.z as
+        // f32, SIZE)     .with_freq(0.01)
+        //     // .with_octaves(5)
+        //     .with_seed(1337)
+        //     // .with_lacunarity(0.5)
+        //     .generate_scaled(-10.0, 10.0);
 
         // if base.y as f32 - noise_min > 0.0 {
         //     return ChunkType::Homogeneous(block::AIR);
@@ -55,11 +55,12 @@ impl NoiseGenerator {
         let mut chunk_data = Vec::with_capacity(VOLUME);
         for x in 0..SIZE {
             for z in 0..SIZE {
-                let surface_height = noise[x as usize * SIZE + z];
+                // let surface_height = noise[x as usize * SIZE + z];
 
                 for y in 0..SIZE {
-                    let id =
-                        self.block_from_surface_dist(base.y as f32 + y as f32 - surface_height);
+                    let id = self.block_from_surface_dist(
+                        base.y as f32 + y as f32, /* - surface_height */
+                    );
                     chunk_data.push(id);
                 }
             }

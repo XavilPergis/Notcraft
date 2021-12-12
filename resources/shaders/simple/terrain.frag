@@ -10,7 +10,7 @@ out vec3 b_color;
 
 void main()
 {
-    vec3 tex_pos = vec3(v_texture_uv, v_id);
+    vec3 tex_pos = vec3(fract(v_texture_uv), v_id);
     vec3 albedo = v_color_filter * texture(albedo_maps, tex_pos).rgb;
     b_color = albedo;
 }

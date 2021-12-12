@@ -178,7 +178,7 @@ fn iter_pos(start: BlockPos, end: BlockPos, mut func: impl FnMut(BlockPos)) {
 impl VoxelWorld {
     pub fn new(registry: Arc<BlockRegistry>) -> Self {
         let generator_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(1)
+            .num_threads(4)
             .build()
             .unwrap();
 

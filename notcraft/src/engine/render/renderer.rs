@@ -33,26 +33,6 @@ use std::{
 
 use super::{mesher::TerrainVertex, Tex};
 
-struct TerrainFramebuffers {
-    depth_buffer: DepthTexture2d,
-    color_buffer: Texture2d,
-}
-
-impl TerrainFramebuffers {
-    fn new<F: Facade>(ctx: &F, width: u32, height: u32) -> Result<Self> {
-        Ok(TerrainFramebuffers {
-            depth_buffer: DepthTexture2d::empty(ctx, width, height)?,
-            color_buffer: Texture2d::empty_with_format(
-                ctx,
-                UncompressedFloatFormat::F32F32F32,
-                MipmapsOption::NoMipmap,
-                width,
-                height,
-            )?,
-        })
-    }
-}
-
 struct SharedState {
     display: Rc<Display>,
     fullscreen_quad: VertexBuffer<Tex>,
@@ -85,6 +65,7 @@ pub struct Renderer {
 
     terrain_renderer: TerrainRenderer,
     post_renderer: PostProcessRenderer,
+    sky_renderer: SkyRenderer,
 }
 
 fn render_all<S: Surface>(
@@ -96,7 +77,13 @@ fn render_all<S: Surface>(
     // upload/delete etc meshes to keep in sync with the world.
     ctx.terrain_renderer.update_meshes(world).unwrap();
 
-    // render terrain to terrain buffer
+    render_sky(
+        &mut ctx.sky_renderer,
+        &mut ctx.post_renderer.render_target()?,
+        world,
+        resources,
+    )?;
+
     render_terrain(
         &mut ctx.terrain_renderer,
         &mut ctx.post_renderer.render_target()?,
@@ -117,13 +104,15 @@ impl Renderer {
     ) -> Result<Self> {
         let shared = SharedState::new(display)?;
 
-        let terrain_render = TerrainRenderer::new(Rc::clone(&shared), registry, world)?;
+        let terrain_renderer = TerrainRenderer::new(Rc::clone(&shared), registry, world)?;
         let post_renderer = PostProcessRenderer::new(Rc::clone(&shared))?;
+        let sky_renderer = SkyRenderer::new(Rc::clone(&shared))?;
 
         Ok(Renderer {
             shared,
-            terrain_renderer: terrain_render,
+            terrain_renderer,
             post_renderer,
+            sky_renderer,
         })
     }
 
@@ -140,29 +129,37 @@ impl Renderer {
 struct PostProcessRenderer {
     shared: Rc<SharedState>,
     post_program: Program,
-    post_process_source: TerrainFramebuffers,
+    post_process_color: Texture2d,
+    post_process_depth: DepthTexture2d,
 }
 
 impl PostProcessRenderer {
     pub fn new(shared: Rc<SharedState>) -> Result<Self> {
         let post_program = loader::load_shader(shared.display(), "resources/shaders/post")?;
         let (width, height) = shared.display().get_framebuffer_dimensions();
-        let post_process_source = TerrainFramebuffers::new(shared.display(), width, height)?;
+
+        let post_process_color = Texture2d::empty_with_format(
+            shared.display(),
+            UncompressedFloatFormat::F32F32F32,
+            MipmapsOption::NoMipmap,
+            width,
+            height,
+        )?;
+        let post_process_depth = DepthTexture2d::empty(shared.display(), width, height)?;
 
         Ok(Self {
             shared,
             post_program,
-            post_process_source,
+            post_process_color,
+            post_process_depth,
         })
     }
 
     fn render_target(&self) -> Result<MultiOutputFrameBuffer, ValidationError> {
         MultiOutputFrameBuffer::with_depth_buffer(
             self.shared.display(),
-            [("b_color", &self.post_process_source.color_buffer)]
-                .iter()
-                .cloned(),
-            &self.post_process_source.depth_buffer,
+            [("b_color", &self.post_process_color)].iter().cloned(),
+            &self.post_process_depth,
         )
     }
 }
@@ -179,15 +176,59 @@ fn render_post<S: Surface>(
     let cam_pos = get_cam_pos(cam_transform);
 
     // post
-    target.clear_color(0.1, 0.3, 0.3, 1.0);
+    target.clear_color(0.0, 0.0, 0.0, 0.0);
     target.draw(
         &ctx.shared.fullscreen_quad,
         glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
         &ctx.post_program,
         &uniform! {
-            b_color: ctx.post_process_source.color_buffer.sampled(),
-            b_depth: ctx.post_process_source.depth_buffer.sampled(),
+            b_color: ctx.post_process_color.sampled(),
+            b_depth: ctx.post_process_depth.sampled(),
 
+            camera_pos: array3(cam_pos),
+            projection_matrix: array4x4(proj.to_homogeneous()),
+            view_matrix: array4x4(view),
+        },
+        &Default::default(),
+    )?;
+
+    Ok(())
+}
+
+struct SkyRenderer {
+    shared: Rc<SharedState>,
+    sky_program: Program,
+}
+
+impl SkyRenderer {
+    fn new(shared: Rc<SharedState>) -> Result<Self> {
+        let sky_program = loader::load_shader(shared.display(), "resources/shaders/sky")?;
+
+        Ok(Self {
+            shared,
+            sky_program,
+        })
+    }
+}
+
+fn render_sky<S: Surface>(
+    ctx: &mut SkyRenderer,
+    target: &mut S,
+    world: &mut World,
+    resources: &mut Resources,
+) -> anyhow::Result<()> {
+    target.clear_color_and_depth((0.9, 0.95, 1.0, 1.0), 1.0);
+
+    let cam_transform = get_camera(world, resources);
+    let (width, height) = ctx.shared.display().get_framebuffer_dimensions();
+    let (view, proj) = get_proj_view(width, height, cam_transform);
+    let cam_pos = get_cam_pos(cam_transform);
+
+    target.draw(
+        &ctx.shared.fullscreen_quad,
+        glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
+        &ctx.sky_program,
+        &uniform! {
             camera_pos: array3(cam_pos),
             projection_matrix: array4x4(proj.to_homogeneous()),
             view_matrix: array4x4(view),
@@ -354,8 +395,6 @@ fn render_terrain<S: Surface>(
 ) -> anyhow::Result<()> {
     let camera = get_camera(world, resources);
 
-    target.clear_color_and_depth((0.0, 0.0, 0.0, 0.0), 1.0);
-
     // If we don't have any cameras anywhere, then just put it at the origin.
     let (width, height) = ctx.shared.display().get_framebuffer_dimensions();
     let (view, proj) = get_proj_view(width, height, camera);
@@ -379,7 +418,7 @@ fn render_terrain<S: Surface>(
                         write: true,
                         ..Default::default()
                     },
-                    // backface_culling: glium::BackfaceCullingMode::CullCounterClockwise,
+                    backface_culling: glium::BackfaceCullingMode::CullCounterClockwise,
                     ..Default::default()
                 },
             )?;

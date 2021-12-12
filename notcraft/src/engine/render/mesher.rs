@@ -382,11 +382,11 @@ pub struct TerrainVertex {
     // AO only has 3 possible values, [0,3]
     pub pos_ao: u32,
 
-    // - 10 bits for tex coords
+    // - 12 bits for tex coords
     // each axis is 5 bits because chunks are 32 blocks or 2^5 bits across, so each face can be 32
     // blocks long at most. actual UVs will be calculated in the shader by casting each axis to a
     // float and getting the fractional part.
-    // (6 bit residual)
+    // (5 bit residual)
     // - 16 bits for block id
     // this seems substantial enough to never ever be a problem
     pub uv_id: u32,
@@ -410,9 +410,9 @@ impl TerrainVertex {
         let [u, v] = uv;
         let mut uv_id = 0u32;
         uv_id |= u as u32 & 0x3f;
-        uv_id <<= 5;
-        uv_id |= v as u32 & 0x3f;
         uv_id <<= 6;
+        uv_id |= v as u32 & 0x3f;
+        uv_id <<= 4;
         // reserved
         uv_id <<= 16;
         uv_id |= id as u32;

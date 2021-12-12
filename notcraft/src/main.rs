@@ -44,38 +44,14 @@ fn player_movement(#[resource] input: &InputState, transform: &mut Transform, _p
     use std::f32::consts::PI;
     let (dx, dy) = input.cursor_delta();
 
-    // X - roll -> pitch
-    // Y - pitch -> yaw
-    // Z - yaw -> roll
     let pitch = dy * (PI / 180.0);
     let yaw = dx * (PI / 180.0);
 
-    // roll pitch yaw
-    // let rot = nalgebra::UnitQuaternion::from_euler_angles(pitch, yaw, 0.0);
-    // transform.iso.rotation = nalgebra::UnitQuaternion::face_towards(
-    //     &transform.iso.translation.vector,
-    //     &nalgebra::Vector3::y(),
-    // );
-    // let rot = nalgebra::UnitQuaternion::from_euler_angles(pitch, yaw, 0.0);
     transform.rotation.x -= pitch;
     transform.rotation.x = f32::min(transform.rotation.x, PI / 2.0);
     transform.rotation.x = f32::max(transform.rotation.x, -PI / 2.0);
-    transform.rotation.y -= yaw;
 
-    // if input.is_pressed(keys::ARROW_UP, None) {
-    //     transform.rotation.z += 1.0 * (PI / 180.0);
-    // }
-    // if input.is_pressed(keys::ARROW_DOWN, None) {
-    //     transform.rotation.z -= 1.0 * (PI / 180.0);
-    // }
-    // if input.is_rising(keys::ARROW_LEFT, None) {
-    //     let rot = nalgebra::UnitQuaternion::from_euler_angles(0.0, 5.0 * (PI /
-    // 180.0), 0.0);     transform.rotate(&rot);
-    // }
-    // if input.is_rising(keys::ARROW_RIGHT, None) {
-    //     let rot = nalgebra::UnitQuaternion::from_euler_angles(0.0, -5.0 * (PI /
-    // 180.0), 0.0);     transform.rotate(&rot);
-    // }
+    transform.rotation.y -= yaw;
 
     if input.is_pressed(keys::FORWARD, None) {
         engine::transform::creative_flight(transform, nalgebra::vector!(0.0, -0.4));
