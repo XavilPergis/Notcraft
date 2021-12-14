@@ -84,6 +84,14 @@ impl InputState {
         self.cursor_should_be_hidden.store(hide, Ordering::SeqCst);
     }
 
+    pub fn is_cursor_grabbed(&self) -> bool {
+        self.cursor_should_be_grabbed.load(Ordering::SeqCst)
+    }
+
+    pub fn is_cursor_hidden(&self) -> bool {
+        self.cursor_should_be_hidden.load(Ordering::SeqCst)
+    }
+
     pub fn cursor_delta(&self) -> nalgebra::Vector2<f32> {
         self.sensitivity * nalgebra::vector![self.cursor_dx, self.cursor_dy]
     }
@@ -176,7 +184,7 @@ fn maintain_input_state(state: &mut InputState, window: &Window) {
 
     if state.cursor_currently_hidden != should_hide {
         state.cursor_currently_hidden = should_hide;
-        window.set_cursor_visible(should_hide);
+        window.set_cursor_visible(!should_hide);
     }
 
     state.rising_keys.clear();

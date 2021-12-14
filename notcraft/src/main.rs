@@ -76,6 +76,13 @@ fn player_movement(
     if input.key(keys::DOWN).is_pressed() {
         transform.translate_global(&nalgebra::vector!(0.0, -speed, 0.0).into());
     }
+
+    if input.key(VirtualKeyCode::Tab).is_rising() {
+        let grabbed = input.is_cursor_grabbed();
+
+        input.grab_cursor(!grabbed);
+        input.hide_cursor(!grabbed);
+    }
 }
 
 fn setup_world(cmd: &mut CommandBuffer) {
