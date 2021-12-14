@@ -2,16 +2,19 @@ use crate::engine::{
     math::*,
     transform::Transform,
     world::{
-        chunk::{ChunkType, PaddedChunk, SIZE},
+        chunk::{ChunkKind, ChunkPos, CHUNK_LENGTH},
         registry::{BlockId, BlockRegistry},
-        ChunkEvent, ChunkPos, VoxelWorld,
+        ChunkEvent, VoxelWorld, WorldChunks,
     },
     Side,
 };
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use legion::{systems::CommandBuffer, Entity};
-use na::point;
-use std::collections::{HashMap, HashSet};
+use rayon::{ThreadPool, ThreadPoolBuilder};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, RwLockReadGuard},
+};
 
 #[derive(Debug)]
 struct MeshTracker {
@@ -121,26 +124,27 @@ impl MeshTracker {
 #[derive(Debug)]
 pub struct MesherContext {
     terrain_entities: HashMap<ChunkPos, Entity>,
-
     tracker: MeshTracker,
-
-    have_data: HashSet<ChunkPos>,
     completed_meshes: HashSet<ChunkPos>,
-
     chunk_event_rx: Receiver<ChunkEvent>,
+
+    mesher_pool: ThreadPool,
+    mesh_tx: Sender<CompletedMesh>,
+    mesh_rx: Receiver<CompletedMesh>,
 }
 
 impl MesherContext {
     pub fn new(voxel_world: &VoxelWorld) -> Self {
+        let mesher_pool = ThreadPoolBuilder::new().build().unwrap();
+        let (mesh_tx, mesh_rx) = crossbeam_channel::unbounded();
         Self {
             terrain_entities: Default::default(),
-
             tracker: MeshTracker::new(),
-
-            have_data: Default::default(),
             completed_meshes: Default::default(),
-
             chunk_event_rx: voxel_world.chunk_event_notifier.clone(),
+            mesher_pool,
+            mesh_tx,
+            mesh_rx,
         }
     }
 }
@@ -149,14 +153,82 @@ fn neighbors<F>(pos: ChunkPos, mut func: F)
 where
     F: FnMut(ChunkPos),
 {
-    for x in pos.0.x - 1..=pos.0.x + 1 {
-        for y in pos.0.y - 1..=pos.0.y + 1 {
-            for z in pos.0.z - 1..=pos.0.z + 1 {
-                let neighbor = ChunkPos(point!(x, y, z));
+    for x in pos.x - 1..=pos.x + 1 {
+        for y in pos.y - 1..=pos.y + 1 {
+            for z in pos.z - 1..=pos.z + 1 {
+                let neighbor = ChunkPos { x, y, z };
                 if neighbor != pos {
                     func(neighbor);
                 }
             }
+        }
+    }
+}
+
+fn update_tracker(ctx: &mut MesherContext, cmd: &mut CommandBuffer) {
+    for event in ctx.chunk_event_rx.try_iter() {
+        match event {
+            ChunkEvent::Added(chunk) => ctx.tracker.chunk_added(chunk.pos()),
+            ChunkEvent::Removed(chunk) => {
+                ctx.tracker.chunk_removed(chunk.pos());
+                if let Some(entity) = ctx.terrain_entities.remove(&chunk.pos()) {
+                    cmd.remove(entity);
+                }
+            }
+            ChunkEvent::Modified(chunk) => {
+                if ctx.tracker.constrained_by.contains_key(&chunk.pos()) {
+                    if let Some(entity) = ctx.terrain_entities.remove(&chunk.pos()) {
+                        cmd.remove(entity);
+                    }
+                } else if ctx.tracker.have_data.contains(&chunk.pos()) {
+                    ctx.tracker.unconstrained.insert(chunk.pos());
+                }
+            }
+        }
+    }
+}
+
+fn update_completed_meshes(ctx: &mut MesherContext, cmd: &mut CommandBuffer) {
+    for completed in ctx.mesh_rx.try_iter() {
+        if ctx.tracker.have_data.contains(&completed.pos) {
+            let entity = *ctx
+                .terrain_entities
+                .entry(completed.pos)
+                .or_insert_with(|| cmd.push(()));
+
+            let world_pos: Point3<f32> = completed.pos.origin().origin().into();
+            let transform = Transform::from(world_pos);
+
+            cmd.add_component(entity, completed.terrain);
+            cmd.add_component(entity, transform);
+        }
+    }
+}
+
+fn queue_mesh_jobs(ctx: &mut MesherContext, voxel_world: &VoxelWorld) {
+    while let Some(&pos) = ctx.tracker.unconstrained.iter().next() {
+        match voxel_world.read(pos, &voxel_world.guard()).as_deref() {
+            Some(ChunkKind::Homogeneous(_id)) => {
+                // FIXME: causes holes when a solid homogeneous chunk touches air
+                ctx.tracker.unconstrained.remove(&pos);
+            }
+
+            Some(ChunkKind::Array(_)) => {
+                let chunks = voxel_world.chunks();
+                let registry = Arc::clone(&voxel_world.registry);
+                let sender = ctx.mesh_tx.clone();
+
+                ctx.mesher_pool.spawn(move || {
+                    if let Some(neighbors) = ChunkNeighbors::lock(&chunks, &chunks.guard(), pos) {
+                        MeshCreationContext::new(pos, neighbors, registry).mesh(sender);
+                    }
+                });
+
+                ctx.completed_meshes.insert(pos);
+                ctx.tracker.unconstrained.remove(&pos);
+            }
+
+            None => {}
         }
     }
 }
@@ -167,67 +239,58 @@ pub fn chunk_mesher(
     #[state] ctx: &mut MesherContext,
     #[resource] voxel_world: &mut VoxelWorld,
 ) {
-    for event in ctx.chunk_event_rx.try_iter() {
-        match event {
-            ChunkEvent::Added(chunk) => ctx.tracker.chunk_added(chunk),
-            ChunkEvent::Removed(chunk) => {
-                ctx.tracker.chunk_removed(chunk);
-                if let Some(entity) = ctx.terrain_entities.remove(&chunk) {
-                    cmd.remove(entity);
-                }
-            }
-            ChunkEvent::Modified(chunk) => {
-                if ctx.tracker.constrained_by.contains_key(&chunk) {
-                    if let Some(entity) = ctx.terrain_entities.remove(&chunk) {
-                        cmd.remove(entity);
-                    }
-                } else if ctx.tracker.have_data.contains(&chunk) {
-                    ctx.tracker.unconstrained.insert(chunk);
-                }
-            }
-        }
-    }
+    update_tracker(ctx, cmd);
+    queue_mesh_jobs(ctx, voxel_world);
+    update_completed_meshes(ctx, cmd);
+}
 
-    if let Some(&pos) = ctx.tracker.unconstrained.iter().next() {
-        ctx.tracker.unconstrained.remove(&pos);
+struct ChunkNeighbors<'w> {
+    chunks: Vec<RwLockReadGuard<'w, ChunkKind>>,
+}
 
-        match voxel_world.chunk(pos) {
-            Some(ChunkType::Homogeneous(_id)) => {
-                // FIXME: causes holes when a solid homogeneous chunk touches
-                // air
-            }
-
-            Some(ChunkType::Array(_)) => {
-                let mesh = mesh_chunk(pos, &voxel_world);
-                let transform = Transform::from(pos.base().base().0);
-
-                let entity = *ctx
-                    .terrain_entities
-                    .entry(pos)
-                    .or_insert_with(|| cmd.push(()));
-
-                cmd.add_component(entity, mesh);
-                cmd.add_component(entity, transform);
-
-                ctx.completed_meshes.insert(pos);
-            }
-
-            _ => {}
-        }
+fn chunks_index_and_offset(n: ChunkAxisOffset) -> (usize, usize) {
+    const LEN: ChunkAxisOffset = CHUNK_LENGTH as ChunkAxisOffset;
+    match n {
+        _ if n < 0 => (0, (n + LEN) as usize),
+        _ if n >= LEN => (2, (n - LEN) as usize),
+        _ => (1, n as usize),
     }
 }
 
-#[derive(Debug, Default)]
-pub struct ChunkMesher {}
+impl<'w> ChunkNeighbors<'w> {
+    fn lock(
+        world: &'w WorldChunks,
+        guard: &'w flurry::epoch::Guard,
+        pos: ChunkPos,
+    ) -> Option<Self> {
+        let mut chunks = Vec::with_capacity(27);
 
-pub fn mesh_chunk(pos: ChunkPos, world: &VoxelWorld) -> TerrainMesh {
-    let mut mesher = Mesher::new(pos, world);
-    mesher.mesh();
-    mesher.mesh_constructor.terrain_mesh
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    chunks.push(world.read(pos.offset([dx, dy, dz]), guard)?);
+                }
+            }
+        }
+
+        Some(Self { chunks })
+    }
+
+    fn lookup<I: Into<[ChunkAxisOffset; 3]>>(&self, pos: I) -> BlockId {
+        let [x, y, z] = pos.into();
+        let (cx, mx) = chunks_index_and_offset(x);
+        let (cy, my) = chunks_index_and_offset(y);
+        let (cz, mz) = chunks_index_and_offset(z);
+
+        match &*self.chunks[9 * cx + 3 * cy + cz] {
+            ChunkKind::Homogeneous(id) => *id,
+            ChunkKind::Array(arr) => arr[[mx, my, mz]],
+        }
+    }
 }
 
 type ChunkAxis = u16;
-type ChunkOffset = i16;
+type ChunkAxisOffset = i16;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 struct VoxelQuad {
@@ -255,38 +318,45 @@ struct VoxelFace {
     visited: bool,
 }
 
-pub struct Mesher<'w> {
-    registry: &'w BlockRegistry,
-    center: PaddedChunk,
-    mesh_constructor: MeshConstructor<'w>,
+struct MeshCreationContext<'w> {
+    registry: Arc<BlockRegistry>,
+    chunks: ChunkNeighbors<'w>,
+    mesh_constructor: MeshConstructor,
+    pos: ChunkPos,
     slice: Vec<VoxelFace>,
 }
 
 // index into the flat voxel face slice using a 2D coordinate
 const fn idx(u: ChunkAxis, v: ChunkAxis) -> usize {
-    SIZE * u as usize + v as usize
+    CHUNK_LENGTH * u as usize + v as usize
 }
 
-impl<'w> Mesher<'w> {
-    pub fn new(pos: ChunkPos, world: &'w VoxelWorld) -> Self {
-        Mesher {
-            registry: &world.registry,
-            center: crate::engine::world::chunk::make_padded(world, pos).unwrap(),
-            slice: vec![VoxelFace::default(); crate::engine::world::chunk::AREA],
-            mesh_constructor: MeshConstructor {
-                terrain_mesh: Default::default(),
-                registry: &world.registry,
-            },
+impl<'w> MeshCreationContext<'w> {
+    pub fn new(pos: ChunkPos, neighbors: ChunkNeighbors<'w>, registry: Arc<BlockRegistry>) -> Self {
+        let mesh_constructor = MeshConstructor {
+            registry: Arc::clone(&registry),
+            terrain_mesh: Default::default(),
+        };
+
+        MeshCreationContext {
+            registry: Arc::clone(&registry),
+            chunks: neighbors,
+            pos,
+            slice: vec![VoxelFace::default(); crate::engine::world::chunk::CHUNK_AREA],
+            mesh_constructor,
         }
     }
 
     fn face_ao(&self, pos: Point3<ChunkAxis>, side: Side) -> FaceAo {
-        if self.registry.liquid(self.center[pos.cast::<usize>()]) {
+        if self
+            .registry
+            .liquid(self.chunks.lookup(pos.cast::<ChunkAxisOffset>()))
+        {
             return FaceAo::default();
         }
 
-        let pos = na::point!(pos.x as i32, pos.y as i32, pos.z as i32);
-        let is_opaque = |pos| self.registry.opaque(self.center[pos]);
+        let pos = pos.cast::<ChunkAxisOffset>();
+        let is_opaque = |pos| self.registry.opaque(self.chunks.lookup(pos));
 
         let neg_neg = is_opaque(pos + side.uvl_to_xyz(-1, -1, 1));
         let neg_cen = is_opaque(pos + side.uvl_to_xyz(-1, 0, 1));
@@ -310,17 +380,17 @@ impl<'w> Mesher<'w> {
         )
     }
 
-    fn is_not_occluded(&self, pos: Point3<ChunkAxis>, offset: Vector3<ChunkOffset>) -> bool {
-        let pos = pos.cast::<usize>();
-        let offset = pos.cast::<isize>() + offset.cast();
+    fn is_not_occluded(&self, pos: Point3<ChunkAxis>, offset: Vector3<ChunkAxisOffset>) -> bool {
+        let pos = pos.cast::<ChunkAxisOffset>();
+        let offset = pos + offset.cast();
 
-        let cur_solid = self.registry.opaque(self.center[pos]);
-        let other_solid = self.registry.opaque(self.center[offset]);
+        let cur_solid = self.registry.opaque(self.chunks.lookup(pos));
+        let other_solid = self.registry.opaque(self.chunks.lookup(offset));
 
-        let cur_liquid = self.registry.liquid(self.center[pos]);
-        let other_liquid = self.registry.liquid(self.center[offset]);
+        let cur_liquid = self.registry.liquid(self.chunks.lookup(pos));
+        let other_liquid = self.registry.liquid(self.chunks.lookup(offset));
 
-        if self.registry.liquid(self.center[pos]) {
+        if self.registry.liquid(self.chunks.lookup(pos)) {
             // if the current block is liquid, we need a face when the other block is
             // non-solid or non-liquid
             cur_liquid && !other_solid && !other_liquid
@@ -329,7 +399,7 @@ impl<'w> Mesher<'w> {
             // if the current block is not opaque, then it would never need any faces
             // if the current block is solid, and the other is either non-opaque or a
             // liquid, then we need a face
-            cur_solid && (!other_solid || self.registry.liquid(self.center[offset]))
+            cur_solid && (!other_solid || self.registry.liquid(self.chunks.lookup(offset)))
         }
     }
 
@@ -358,8 +428,8 @@ impl<'w> Mesher<'w> {
         side: Side,
         point_constructor: impl Fn(ChunkAxis, ChunkAxis) -> Point3<ChunkAxis>,
     ) {
-        for u in 0..(SIZE as ChunkAxis) {
-            for v in 0..(SIZE as ChunkAxis) {
+        for u in 0..(CHUNK_LENGTH as ChunkAxis) {
+            for v in 0..(CHUNK_LENGTH as ChunkAxis) {
                 let cur = self.slice[idx(u, v)];
 
                 let is_liquid = self.registry.liquid(cur.id);
@@ -372,13 +442,13 @@ impl<'w> Mesher<'w> {
 
                 // while the next position is in chunk bounds and is the same block face as the
                 // current
-                while u + quad.width < (SIZE as ChunkAxis)
+                while u + quad.width < (CHUNK_LENGTH as ChunkAxis)
                     && self.slice[idx(u + quad.width, v)] == cur
                 {
                     quad.width += 1;
                 }
 
-                while v + quad.height < (SIZE as ChunkAxis) {
+                while v + quad.height < (CHUNK_LENGTH as ChunkAxis) {
                     if (u..u + quad.width)
                         .map(|u| self.slice[idx(u, v + quad.height)])
                         .all(|face| face == cur)
@@ -411,15 +481,14 @@ impl<'w> Mesher<'w> {
         side: Side,
         make_coordinate: impl Fn(ChunkAxis, ChunkAxis, ChunkAxis) -> Point3<ChunkAxis>,
     ) {
-        for layer in 0..(SIZE as ChunkAxis) {
-            for u in 0..(SIZE as ChunkAxis) {
-                for v in 0..(SIZE as ChunkAxis) {
-                    // chunk coords -> padded chunk coords
-                    let padded = make_coordinate(layer, u, v) + na::vector!(1, 1, 1);
-                    self.slice[idx(u, v)] = if self.is_not_occluded(padded, side.normal()) {
+        for layer in 0..(CHUNK_LENGTH as ChunkAxis) {
+            for u in 0..(CHUNK_LENGTH as ChunkAxis) {
+                for v in 0..(CHUNK_LENGTH as ChunkAxis) {
+                    let pos = make_coordinate(layer, u, v);
+                    self.slice[idx(u, v)] = if self.is_not_occluded(pos, side.normal()) {
                         VoxelFace {
-                            ao: self.face_ao(padded, side),
-                            id: self.center[padded.cast::<usize>()],
+                            ao: self.face_ao(pos, side),
+                            id: self.chunks.lookup(pos.cast()),
                             visited: false,
                         }
                     } else {
@@ -436,7 +505,7 @@ impl<'w> Mesher<'w> {
         }
     }
 
-    pub fn mesh(&mut self) {
+    pub fn mesh(mut self, sender: Sender<CompletedMesh>) {
         self.mesh_slice(Side::Right, |layer, u, v| na::point!(layer, u, v));
         self.mesh_slice(Side::Left, |layer, u, v| na::point!(layer, u, v));
 
@@ -445,7 +514,19 @@ impl<'w> Mesher<'w> {
 
         self.mesh_slice(Side::Front, |layer, u, v| na::point!(u, v, layer));
         self.mesh_slice(Side::Back, |layer, u, v| na::point!(u, v, layer));
+
+        sender
+            .send(CompletedMesh {
+                pos: self.pos,
+                terrain: self.mesh_constructor.terrain_mesh,
+            })
+            .unwrap();
     }
+}
+
+struct CompletedMesh {
+    pos: ChunkPos,
+    terrain: TerrainMesh,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
@@ -534,13 +615,13 @@ pub struct TerrainMesh {
 }
 
 #[derive(Debug)]
-struct MeshConstructor<'w> {
+struct MeshConstructor {
     // liquid_mesh: LiquidMesh,
     terrain_mesh: TerrainMesh,
-    registry: &'w BlockRegistry,
+    registry: Arc<BlockRegistry>,
 }
 
-impl<'w> MeshConstructor<'w> {
+impl MeshConstructor {
     fn add_liquid(&mut self, _quad: VoxelQuad, _side: Side, _pos: Point3<ChunkAxis>) {
         // TODO: liquid meshing
     }
@@ -561,18 +642,11 @@ impl<'w> MeshConstructor<'w> {
             Side::Left => true,
         };
 
-        let indices = if flipped {
-            if clockwise {
-                FLIPPED_QUAD_CW
-            } else {
-                FLIPPED_QUAD_CCW
-            }
-        } else {
-            if clockwise {
-                NORMAL_QUAD_CW
-            } else {
-                NORMAL_QUAD_CCW
-            }
+        let indices = match (flipped, clockwise) {
+            (true, true) => FLIPPED_QUAD_CW,
+            (true, false) => FLIPPED_QUAD_CCW,
+            (false, true) => NORMAL_QUAD_CW,
+            (false, false) => NORMAL_QUAD_CCW,
         };
 
         let idx_start = self.terrain_mesh.vertices.len() as u32;
@@ -594,8 +668,6 @@ impl<'w> MeshConstructor<'w> {
         let qw = quad.width;
         let qh = quad.height;
 
-        // REALLY don't know why I have to reverse the quad width and height along the X
-        // axis... I bet someone more qualified could tell me :>
         match side {
             Side::Left | Side::Right => {
                 vert(na::vector!(h, qw, 0), ao_pn);

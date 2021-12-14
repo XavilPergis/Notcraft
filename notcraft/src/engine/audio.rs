@@ -61,11 +61,11 @@ impl MusicState {
 
 #[legion::system]
 pub fn intermittent_music(#[state] state: &mut MusicState) {
-    // if state.music_sink.empty() {
-    //     if let Some(Some(source)) = select_audio_file("resources/audio").ok()
-    // {         let duration = random_duration();
-    //         debug!("playing music in {} seconds", duration.as_secs_f64());
-    //         state.music_sink.append(source.delay(duration));
-    //     }
-    // }
+    if state.music_sink.empty() {
+        if let Some(Some(source)) = select_audio_file("resources/audio").ok() {
+            let duration = random_duration();
+            debug!("playing music in {} seconds", duration.as_secs_f64());
+            state.music_sink.append(source.delay(duration));
+        }
+    }
 }

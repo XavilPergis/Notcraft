@@ -84,25 +84,29 @@ impl Side {
         }
     }
 
-    /// take coordinates (u, v, l) where (u, v) is parallel to this face and
-    /// convert it to a relative xyz coord
-    pub fn uvl_to_xyz(&self, u: i32, v: i32, l: i32) -> Vector3<i32> {
-        let mut vec = vector!(0, 0, 0);
-        let axis: Axis = (*self).into();
-        let l = if self.facing_positive() { l } else { -l };
-        vec[axis as usize % 3] = l;
-        vec[(axis as usize + 1) % 3] = u;
-        vec[(axis as usize + 2) % 3] = v;
-        vec
-    }
-}
-
-impl From<Side> for Axis {
-    fn from(side: Side) -> Self {
-        match side {
+    pub fn axis(&self) -> Axis {
+        match self {
             Side::Left | Side::Right => Axis::X,
             Side::Top | Side::Bottom => Axis::Y,
             Side::Front | Side::Back => Axis::Z,
         }
+    }
+
+    /// take coordinates (u, v, l) where (u, v) is parallel to this face and
+    /// convert it to a relative xyz coord
+    pub fn uvl_to_xyz<S: nalgebra::Scalar + Copy + Zero + Neg<Output = S>>(
+        &self,
+        u: S,
+        v: S,
+        l: S,
+    ) -> Vector3<S> {
+        let axis = self.axis();
+        let l = [-l, l][self.facing_positive() as usize];
+
+        let mut vec = vector![S::zero(), S::zero(), S::zero()];
+        vec[axis as usize % 3] = l;
+        vec[(axis as usize + 1) % 3] = u;
+        vec[(axis as usize + 2) % 3] = v;
+        vec
     }
 }

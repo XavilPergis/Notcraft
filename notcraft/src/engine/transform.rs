@@ -1,7 +1,6 @@
 use legion::{systems::CommandBuffer, world::SubWorld, *};
 use nalgebra::{
-    vector, AbstractRotation, Matrix4, Point3, Rotation3, Translation3, Unit, UnitQuaternion,
-    Vector2, Vector3,
+    vector, Matrix4, Point3, Rotation3, Translation3, Unit, UnitQuaternion, Vector2, Vector3,
 };
 
 // FIXME: roll doesn't work right so we just don't do that...

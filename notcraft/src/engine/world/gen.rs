@@ -1,24 +1,80 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+    time::Instant,
+};
+
 use noise::{Fbm, NoiseFn, Perlin};
 
-use crate::{
-    engine::world::{
-        chunk::{SIZE, VOLUME},
-        Chunk,
-    },
-    util,
-};
+use crate::engine::world::chunk::{CHUNK_LENGTH, CHUNK_VOLUME};
 
 use super::{
-    chunk::ChunkType,
+    chunk::ChunkKind,
     registry::{BlockId, BlockRegistry, AIR},
-    ChunkPos,
+    ChunkPos, VoxelWorld,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
+struct CachedSurface {
+    added_at: Instant,
+    data: Arc<[f32]>,
+}
+
+#[derive(Debug)]
 pub struct NoiseGenerator {
     stone_id: BlockId,
     dirt_id: BlockId,
     grass_id: BlockId,
+
+    surface_height_cache: RwLock<HashMap<[i32; 2], CachedSurface>>,
+}
+
+impl NoiseGenerator {
+    fn get_surface_heights(&self, x: i32, z: i32) -> Arc<[f32]> {
+        if let Some(cached) = self.surface_height_cache.read().unwrap().get(&[x, z]) {
+            return Arc::clone(&cached.data);
+        }
+
+        let mix_noise = NoiseSampler::new(Perlin::new()).with_scale(0.001);
+        let rolling_noise = NoiseSampler::new(Perlin::new()).with_scale(0.003);
+        let mountainous_noise = NoiseSampler::new(Fbm::new()).with_scale(0.007);
+
+        let mut heights = Vec::with_capacity(CHUNK_LENGTH * CHUNK_LENGTH);
+        for dx in 0..CHUNK_LENGTH {
+            for dz in 0..CHUNK_LENGTH {
+                let (x, z) = (
+                    CHUNK_LENGTH as f32 * x as f32 + dx as f32,
+                    CHUNK_LENGTH as f32 * z as f32 + dz as f32,
+                );
+
+                let a = 20.0 * rolling_noise.sample(x, z);
+                let b = 200.0 * (mountainous_noise.sample(x, z) * 0.5 + 0.5);
+                let result = a + mix_noise.sample(x, z) * b;
+
+                heights.push(result);
+            }
+        }
+
+        self.surface_height_cache
+            .write()
+            .unwrap()
+            .insert([x, z], CachedSurface {
+                added_at: Instant::now(),
+                data: heights.into_boxed_slice().into(),
+            });
+
+        self.get_surface_heights(x, z)
+    }
+
+    fn evict_old_items(&self) {
+        let mut cache = self.surface_height_cache.write().unwrap();
+        cache.retain(|_, cached| cached.added_at.elapsed().as_secs() < 10);
+    }
+}
+
+#[legion::system]
+pub fn update_surface_cache(#[resource] world: &VoxelWorld) {
+    world.noise_generator.evict_old_items();
 }
 
 struct NoiseSampler<F> {
@@ -55,6 +111,7 @@ impl NoiseGenerator {
             stone_id: registry.get_id("stone"),
             dirt_id: registry.get_id("dirt"),
             grass_id: registry.get_id("grass"),
+            surface_height_cache: Default::default(),
         }
     }
 
@@ -70,35 +127,20 @@ impl NoiseGenerator {
         }
     }
 
-    pub fn make_chunk(&self, pos: ChunkPos) -> ChunkType {
-        let base = pos.base().0;
+    pub fn make_chunk(&self, pos: ChunkPos) -> ChunkKind {
+        let base_y = pos.origin().y as f32;
+        let heights = self.get_surface_heights(pos.x, pos.z);
 
-        let mix_noise = NoiseSampler::new(Perlin::new()).with_scale(0.001);
-        let rolling_noise = NoiseSampler::new(Perlin::new()).with_scale(0.003);
-        let mountainous_noise = NoiseSampler::new(Fbm::new()).with_scale(0.007);
-
-        // if base.y as f32 - noise_min > 0.0 {
-        //     return ChunkType::Homogeneous(block::AIR);
-        // }
-
-        let mut chunk_data = Vec::with_capacity(VOLUME);
-        for x in 0..SIZE {
-            for z in 0..SIZE {
-                let (x, z) = (base.x as f32 + x as f32, base.z as f32 + z as f32);
-
-                let a = 20.0 * rolling_noise.sample(x, z);
-                let b = 200.0 * (mountainous_noise.sample(x, z) * 0.5 + 0.5);
-                let surface_height = a + mix_noise.sample(x, z) * b;
-
-                for y in 0..SIZE {
-                    let id =
-                        self.block_from_surface_dist(base.y as f32 + y as f32 - surface_height);
-                    chunk_data.push(id);
-                }
-            }
+        let mut chunk_data = Vec::with_capacity(CHUNK_VOLUME);
+        for xz in 0..CHUNK_LENGTH * CHUNK_LENGTH {
+            let surface_height = heights[xz];
+            chunk_data.extend(
+                (0..CHUNK_LENGTH)
+                    .map(|y| self.block_from_surface_dist(base_y + y as f32 - surface_height)),
+            );
         }
 
         assert!(!chunk_data.is_empty());
-        ChunkType::Array(Chunk::new(chunk_data))
+        ChunkKind::Array(chunk_data.into_boxed_slice().try_into().unwrap())
     }
 }

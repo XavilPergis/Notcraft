@@ -61,7 +61,7 @@ impl SharedState {
 }
 
 pub struct Renderer {
-    shared: Rc<SharedState>,
+    _shared: Rc<SharedState>,
 
     terrain_renderer: TerrainRenderer,
     post_renderer: PostProcessRenderer,
@@ -109,7 +109,7 @@ impl Renderer {
         let sky_renderer = SkyRenderer::new(Rc::clone(&shared))?;
 
         Ok(Renderer {
-            shared,
+            _shared: shared,
             terrain_renderer,
             post_renderer,
             sky_renderer,
