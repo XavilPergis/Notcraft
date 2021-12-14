@@ -25,7 +25,7 @@ use engine::{
 };
 use glium::{
     glutin::{
-        event::{DeviceEvent, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
+        event::{Event, KeyboardInput, VirtualKeyCode, WindowEvent},
         event_loop::{ControlFlow, EventLoop},
         window::WindowBuilder,
         ContextBuilder,
@@ -47,10 +47,8 @@ fn player_movement(
     _player: &Player,
 ) {
     use std::f32::consts::PI;
-    let (dx, dy) = input.cursor_delta();
-
-    let pitch = dy * (PI / 180.0);
-    let yaw = dx * (PI / 180.0);
+    let pitch = input.cursor_delta().y * (PI / 180.0);
+    let yaw = input.cursor_delta().x * (PI / 180.0);
 
     transform.rotation.x -= pitch;
     transform.rotation.x = f32::min(transform.rotation.x, PI / 2.0);
@@ -60,22 +58,22 @@ fn player_movement(
 
     let speed = 100.0 * dt.as_secs_f32();
 
-    if input.is_pressed(keys::FORWARD, None) {
+    if input.key(keys::FORWARD).is_pressed() {
         engine::transform::creative_flight(transform, nalgebra::vector!(0.0, -speed));
     }
-    if input.is_pressed(keys::BACKWARD, None) {
+    if input.key(keys::BACKWARD).is_pressed() {
         engine::transform::creative_flight(transform, nalgebra::vector!(0.0, speed));
     }
-    if input.is_pressed(keys::RIGHT, None) {
+    if input.key(keys::RIGHT).is_pressed() {
         engine::transform::creative_flight(transform, nalgebra::vector!(speed, 0.0));
     }
-    if input.is_pressed(keys::LEFT, None) {
+    if input.key(keys::LEFT).is_pressed() {
         engine::transform::creative_flight(transform, nalgebra::vector!(-speed, 0.0));
     }
-    if input.is_pressed(keys::UP, None) {
+    if input.key(keys::UP).is_pressed() {
         transform.translate_global(&nalgebra::vector!(0.0, speed, 0.0).into());
     }
-    if input.is_pressed(keys::DOWN, None) {
+    if input.key(keys::DOWN).is_pressed() {
         transform.translate_global(&nalgebra::vector!(0.0, -speed, 0.0).into());
     }
 }
@@ -162,18 +160,6 @@ fn run_frame(ctx: &mut MainContext) {
     report_frame_samples(ctx);
 }
 
-#[derive(Debug)]
-pub enum InputEvent {
-    MouseMovement {
-        dx: f64,
-        dy: f64,
-    },
-    KayboardInput {
-        input: KeyboardInput,
-        synthetic: bool,
-    },
-}
-
 fn main() {
     simple_logger::init_with_level(log::Level::Debug).unwrap();
 
@@ -210,7 +196,10 @@ fn main() {
     .unwrap();
 
     let schedule = Schedule::builder()
-        .add_system(engine::input::input_compiler_system(window_events_rx))
+        .add_thread_local(engine::input::input_compiler_system(
+            window_events_rx,
+            Rc::clone(&display),
+        ))
         .add_thread_local(engine::audio::intermittent_music_system(
             engine::audio::MusicState::new(),
         ))
@@ -237,8 +226,6 @@ fn main() {
     };
 
     event_loop.run(move |event, _target, cf| match event {
-        // Event::WindowEvent { window_id, event } => {}
-        // Event::DeviceEvent { device_id, event } => {}
         Event::WindowEvent { event, .. } => match event {
             // TODO: move close handling code somewhere else mayhaps
             WindowEvent::CloseRequested => {
@@ -256,31 +243,12 @@ fn main() {
                 *cf = ControlFlow::Exit;
             }
 
-            WindowEvent::KeyboardInput {
-                input,
-                is_synthetic,
-                ..
-            } => {
-                window_events_tx
-                    .send(InputEvent::KayboardInput {
-                        input,
-                        synthetic: is_synthetic,
-                    })
-                    .unwrap();
-            }
-
-            // WindowEvent::CursorMoved {position, ..}
             _ => (),
         },
 
-        Event::DeviceEvent { event, .. } => match event {
-            DeviceEvent::MouseMotion { delta: (x, y) } => {
-                window_events_tx
-                    .send(InputEvent::MouseMovement { dx: x, dy: y })
-                    .unwrap();
-            }
-            _ => (),
-        },
+        Event::DeviceEvent { device_id, event } => {
+            window_events_tx.send((device_id, event)).unwrap()
+        }
 
         Event::MainEventsCleared => display.gl_window().window().request_redraw(),
         Event::RedrawRequested(id) if id == display.gl_window().window().id() => {

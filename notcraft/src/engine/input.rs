@@ -1,8 +1,21 @@
-use crate::InputEvent;
 use crossbeam_channel::Receiver;
-use glium::glutin::event::{ElementState, KeyboardInput, ModifiersState, VirtualKeyCode};
-use std::collections::{HashMap, HashSet};
+use glium::{
+    glutin::{
+        event::{
+            DeviceEvent, DeviceId, ElementState, KeyboardInput, ModifiersState, MouseScrollDelta,
+            VirtualKeyCode,
+        },
+        window::Window,
+    },
+    Display,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Key {
     Physical(u32),
     Virtual(VirtualKeyCode),
@@ -20,233 +33,119 @@ impl From<u32> for Key {
     }
 }
 
-// const KEYBIND_ZOOM: Keybind = Keybind {
-//     key: Key::Physical(0x2E),
-//     modifiers: Some(NO_MODIFIERS),
-// };
-
-// const KEYBIND_EXIT: Keybind = Keybind {
-//     key: Key::Virtual(VirtualKeyCode::Escape),
-//     modifiers: Some(NO_MODIFIERS),
-// };
-// const KEYBIND_DEBUG: Keybind = Keybind {
-//     key: Key::Virtual(VirtualKeyCode::B),
-//     modifiers: Some(CTRL_MODIFIERS),
-// };
-// const KEYBIND_TOGGLE_WIREFRAME: Keybind = Keybind {
-//     key: Key::Virtual(VirtualKeyCode::F),
-//     modifiers: Some(CTRL_MODIFIERS),
-// };
-// const KEYBIND_INC_RENDER_DISTANCE: Keybind = Keybind {
-//     key: Key::Virtual(VirtualKeyCode::RBracket),
-//     modifiers: Some(CTRL_MODIFIERS),
-// };
-// const KEYBIND_DEC_RENDER_DISTANCE: Keybind = Keybind {
-//     key: Key::Virtual(VirtualKeyCode::LBracket),
-//     modifiers: Some(CTRL_MODIFIERS),
-// };
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
-pub struct Modifiers {
-    shift: bool,
-    ctrl: bool,
-    alt: bool,
-    sup: bool,
-}
-
-impl Modifiers {
-    pub const ALT: Self = Modifiers {
-        shift: false,
-        ctrl: false,
-        alt: true,
-        sup: false,
-    };
-    pub const CTRL: Self = Modifiers {
-        shift: false,
-        ctrl: true,
-        alt: false,
-        sup: false,
-    };
-    pub const SHIFT: Self = Modifiers {
-        shift: true,
-        ctrl: false,
-        alt: false,
-        sup: false,
-    };
-    pub const SUPER: Self = Modifiers {
-        shift: false,
-        ctrl: false,
-        alt: false,
-        sup: true,
-    };
-}
-
-impl From<ModifiersState> for Modifiers {
-    fn from(state: ModifiersState) -> Self {
-        Modifiers {
-            shift: state.shift(),
-            ctrl: state.ctrl(),
-            alt: state.alt(),
-            sup: state.logo(),
-        }
-    }
-}
-
-use std::ops;
-
-impl ops::BitOr for Modifiers {
-    type Output = Modifiers;
-
-    fn bitor(self, rhs: Self) -> Self {
-        Modifiers {
-            shift: self.shift | rhs.shift,
-            ctrl: self.ctrl | rhs.ctrl,
-            alt: self.alt | rhs.alt,
-            sup: self.sup | rhs.sup,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct InputState {
     physical_map: HashMap<VirtualKeyCode, u32>,
-    rising: HashSet<u32>,
-    falling: HashSet<u32>,
-    pressed: HashSet<u32>,
-    current_modifiers: Modifiers,
+
+    rising_keys: HashSet<u32>,
+    falling_keys: HashSet<u32>,
+    pressed_keys: HashSet<u32>,
+
+    current_modifiers: ModifiersState,
 
     cursor_dx: f32,
     cursor_dy: f32,
     pub sensitivity: f32,
+
+    cursor_currently_grabbed: bool,
+    cursor_should_be_grabbed: AtomicBool,
+    cursor_currently_hidden: bool,
+    cursor_should_be_hidden: AtomicBool,
 }
 
 impl Default for InputState {
     fn default() -> Self {
         InputState {
             physical_map: Default::default(),
-            rising: Default::default(),
-            falling: Default::default(),
-            pressed: Default::default(),
+            rising_keys: Default::default(),
+            falling_keys: Default::default(),
+            pressed_keys: Default::default(),
+
             current_modifiers: Default::default(),
 
             cursor_dx: 0.0,
             cursor_dy: 0.0,
             sensitivity: 0.25,
+
+            cursor_currently_grabbed: false,
+            cursor_should_be_grabbed: false.into(),
+            cursor_currently_hidden: false,
+            cursor_should_be_hidden: false.into(),
         }
     }
 }
 
 impl InputState {
-    fn update(&mut self) {
-        self.rising.clear();
-        self.falling.clear();
-
-        self.cursor_dx = 0.0;
-        self.cursor_dy = 0.0;
+    pub fn grab_cursor(&self, grab: bool) {
+        self.cursor_should_be_grabbed.store(grab, Ordering::SeqCst);
     }
 
-    fn update_keyboard_inputs(&mut self, input: KeyboardInput) {
-        self.current_modifiers = input.modifiers.into();
+    pub fn hide_cursor(&self, hide: bool) {
+        self.cursor_should_be_hidden.store(hide, Ordering::SeqCst);
+    }
 
-        if let Some(vkk) = input.virtual_keycode {
-            if self.physical_map.insert(vkk, input.scancode).is_none() {
-                log::debug!("Found physical mapping for `{:?}`: {}", vkk, input.scancode);
-            }
-        }
+    pub fn cursor_delta(&self) -> nalgebra::Vector2<f32> {
+        self.sensitivity * nalgebra::vector![self.cursor_dx, self.cursor_dy]
+    }
 
-        match input.state {
-            ElementState::Pressed => {
-                if self.pressed.insert(input.scancode) {
-                    log::trace!(
-                        "Input transitioned to high: {} ({:?})",
-                        input.scancode,
-                        input.virtual_keycode
-                    );
-                    self.rising.insert(input.scancode);
-                }
-            }
-
-            ElementState::Released => {
-                if self.pressed.remove(&input.scancode) {
-                    log::trace!(
-                        "Input transitioned to low: {} ({:?})",
-                        input.scancode,
-                        input.virtual_keycode
-                    );
-                    self.falling.insert(input.scancode);
-                }
-            }
+    pub fn key<K: Into<Key>>(&self, key: K) -> KeyRef {
+        KeyRef {
+            state: self,
+            key: key.into(),
+            modifiers_to_match: None,
         }
     }
 
-    fn modifiers_match(&self, modifiers: Option<Modifiers>) -> bool {
+    fn modifiers_match(&self, modifiers: Option<ModifiersState>) -> bool {
         modifiers.map_or(true, |modifiers| self.current_modifiers == modifiers)
     }
 
-    pub fn cursor_delta(&self) -> (f32, f32) {
-        (
-            self.sensitivity * self.cursor_dx,
-            self.sensitivity * self.cursor_dy,
-        )
-    }
-
-    /// Returns true if `key` is being pressed.
-    pub fn is_pressed<K, M>(&self, key: K, modifiers: M) -> bool
-    where
-        K: Into<Key>,
-        M: Into<Option<Modifiers>>,
-    {
-        let key = match key.into() {
-            // Try to look up the virtual key code in the key map. If the entry does not exist,
-            // then either the vkk was not pressed yet or the vkk -> physical
-            // mapping just doesn't exist (which I find very unlikely). In both
-            // situations, though, we want to say that the key in not pressed
-            // (return false).
-            Key::Virtual(vkk) => self
-                .physical_map
-                .get(&vkk)
-                .map(|code| self.pressed.contains(&code))
-                .unwrap_or(false),
-            Key::Physical(code) => self.pressed.contains(&code),
+    fn is_key_in_set<'s>(&'s self, key: Key, set: &'s HashSet<u32>) -> Option<bool> {
+        let scancode = match key {
+            Key::Virtual(vkk) => *self.physical_map.get(&vkk)?,
+            Key::Physical(code) => code,
         };
 
-        key && self.modifiers_match(modifiers.into())
+        Some(set.contains(&scancode))
+    }
+}
+
+pub struct KeyRef<'s> {
+    state: &'s InputState,
+    key: Key,
+    modifiers_to_match: Option<ModifiersState>,
+}
+
+impl<'s> KeyRef<'s> {
+    pub fn require_modifiers(self, modifiers: ModifiersState) -> Self {
+        Self {
+            modifiers_to_match: Some(modifiers),
+            ..self
+        }
     }
 
-    /// Returns true if `key` was not pressed before and is now pressed.
-    pub fn is_rising<K, M>(&self, key: K, modifiers: M) -> bool
-    where
-        K: Into<Key>,
-        M: Into<Option<Modifiers>>,
-    {
-        let key = match key.into() {
-            Key::Virtual(vkk) => self
-                .physical_map
-                .get(&vkk)
-                .map(|code| self.rising.contains(&code))
-                .unwrap_or(false),
-            Key::Physical(code) => self.rising.contains(&code),
-        };
-
-        key && self.modifiers_match(modifiers.into())
+    pub fn is_pressed(&self) -> bool {
+        let key = self
+            .state
+            .is_key_in_set(self.key, &self.state.pressed_keys)
+            .unwrap_or(false);
+        key && self.state.modifiers_match(self.modifiers_to_match)
     }
 
-    /// Returns true if `key` was pressed before and is now no longer pressed.
-    pub fn is_falling<K, M>(&self, key: K, modifiers: M) -> bool
-    where
-        K: Into<Key>,
-        M: Into<Option<Modifiers>>,
-    {
-        let key = match key.into() {
-            Key::Virtual(vkk) => self
-                .physical_map
-                .get(&vkk)
-                .map(|code| self.falling.contains(&code))
-                .unwrap_or(false),
-            Key::Physical(code) => self.falling.contains(&code),
-        };
+    pub fn is_rising(&self) -> bool {
+        let key = self
+            .state
+            .is_key_in_set(self.key, &self.state.rising_keys)
+            .unwrap_or(false);
+        key && self.state.modifiers_match(self.modifiers_to_match)
+    }
 
-        key && self.modifiers_match(modifiers.into())
+    pub fn is_falling(&self) -> bool {
+        let key = self
+            .state
+            .is_key_in_set(self.key, &self.state.falling_keys)
+            .unwrap_or(false);
+        key && self.state.modifiers_match(self.modifiers_to_match)
     }
 }
 
@@ -266,22 +165,80 @@ pub mod keys {
     pub const ARROW_RIGHT: VirtualKeyCode = VirtualKeyCode::Right;
 }
 
+fn maintain_input_state(state: &mut InputState, window: &Window) {
+    let should_grab = state.cursor_should_be_grabbed.load(Ordering::SeqCst);
+    let should_hide = state.cursor_should_be_hidden.load(Ordering::SeqCst);
+
+    if state.cursor_currently_grabbed != should_grab {
+        state.cursor_currently_grabbed = should_grab;
+        window.set_cursor_grab(should_grab).unwrap();
+    }
+
+    if state.cursor_currently_hidden != should_hide {
+        state.cursor_currently_hidden = should_hide;
+        window.set_cursor_visible(should_hide);
+    }
+
+    state.rising_keys.clear();
+    state.falling_keys.clear();
+
+    state.cursor_dx = 0.0;
+    state.cursor_dy = 0.0;
+}
+
+fn notify_keyboard_input(state: &mut InputState, input: KeyboardInput) {
+    // update tracked modifier state
+    let to_set = match input.virtual_keycode {
+        Some(VirtualKeyCode::LShift) | Some(VirtualKeyCode::RShift) => ModifiersState::SHIFT,
+        Some(VirtualKeyCode::LAlt) | Some(VirtualKeyCode::RAlt) => ModifiersState::ALT,
+        Some(VirtualKeyCode::LControl) | Some(VirtualKeyCode::RControl) => ModifiersState::CTRL,
+        Some(VirtualKeyCode::LWin) | Some(VirtualKeyCode::RWin) => ModifiersState::LOGO,
+        _ => ModifiersState::empty(),
+    };
+
+    let pressed = matches!(input.state, ElementState::Pressed);
+    state.current_modifiers.set(to_set, pressed);
+
+    // add virtual keycode -> scancode mapping
+    if let Some(vkk) = input.virtual_keycode {
+        if state.physical_map.insert(vkk, input.scancode).is_none() {
+            log::debug!("found physical mapping for '{:?}': {}", vkk, input.scancode);
+        }
+    }
+
+    // update rising/falling sets
+    if pressed && state.pressed_keys.insert(input.scancode) {
+        state.rising_keys.insert(input.scancode);
+    } else if !pressed && state.pressed_keys.remove(&input.scancode) {
+        state.falling_keys.insert(input.scancode);
+    }
+}
+
+fn notify_mouse_motion(state: &mut InputState, dx: f64, dy: f64) {
+    state.cursor_dx += dx as f32;
+    state.cursor_dy += dy as f32;
+}
+
+fn notify_mouse_scroll(_state: &mut InputState, _delta: MouseScrollDelta) {}
+
 #[legion::system]
 pub fn input_compiler(
     #[resource] state: &mut InputState,
-    #[state] events: &mut Receiver<InputEvent>,
+    #[state] events: &mut Receiver<(DeviceId, DeviceEvent)>,
+    #[state] display: &mut Rc<Display>,
 ) {
-    state.update();
+    maintain_input_state(state, display.gl_window().window());
 
-    for event in events.try_iter() {
+    for (_device_id, event) in events.try_iter() {
         match event {
-            InputEvent::MouseMovement { dx, dy } => {
-                state.cursor_dx = dx as f32;
-                state.cursor_dy = dy as f32;
-            }
-            InputEvent::KayboardInput { input, .. } => {
-                state.update_keyboard_inputs(input);
-            }
+            DeviceEvent::MouseMotion { delta } => notify_mouse_motion(state, delta.0, delta.1),
+            DeviceEvent::MouseWheel { delta } => notify_mouse_scroll(state, delta),
+            DeviceEvent::Key(input) => notify_keyboard_input(state, input),
+
+            // DeviceEvent::Motion { axis, value } => todo!(),
+            // DeviceEvent::Button { button, state } => todo!(),
+            // DeviceEvent::Text { codepoint } => todo!(),
+            _ => {}
         }
     }
 }
