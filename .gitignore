@@ -1,6 +1,4 @@
 .vscode
-.idea
-/target
-**/*.rs.bk
+target
 Cargo.lock
-rls/**
+textures
