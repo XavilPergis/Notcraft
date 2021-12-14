@@ -13,14 +13,14 @@ use crossbeam_channel::{Receiver, Sender};
 use glium::{
     backend::Facade,
     framebuffer::{MultiOutputFrameBuffer, ValidationError},
-    index::{IndexBuffer, PrimitiveType},
+    index::{IndexBuffer},
     texture::{
         DepthTexture2d, MipmapsOption, RawImage2d, SrgbTexture2dArray, Texture2d,
         UncompressedFloatFormat,
     },
     uniform,
     uniforms::MagnifySamplerFilter,
-    vertex::{VertexBuffer, VertexBufferAny},
+    vertex::VertexBuffer,
     Display, Program, Surface,
 };
 use legion::{world::Event, Entity, IntoQuery, Read, Resources, World};
@@ -31,11 +31,10 @@ use std::{
     rc::Rc,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, RwLock,
+        Arc,
     },
 };
-
-use super::{mesher::TerrainVertex, Tex};
+use super::Tex;
 
 struct CommonState {
     display: Rc<Display>,
