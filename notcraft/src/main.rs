@@ -81,7 +81,7 @@ fn player_movement(
 }
 
 fn setup_world(cmd: &mut CommandBuffer) {
-    let player = cmd.push((Transform::default(), Player, ChunkLoader { radius: 4 }));
+    let player = cmd.push((Transform::default(), Player, ChunkLoader { radius: 7 }));
 
     let camera_entity = cmd.push((Parent(player), Camera::default(), Transform::default()));
 
@@ -201,7 +201,13 @@ fn main() {
 
     let display = Rc::new(Display::new(window, ctx, &event_loop).unwrap());
 
-    let renderer = Renderer::new(Rc::clone(&display), Arc::clone(&registry), &mut world).unwrap();
+    let renderer = Renderer::new(
+        Rc::clone(&display),
+        Arc::clone(&registry),
+        &mut world,
+        &mut resources,
+    )
+    .unwrap();
 
     let schedule = Schedule::builder()
         .add_system(engine::input::input_compiler_system(window_events_rx))

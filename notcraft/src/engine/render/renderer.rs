@@ -9,7 +9,7 @@ use crate::engine::{
     world::registry::BlockRegistry,
 };
 use anyhow::Result;
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use glium::{
     backend::Facade,
     framebuffer::{MultiOutputFrameBuffer, ValidationError},
@@ -20,25 +20,29 @@ use glium::{
     },
     uniform,
     uniforms::MagnifySamplerFilter,
-    vertex::VertexBuffer,
+    vertex::{VertexBuffer, VertexBufferAny},
     Display, Program, Surface,
 };
 use legion::{world::Event, Entity, IntoQuery, Read, Resources, World};
 use nalgebra::{self as na, Perspective3};
 use std::{
     collections::{HashMap, HashSet},
+    marker::PhantomData,
     rc::Rc,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, RwLock,
+    },
 };
 
 use super::{mesher::TerrainVertex, Tex};
 
-struct SharedState {
+struct CommonState {
     display: Rc<Display>,
     fullscreen_quad: VertexBuffer<Tex>,
 }
 
-impl SharedState {
+impl CommonState {
     pub fn new(display: Rc<Display>) -> Result<Rc<Self>> {
         let fullscreen_quad = VertexBuffer::immutable(&*display, &[
             Tex { uv: [-1.0, 1.0] },
@@ -61,7 +65,7 @@ impl SharedState {
 }
 
 pub struct Renderer {
-    _shared: Rc<SharedState>,
+    _shared: Rc<CommonState>,
 
     terrain_renderer: TerrainRenderer,
     post_renderer: PostProcessRenderer,
@@ -74,9 +78,6 @@ fn render_all<S: Surface>(
     world: &mut World,
     resources: &mut Resources,
 ) -> anyhow::Result<()> {
-    // upload/delete etc meshes to keep in sync with the world.
-    ctx.terrain_renderer.update_meshes(world).unwrap();
-
     render_sky(
         &mut ctx.sky_renderer,
         &mut ctx.post_renderer.render_target()?,
@@ -101,10 +102,12 @@ impl Renderer {
         display: Rc<Display>,
         registry: Arc<BlockRegistry>,
         world: &mut World,
+        resources: &mut Resources,
     ) -> Result<Self> {
-        let shared = SharedState::new(display)?;
+        let shared = CommonState::new(display)?;
 
-        let terrain_renderer = TerrainRenderer::new(Rc::clone(&shared), registry, world)?;
+        let terrain_renderer =
+            TerrainRenderer::new(Rc::clone(&shared), registry, world, resources)?;
         let post_renderer = PostProcessRenderer::new(Rc::clone(&shared))?;
         let sky_renderer = SkyRenderer::new(Rc::clone(&shared))?;
 
@@ -127,14 +130,14 @@ impl Renderer {
 }
 
 struct PostProcessRenderer {
-    shared: Rc<SharedState>,
+    shared: Rc<CommonState>,
     post_program: Program,
     post_process_color: Texture2d,
     post_process_depth: DepthTexture2d,
 }
 
 impl PostProcessRenderer {
-    pub fn new(shared: Rc<SharedState>) -> Result<Self> {
+    pub fn new(shared: Rc<CommonState>) -> Result<Self> {
         let post_program = loader::load_shader(shared.display(), "resources/shaders/post")?;
         let (width, height) = shared.display().get_framebuffer_dimensions();
 
@@ -190,7 +193,7 @@ fn render_post<S: Surface>(
     }
 
     let cam_transform = get_camera(world, resources);
-    let (view, proj) = get_proj_view(width, height, cam_transform);
+    let (view, proj) = get_view_projection(width, height, cam_transform);
     let cam_pos = get_cam_pos(cam_transform);
 
     // post
@@ -214,12 +217,12 @@ fn render_post<S: Surface>(
 }
 
 struct SkyRenderer {
-    shared: Rc<SharedState>,
+    shared: Rc<CommonState>,
     sky_program: Program,
 }
 
 impl SkyRenderer {
-    fn new(shared: Rc<SharedState>) -> Result<Self> {
+    fn new(shared: Rc<CommonState>) -> Result<Self> {
         let sky_program = loader::load_shader(shared.display(), "resources/shaders/sky")?;
 
         Ok(Self {
@@ -239,7 +242,7 @@ fn render_sky<S: Surface>(
 
     let cam_transform = get_camera(world, resources);
     let (width, height) = ctx.shared.display().get_framebuffer_dimensions();
-    let (view, proj) = get_proj_view(width, height, cam_transform);
+    let (view, proj) = get_view_projection(width, height, cam_transform);
     let cam_pos = get_cam_pos(cam_transform);
 
     target.draw(
@@ -258,23 +261,13 @@ fn render_sky<S: Surface>(
 }
 
 #[derive(Debug)]
-struct TerrainBuffers {
-    // TODO: use u16 when we can
-    indices: IndexBuffer<u32>,
-    vertices: VertexBuffer<TerrainVertex>,
-}
+pub struct MeshBuffers<V: Copy> {
+    pub vertices: VertexBuffer<V>,
+    pub indices: IndexBuffer<u32>,
 
-impl TerrainBuffers {
-    fn immutable<F: Facade>(ctx: &F, mesh: &TerrainMesh) -> Result<Self> {
-        Ok(TerrainBuffers {
-            indices: IndexBuffer::immutable(ctx, PrimitiveType::TrianglesList, &mesh.indices)?,
-            vertices: VertexBuffer::immutable(ctx, &mesh.vertices)?,
-        })
-    }
-
-    fn glium_verts(&self) -> impl glium::vertex::MultiVerticesSource<'_> {
-        &self.vertices
-    }
+    // mesh bounds, relative to the mesh's origin
+    pub bounds_min: Point3<f32>,
+    pub bounds_max: Point3<f32>,
 }
 
 fn get_camera<'a>(
@@ -289,7 +282,7 @@ fn get_camera<'a>(
     Some((camera, global))
 }
 
-fn get_proj_view(
+fn get_view_projection(
     width: u32,
     height: u32,
     cam_transform: Option<(&Camera, &GlobalTransform)>,
@@ -308,17 +301,128 @@ fn get_cam_pos(cam_transform: Option<(&Camera, &GlobalTransform)>) -> Vector3<f3
     }
 }
 
+#[derive(Debug)]
+pub struct MeshHandle<M>(Arc<MeshHandleInner<M>>);
+
+// unsafe impl<M> Send for MeshHandle<M> {}
+// unsafe impl<M> Sync for MeshHandle<M> {}
+
+impl<M> Clone for MeshHandle<M> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<M> MeshHandle<M> {
+    pub fn reupload(&self, mesh: M) {
+        self.0.shared.mesh_sender.send((self.0.id, mesh)).unwrap();
+    }
+}
+
+#[derive(Debug)]
+pub struct MeshHandleInner<M> {
+    id: usize,
+    shared: Arc<SharedMeshContext<M>>,
+    _phantom: PhantomData<M>,
+}
+
+impl<M> Drop for MeshHandleInner<M> {
+    fn drop(&mut self) {
+        // should be ok to ignore the result here, if the render thread shut down, then
+        // that means the meshes were all already dropped.
+        let _ = self.shared.mesh_dropped_sender.send(self.id);
+    }
+}
+
+pub trait UploadableMesh {
+    type Vertex: Copy;
+
+    fn upload<F: Facade>(&self, ctx: &F) -> Result<MeshBuffers<Self::Vertex>>;
+}
+
+struct LocalMeshContext<M: UploadableMesh> {
+    shared: Arc<SharedMeshContext<M>>,
+    meshes: HashMap<usize, MeshBuffers<M::Vertex>>,
+    render_component_events_receiver: Receiver<Event>,
+    render_component_entities: HashSet<Entity>,
+}
+
+impl<M: UploadableMesh + Send + Sync + 'static> LocalMeshContext<M> {
+    pub fn new(world: &mut World) -> Self {
+        let (sender, render_component_events_receiver) = crossbeam_channel::unbounded();
+        world.subscribe(sender, legion::component::<RenderMeshComponent<M>>());
+        Self {
+            shared: SharedMeshContext::new(),
+            meshes: Default::default(),
+            render_component_events_receiver,
+            render_component_entities: Default::default(),
+        }
+    }
+
+    fn update<F: Facade>(&mut self, ctx: &F) -> Result<()> {
+        for event in self.render_component_events_receiver.try_iter() {
+            match event {
+                Event::EntityInserted(entity, _) => {
+                    self.render_component_entities.insert(entity);
+                }
+                Event::EntityRemoved(entity, _) => {
+                    self.render_component_entities.remove(&entity);
+                }
+
+                _ => {}
+            }
+        }
+
+        for (id, data) in self.shared.mesh_receiver.try_iter() {
+            self.meshes.insert(id, data.upload(ctx)?);
+        }
+
+        for id in self.shared.mesh_dropped_receiver.try_iter() {
+            self.meshes.remove(&id);
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct SharedMeshContext<M> {
+    next_id: AtomicUsize,
+    mesh_receiver: Receiver<(usize, M)>,
+    mesh_sender: Sender<(usize, M)>,
+    mesh_dropped_receiver: Receiver<usize>,
+    mesh_dropped_sender: Sender<usize>,
+}
+
+impl<M> SharedMeshContext<M> {
+    pub fn new() -> Arc<SharedMeshContext<M>> {
+        let (mesh_sender, mesh_receiver) = crossbeam_channel::unbounded();
+        let (mesh_dropped_sender, mesh_dropped_receiver) = crossbeam_channel::unbounded();
+
+        Arc::new(Self {
+            next_id: AtomicUsize::new(0),
+            mesh_receiver,
+            mesh_sender,
+            mesh_dropped_receiver,
+            mesh_dropped_sender,
+        })
+    }
+
+    pub fn upload(self: &Arc<Self>, mesh: M) -> MeshHandle<M> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.mesh_sender.send((id, mesh)).unwrap();
+        MeshHandle(Arc::new(MeshHandleInner {
+            id,
+            shared: Arc::clone(&self),
+            _phantom: PhantomData,
+        }))
+    }
+}
+
 struct TerrainRenderer {
-    shared: Rc<SharedState>,
+    shared: Rc<CommonState>,
 
-    // entities with `TerrainMesh` that need to be rebuilt
-    needs_rebuild: HashSet<Entity>,
-
-    // since `TerrainBuffers` is not `Send + Sync`, we need to store it here
-    // TODO: make this not suck
-    built_meshes: HashMap<Entity, TerrainBuffers>,
-
-    mesh_events: Receiver<Event>,
+    terrain_meshes: LocalMeshContext<TerrainMesh>,
 
     block_textures: SrgbTexture2dArray,
     terrain_program: Program,
@@ -326,82 +430,42 @@ struct TerrainRenderer {
 
 impl TerrainRenderer {
     fn new(
-        shared: Rc<SharedState>,
+        shared: Rc<CommonState>,
         registry: Arc<BlockRegistry>,
         world: &mut World,
+        resources: &mut Resources,
     ) -> Result<Self> {
-        let program = loader::load_shader(shared.display(), "resources/shaders/simple")?;
+        let terrain_program = loader::load_shader(shared.display(), "resources/shaders/simple")?;
         let (width, height, maps) =
             loader::load_block_textures("resources/textures/blocks", registry.texture_paths())?;
+
         let dims = (width, height);
+        let textures = maps
+            .into_iter()
+            .map(|map| RawImage2d::from_raw_rgba_reversed(&map.albedo.into_raw(), dims))
+            .collect();
 
-        let mut albedo = vec![];
+        let block_textures =
+            SrgbTexture2dArray::with_mipmaps(shared.display(), textures, MipmapsOption::NoMipmap)?;
 
-        for map in maps {
-            assert!(map.albedo.dimensions() == dims);
-            albedo.push(RawImage2d::from_raw_rgba_reversed(
-                &map.albedo.into_raw(),
-                dims,
-            ));
-        }
-
-        let albedo =
-            SrgbTexture2dArray::with_mipmaps(shared.display(), albedo, MipmapsOption::NoMipmap)?;
-
-        let (mesh_events_tx, mesh_events_rx) = crossbeam_channel::unbounded();
-        world.subscribe(mesh_events_tx, legion::component::<TerrainMesh>());
+        let terrain_meshes = LocalMeshContext::new(world);
+        resources.insert(Arc::clone(&terrain_meshes.shared));
 
         Ok(TerrainRenderer {
-            needs_rebuild: Default::default(),
-            built_meshes: Default::default(),
-            mesh_events: mesh_events_rx,
-            terrain_program: program,
-            block_textures: albedo,
+            terrain_program,
+            block_textures,
+            terrain_meshes,
             shared,
         })
     }
+}
 
-    /// Synchronize the World state and the GPU meshes
-    fn update_meshes(&mut self, world: &mut World) -> Result<()> {
-        self.needs_rebuild.clear();
+#[derive(Debug)]
+pub struct RenderMeshComponent<M>(MeshHandle<M>);
 
-        for event in self.mesh_events.try_iter() {
-            match event {
-                Event::ArchetypeCreated(_) => {}
-
-                Event::EntityInserted(entity, _) => {
-                    self.needs_rebuild.insert(entity);
-                }
-
-                Event::EntityRemoved(entity, _) => {
-                    self.built_meshes.remove(&entity);
-                }
-            }
-        }
-
-        let mut mesh_query = Read::<TerrainMesh>::query();
-        let mut changed_query = Entity::query().filter(legion::maybe_changed::<TerrainMesh>());
-
-        for &entity in changed_query.iter(world) {
-            if let Ok(_mesh) = mesh_query.get(world, entity) {
-                self.built_meshes.remove(&entity);
-                self.needs_rebuild.insert(entity);
-            }
-        }
-
-        for &entity in self.needs_rebuild.iter() {
-            if let Ok(mesh) = mesh_query.get(world, entity) {
-                if !mesh.indices.is_empty() {
-                    self.built_meshes.insert(
-                        entity,
-                        TerrainBuffers::immutable(self.shared.display(), &mesh)?,
-                    );
-                } else {
-                    self.built_meshes.remove(&entity);
-                }
-            }
-        }
-        Ok(())
+impl<M> RenderMeshComponent<M> {
+    pub fn new(handle: MeshHandle<M>) -> Self {
+        Self(handle)
     }
 }
 
@@ -411,20 +475,27 @@ fn render_terrain<S: Surface>(
     world: &mut World,
     resources: &mut Resources,
 ) -> anyhow::Result<()> {
+    ctx.terrain_meshes.update(ctx.shared.display())?;
+
     let camera = get_camera(world, resources);
 
     // If we don't have any cameras anywhere, then just put it at the origin.
-    let (width, height) = ctx.shared.display().get_framebuffer_dimensions();
-    let (view, proj) = get_proj_view(width, height, camera);
+    let (width, height) = target.get_dimensions();
+    let (view, proj) = get_view_projection(width, height, camera);
 
-    let mut transforms = Read::<GlobalTransform>::query();
-    for (&entity, buffers) in ctx.built_meshes.iter() {
-        if let Ok(transform) = transforms.get(world, entity) {
+    let mut query = <(&GlobalTransform, &RenderMeshComponent<TerrainMesh>)>::query();
+    for &entity in ctx.terrain_meshes.render_component_entities.iter() {
+        if let Ok((transform, RenderMeshComponent(handle))) = query.get(world, entity) {
+            let buffers =
+                ctx.terrain_meshes.meshes.get(&handle.0.id).expect(
+                    "RenderMeshComponent existed for entity that was not in terrain_entities",
+                );
+
             target.draw(
-                buffers.glium_verts(),
+                &buffers.vertices,
                 &buffers.indices,
                 &ctx.terrain_program,
-                &uniform! {
+                &uniform! { 
                     model: array4x4(transform.0.to_matrix()),
                     albedo_maps: ctx.block_textures.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
                     view: array4x4(view),

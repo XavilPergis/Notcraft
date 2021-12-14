@@ -17,6 +17,8 @@ use super::{
 #[derive(Debug)]
 struct CachedSurface {
     added_at: Instant,
+    min: f32,
+    max: f32,
     data: Arc<[f32]>,
 }
 
@@ -30,14 +32,17 @@ pub struct NoiseGenerator {
 }
 
 impl NoiseGenerator {
-    fn get_surface_heights(&self, x: i32, z: i32) -> Arc<[f32]> {
+    fn get_surface_heights(&self, x: i32, z: i32) -> (f32, f32, Arc<[f32]>) {
         if let Some(cached) = self.surface_height_cache.read().unwrap().get(&[x, z]) {
-            return Arc::clone(&cached.data);
+            return (cached.min, cached.max, Arc::clone(&cached.data));
         }
 
         let mix_noise = NoiseSampler::new(Perlin::new()).with_scale(0.001);
         let rolling_noise = NoiseSampler::new(Perlin::new()).with_scale(0.003);
         let mountainous_noise = NoiseSampler::new(Fbm::new()).with_scale(0.007);
+
+        let mut min = f32::MAX;
+        let mut max = f32::MIN;
 
         let mut heights = Vec::with_capacity(CHUNK_LENGTH * CHUNK_LENGTH);
         for dx in 0..CHUNK_LENGTH {
@@ -51,6 +56,9 @@ impl NoiseGenerator {
                 let b = 200.0 * (mountainous_noise.sample(x, z) * 0.5 + 0.5);
                 let result = a + mix_noise.sample(x, z) * b;
 
+                min = f32::min(min, result);
+                max = f32::max(max, result);
+
                 heights.push(result);
             }
         }
@@ -60,6 +68,8 @@ impl NoiseGenerator {
             .unwrap()
             .insert([x, z], CachedSurface {
                 added_at: Instant::now(),
+                min,
+                max,
                 data: heights.into_boxed_slice().into(),
             });
 
@@ -129,7 +139,13 @@ impl NoiseGenerator {
 
     pub fn make_chunk(&self, pos: ChunkPos) -> ChunkKind {
         let base_y = pos.origin().y as f32;
-        let heights = self.get_surface_heights(pos.x, pos.z);
+        let (min, max, heights) = self.get_surface_heights(pos.x, pos.z);
+
+        if base_y > max {
+            return ChunkKind::Homogeneous(AIR);
+        } else if (base_y + CHUNK_LENGTH as f32) < min {
+            return ChunkKind::Homogeneous(self.stone_id);
+        }
 
         let mut chunk_data = Vec::with_capacity(CHUNK_VOLUME);
         for xz in 0..CHUNK_LENGTH * CHUNK_LENGTH {

@@ -8,13 +8,17 @@ use crate::engine::{
     },
     Side,
 };
+use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
+use glium::{backend::Facade, index::PrimitiveType, IndexBuffer, VertexBuffer};
 use legion::{systems::CommandBuffer, Entity};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, RwLockReadGuard},
 };
+
+use super::renderer::{MeshBuffers, RenderMeshComponent, SharedMeshContext, UploadableMesh};
 
 #[derive(Debug)]
 struct MeshTracker {
@@ -188,7 +192,14 @@ fn update_tracker(ctx: &mut MesherContext, cmd: &mut CommandBuffer) {
     }
 }
 
-fn update_completed_meshes(ctx: &mut MesherContext, cmd: &mut CommandBuffer) {
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
+pub struct HashTerrainMesh;
+
+fn update_completed_meshes(
+    ctx: &mut MesherContext,
+    cmd: &mut CommandBuffer,
+    mesh_context: &Arc<SharedMeshContext<TerrainMesh>>,
+) {
     for completed in ctx.mesh_rx.try_iter() {
         if ctx.tracker.have_data.contains(&completed.pos) {
             let entity = *ctx
@@ -199,13 +210,15 @@ fn update_completed_meshes(ctx: &mut MesherContext, cmd: &mut CommandBuffer) {
             let world_pos: Point3<f32> = completed.pos.origin().origin().into();
             let transform = Transform::from(world_pos);
 
-            cmd.add_component(entity, completed.terrain);
+            let mesh_handle = mesh_context.upload(completed.terrain);
+            cmd.add_component(entity, RenderMeshComponent::new(mesh_handle));
             cmd.add_component(entity, transform);
         }
     }
 }
 
 fn queue_mesh_jobs(ctx: &mut MesherContext, voxel_world: &VoxelWorld) {
+    let mut remaining_this_frame = 4;
     while let Some(&pos) = ctx.tracker.unconstrained.iter().next() {
         match voxel_world.read(pos, &voxel_world.guard()).as_deref() {
             Some(ChunkKind::Homogeneous(_id)) => {
@@ -226,6 +239,11 @@ fn queue_mesh_jobs(ctx: &mut MesherContext, voxel_world: &VoxelWorld) {
 
                 ctx.completed_meshes.insert(pos);
                 ctx.tracker.unconstrained.remove(&pos);
+
+                remaining_this_frame -= 1;
+                if remaining_this_frame == 0 {
+                    break;
+                }
             }
 
             None => {}
@@ -238,10 +256,11 @@ pub fn chunk_mesher(
     cmd: &mut CommandBuffer,
     #[state] ctx: &mut MesherContext,
     #[resource] voxel_world: &mut VoxelWorld,
+    #[resource] mesh_context: &Arc<SharedMeshContext<TerrainMesh>>,
 ) {
     update_tracker(ctx, cmd);
     queue_mesh_jobs(ctx, voxel_world);
-    update_completed_meshes(ctx, cmd);
+    update_completed_meshes(ctx, cmd, mesh_context);
 }
 
 struct ChunkNeighbors<'w> {
@@ -609,9 +628,27 @@ impl TerrainVertex {
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct TerrainMesh {
-    pub vertices: Vec<TerrainVertex>,
+    vertices: Vec<TerrainVertex>,
     // TODO: use u16s when possible
-    pub indices: Vec<u32>,
+    indices: Vec<u32>,
+}
+
+impl UploadableMesh for TerrainMesh {
+    type Vertex = TerrainVertex;
+
+    fn upload<F: Facade>(&self, ctx: &F) -> Result<MeshBuffers<Self::Vertex>> {
+        Ok(MeshBuffers {
+            vertices: VertexBuffer::immutable(ctx, &self.vertices)?,
+            indices: IndexBuffer::immutable(ctx, PrimitiveType::TrianglesList, &self.indices)?,
+
+            bounds_min: na::point![0.0, 0.0, 0.0],
+            bounds_max: na::point![
+                CHUNK_LENGTH as f32,
+                CHUNK_LENGTH as f32,
+                CHUNK_LENGTH as f32
+            ],
+        })
+    }
 }
 
 #[derive(Debug)]
