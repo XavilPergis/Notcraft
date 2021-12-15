@@ -6,13 +6,11 @@ use std::{
     time::Duration,
 };
 
-const MIN_MUSIC_GAP_MILLISECS: u64 = 6000;
-const MAX_MUSIC_GAP_MILLISECS: u64 = 60000;
+const MIN_MUSIC_GAP_SECONDS: u64 = 120;
+const MAX_MUSIC_GAP_SECONDS: u64 = MIN_MUSIC_GAP_SECONDS * 5;
 
 fn random_duration() -> Duration {
-    Duration::from_millis(
-        rand::thread_rng().gen_range(MIN_MUSIC_GAP_MILLISECS, MAX_MUSIC_GAP_MILLISECS),
-    )
+    Duration::from_secs(rand::thread_rng().gen_range(MIN_MUSIC_GAP_SECONDS, MAX_MUSIC_GAP_SECONDS))
 }
 
 fn walk_dirs(path: impl AsRef<Path>) -> io::Result<Vec<PathBuf>> {

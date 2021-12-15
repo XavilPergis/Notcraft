@@ -212,7 +212,6 @@ fn main() {
         ))
         .add_system(engine::render::mesher::chunk_mesher_system(mesher_ctx))
         .add_system(engine::world::update_world_system())
-        .add_system(engine::world::gen::update_surface_cache_system())
         .flush()
         .add_system(player_movement_system())
         .add_system(engine::world::load_chunks_system(

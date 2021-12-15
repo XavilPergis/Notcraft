@@ -1,0 +1,199 @@
+use super::{
+    chunk::ChunkKind,
+    registry::{BlockId, BlockRegistry, AIR},
+    ChunkHeightmapPos, ChunkPos,
+};
+use crate::engine::world::chunk::{CHUNK_LENGTH, CHUNK_VOLUME};
+use noise::{Fbm, NoiseFn, Perlin};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
+
+#[derive(Clone, Debug)]
+pub struct SurfaceHeightmap {
+    min: f32,
+    max: f32,
+    timestamp: Arc<AtomicU64>,
+    data: Arc<[f32]>,
+}
+
+#[derive(Debug)]
+pub struct SurfaceHeighmapCache {
+    time_reference: Instant,
+    heightmaps: flurry::HashMap<ChunkHeightmapPos, SurfaceHeightmap>,
+}
+
+impl Default for SurfaceHeighmapCache {
+    fn default() -> Self {
+        Self {
+            time_reference: Instant::now(),
+            heightmaps: Default::default(),
+        }
+    }
+}
+
+fn generate_surface_heights(
+    cache: &SurfaceHeighmapCache,
+    pos: ChunkHeightmapPos,
+) -> SurfaceHeightmap {
+    let mix_noise = NoiseSampler::new(Perlin::new()).with_scale(0.0001);
+    let rolling_noise = NoiseSampler::new(Perlin::new()).with_scale(0.0003);
+
+    let mountainous_noise_unwarped = NoiseSampler::new(Fbm::new()).with_scale(0.002);
+    let mountainous_noise = NoiseSampler::new(Fbm::new()).with_scale(0.001);
+    let warp_noise_x = NoiseSampler::new(Perlin::new())
+        .with_offset([0.0, 0.5])
+        .with_scale(0.003);
+    let warp_noise_z = NoiseSampler::new(Perlin::new())
+        .with_offset([0.5, 0.0])
+        .with_scale(0.003);
+
+    let mut min = f32::MAX;
+    let mut max = f32::MIN;
+
+    let mut heights = Vec::with_capacity(CHUNK_LENGTH * CHUNK_LENGTH);
+    for dx in 0..CHUNK_LENGTH {
+        for dz in 0..CHUNK_LENGTH {
+            let (x, z) = (
+                CHUNK_LENGTH as f32 * pos.x as f32 + dx as f32,
+                CHUNK_LENGTH as f32 * pos.z as f32 + dz as f32,
+            );
+
+            let wx = x + 200.0 * warp_noise_x.sample(x, z);
+            let wz = z + 200.0 * warp_noise_z.sample(x, z);
+
+            let warped = 2000.0 * (mountainous_noise.sample(wx, wz) * 0.5 + 0.5);
+            let mountain = 800.0 * (mountainous_noise_unwarped.sample(x, z) * 0.5 + 0.5);
+            let rolling = 100.0 * rolling_noise.sample(x, z);
+            let result = rolling + mix_noise.sample(x, z) * (warped + mountain);
+
+            min = f32::min(min, result);
+            max = f32::max(max, result);
+
+            heights.push(result);
+        }
+    }
+
+    SurfaceHeightmap {
+        min,
+        max,
+        timestamp: Arc::new(cache.timestamp().into()),
+        data: heights.into_boxed_slice().into(),
+    }
+}
+
+impl SurfaceHeighmapCache {
+    pub fn surface_heights(&self, pos: ChunkHeightmapPos) -> SurfaceHeightmap {
+        if let Some(cached) = self.heightmaps.pin().get(&pos) {
+            cached.timestamp.store(self.timestamp(), Ordering::SeqCst);
+            return SurfaceHeightmap::clone(cached);
+        } else {
+            let surface_heights = generate_surface_heights(self, pos);
+            self.heightmaps.pin().insert(pos, surface_heights);
+            self.surface_heights(pos)
+        }
+    }
+
+    fn timestamp(&self) -> u64 {
+        self.time_reference.elapsed().as_secs()
+    }
+
+    pub fn evict_after(&self, delay: Duration) {
+        self.heightmaps.pin().retain(|_, val| {
+            self.timestamp() - val.timestamp.load(Ordering::SeqCst) > delay.as_secs()
+        });
+    }
+}
+
+struct NoiseSampler<F> {
+    noise_fn: F,
+    offset: [f32; 2],
+    scale: f32,
+}
+
+impl<F> NoiseSampler<F> {
+    fn new(noise_fn: F) -> Self {
+        Self {
+            noise_fn,
+            offset: [0.0, 0.0],
+            scale: 1.0,
+        }
+    }
+
+    fn with_scale(mut self, scale: f32) -> Self {
+        self.offset[0] *= scale;
+        self.offset[1] *= scale;
+        self.scale = scale;
+        self
+    }
+
+    fn with_offset<I: Into<[f32; 2]>>(mut self, offset: I) -> Self {
+        self.offset = offset.into();
+        self
+    }
+
+    fn sample(&self, x: f32, z: f32) -> f32
+    where
+        F: NoiseFn<[f64; 2]>,
+    {
+        let [dx, dz] = self.offset;
+        let mapped_x = (dx + x * self.scale) as f64;
+        let mapped_z = (dz + z * self.scale) as f64;
+        self.noise_fn.get([mapped_x, mapped_z]) as f32
+    }
+}
+
+#[derive(Debug)]
+pub struct ChunkGenerator {
+    stone_id: BlockId,
+    dirt_id: BlockId,
+    grass_id: BlockId,
+}
+
+impl ChunkGenerator {
+    pub fn new_default(registry: &BlockRegistry) -> Self {
+        Self {
+            stone_id: registry.get_id("stone"),
+            dirt_id: registry.get_id("dirt"),
+            grass_id: registry.get_id("grass"),
+        }
+    }
+
+    fn block_from_surface_dist(&self, distance: f32) -> BlockId {
+        if distance < -4.0 {
+            self.stone_id
+        } else if distance < -1.0 {
+            self.dirt_id
+        } else if distance < 0.0 {
+            self.grass_id
+        } else {
+            AIR
+        }
+    }
+
+    pub fn make_chunk(&self, pos: ChunkPos, heights: SurfaceHeightmap) -> ChunkKind {
+        let base_y = pos.origin().y as f32;
+
+        if base_y > heights.max {
+            return ChunkKind::Homogeneous(AIR);
+        } else if (base_y + CHUNK_LENGTH as f32) < heights.min {
+            return ChunkKind::Homogeneous(self.stone_id);
+        }
+
+        let mut chunk_data = Vec::with_capacity(CHUNK_VOLUME);
+        for xz in 0..CHUNK_LENGTH * CHUNK_LENGTH {
+            let surface_height = heights.data[xz];
+            chunk_data.extend(
+                (0..CHUNK_LENGTH)
+                    .map(|y| self.block_from_surface_dist(base_y + y as f32 - surface_height)),
+            );
+        }
+
+        assert!(!chunk_data.is_empty());
+        ChunkKind::Array(chunk_data.into_boxed_slice().try_into().unwrap())
+    }
+}

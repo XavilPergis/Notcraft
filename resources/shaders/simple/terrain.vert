@@ -12,6 +12,11 @@ out vec3 v_normal;
 out vec2 v_texture_uv;
 flat out int v_id;
 
+float contribution(bool contribute, float strength) {
+    return 1.0 - float(contribute) * strength;
+}
+
+#define MIN_AO_BRIGHTNESS (0.2)
 
 void main()
 {
@@ -37,8 +42,11 @@ void main()
     uint bid = side_id & uint(65535);
     int id = int(bid);
     
-    vec3 normal = normalFromAxis[(side_id >> 16) & uint(3)];
-    normal *= axisSign[(side_id >> 18) & uint(1)];
+    uint baxis = (side_id >> 16) & uint(3);
+    uint baxisSign = (side_id >> 18) & uint(1);
+
+    vec3 normal = normalFromAxis[baxis];
+    normal *= axisSign[baxisSign];
 
     vec2 uvFromAxis[3];
     uvFromAxis = vec2[3](
@@ -46,13 +54,20 @@ void main()
         vec2(pos.x, pos.z),
         vec2(pos.x, pos.y)
     );
-    vec2 uv = uvFromAxis[(side_id >> 16) & uint(3)];
+    vec2 uv = uvFromAxis[baxis];
 
     // normal shader code
     gl_Position = projection * view * model * vec4(pos, 1.0);
 
-    float ao_strength = (1.0 - ao) * 0.9;
-    v_color_filter = vec3(1.0 - ao_strength);
+    float brightness = 1.0 - ((1.0 - ao) * (1.0 - MIN_AO_BRIGHTNESS));
+
+    // directional lighting
+    brightness *= contribution(baxis == uint(1) && baxisSign == uint(0), 0.0); // top
+    brightness *= contribution(baxis == uint(1) && baxisSign == uint(1), 0.4); // bottom
+    brightness *= contribution(baxis == uint(0), 0.1); // X
+    brightness *= contribution(baxis == uint(2), 0.2); // Z
+
+    v_color_filter = vec3(brightness);
 
     v_id = id;
     v_texture_uv = uv;

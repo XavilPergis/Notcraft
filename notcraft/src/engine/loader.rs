@@ -1,10 +1,17 @@
 // use crate::util;
+use anyhow::Result;
 use glium::{
     backend::Facade, program::SourceCode, texture::TextureCreationError, Program,
     ProgramCreationError,
 };
-use image::{GenericImageView, ImageError, RgbImage, RgbaImage};
-use std::{collections::HashSet, ffi::OsStr, path::Path};
+use image::{GenericImageView, ImageError, RgbaImage};
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::OsStr,
+    io::ErrorKind,
+    path::Path,
+    sync::Arc,
+};
 
 macro_rules! err_from {
     ($sup:ident => $sub:path = $variant:ident) => {
@@ -48,67 +55,85 @@ err_from! { TextureLoadError => std::io::Error = Io }
 err_from! { TextureLoadError => TextureCreationError = Texture }
 
 #[derive(Clone, Debug)]
-pub struct BlockTextureMaps {
-    pub albedo: RgbaImage,
-    pub normal: Option<RgbImage>,
-    pub extra: Option<RgbImage>,
+pub struct BlockTextures {
+    pub width: u32,
+    pub height: u32,
+    pub unknown_texture: Arc<RgbaImage>,
+    pub block_textures: HashMap<String, Arc<RgbaImage>>,
+}
+
+struct BlockTextureLoadContext<'env> {
+    base_path: &'env Path,
+    found_dimensions: HashSet<(u32, u32)>,
+}
+
+impl<'env> BlockTextureLoadContext<'env> {
+    fn new(base_path: &'env Path) -> Self {
+        Self {
+            base_path,
+            found_dimensions: Default::default(),
+        }
+    }
+
+    fn load(&mut self, path: &str) -> Result<Option<RgbaImage>, TextureLoadError> {
+        let texture_path = self.base_path.join(format!("{}.png", path));
+        log::debug!("loading block texture from {}", texture_path.display());
+        let image = match image::open(&texture_path) {
+            Ok(image) => image,
+            Err(ImageError::IoError(err)) if err.kind() == ErrorKind::NotFound => {
+                log::warn!(
+                    "block texture '{}' was not found in {}!",
+                    path,
+                    texture_path.display()
+                );
+                return Ok(None);
+            }
+            Err(other) => return Err(other.into()),
+        };
+        self.found_dimensions.insert(image.dimensions());
+        Ok(Some(image.to_rgba()))
+    }
+
+    fn dimensions(&self) -> Option<(u32, u32)> {
+        if self.found_dimensions.len() == 1 {
+            self.found_dimensions.iter().copied().next()
+        } else {
+            None
+        }
+    }
 }
 
 pub fn load_block_textures<'a, P, I>(
     base_path: P,
     names: I,
-) -> Result<(u32, u32, Vec<BlockTextureMaps>), TextureLoadError>
+) -> Result<BlockTextures, TextureLoadError>
 where
     P: AsRef<Path>,
     I: IntoIterator<Item = &'a str>,
 {
-    let base_path = base_path.as_ref();
+    let mut ctx = BlockTextureLoadContext::new(base_path.as_ref());
+
     let names = names.into_iter();
-    let mut textures = Vec::new();
 
-    let mut dims = HashSet::new();
+    let unknown_texture = Arc::new(ctx.load("unknown")?.unwrap());
 
+    let mut block_textures = HashMap::new();
     for entry in names {
-        let albedo_path = base_path.join(format!("{}.png", entry));
-        let normal_path = base_path.join(format!("{}_n.png", entry));
-        let extra_path = base_path.join(format!("{}_s.png", entry));
-
-        log::trace!(
-            "loading block texture '{name}' from '{base_path}'",
-            name = entry,
-            base_path = albedo_path.display()
-        );
-
-        let albedo = image::open(albedo_path)?;
-        dims.insert(albedo.dimensions());
-
-        let normal = if normal_path.exists() {
-            let normal = image::open(normal_path)?;
-            dims.insert(normal.dimensions());
-            Some(normal)
-        } else {
-            None
-        };
-        let extra = if extra_path.exists() {
-            let extra = image::open(extra_path)?;
-            dims.insert(extra.dimensions());
-            Some(extra)
-        } else {
-            None
-        };
-
-        textures.push(BlockTextureMaps {
-            albedo: albedo.to_rgba(),
-            normal: normal.map(|img| img.to_rgb()),
-            extra: extra.map(|img| img.to_rgb()),
-        });
+        let texture = ctx
+            .load(entry)?
+            .map(Arc::new)
+            .unwrap_or_else(|| Arc::clone(&unknown_texture));
+        block_textures.insert(entry.to_owned(), texture);
     }
 
-    if dims.len() > 1 {
-        Err(TextureLoadError::MismatchedDimensions(dims))
-    } else {
-        let (w, h) = dims.iter().cloned().next().unwrap_or_default();
-        Ok((w, h, textures))
+    match ctx.dimensions() {
+        Some((width, height)) => Ok(BlockTextures {
+            width,
+            height,
+            unknown_texture,
+            block_textures,
+        }),
+        None => Err(TextureLoadError::MismatchedDimensions(ctx.found_dimensions)),
     }
 }
 

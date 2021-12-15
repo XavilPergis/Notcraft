@@ -3,11 +3,6 @@ use rand::prelude::*;
 use std::{collections::HashMap, error::Error, path::Path, sync::Arc};
 
 pub const AIR: BlockId = BlockId(0);
-pub const STONE: BlockId = BlockId(1);
-pub const DIRT: BlockId = BlockId(2);
-pub const GRASS: BlockId = BlockId(3);
-pub const SAND: BlockId = BlockId(4);
-pub const WATER: BlockId = BlockId(5);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]
 pub struct Faces<T> {

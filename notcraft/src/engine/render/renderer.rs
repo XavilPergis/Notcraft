@@ -1,3 +1,4 @@
+use super::Tex;
 use crate::engine::{
     loader,
     math::*,
@@ -13,7 +14,7 @@ use crossbeam_channel::{Receiver, Sender};
 use glium::{
     backend::Facade,
     framebuffer::{MultiOutputFrameBuffer, ValidationError},
-    index::{IndexBuffer},
+    index::IndexBuffer,
     texture::{
         DepthTexture2d, MipmapsOption, RawImage2d, SrgbTexture2dArray, Texture2d,
         UncompressedFloatFormat,
@@ -34,7 +35,6 @@ use std::{
         Arc,
     },
 };
-use super::Tex;
 
 struct CommonState {
     display: Rc<Display>,
@@ -435,13 +435,15 @@ impl TerrainRenderer {
         resources: &mut Resources,
     ) -> Result<Self> {
         let terrain_program = loader::load_shader(shared.display(), "resources/shaders/simple")?;
-        let (width, height, maps) =
+        let textures =
             loader::load_block_textures("resources/textures/blocks", registry.texture_paths())?;
 
-        let dims = (width, height);
-        let textures = maps
-            .into_iter()
-            .map(|map| RawImage2d::from_raw_rgba_reversed(&map.albedo.into_raw(), dims))
+        let textures = registry
+            .texture_paths()
+            .map(|name| {
+                let map = &textures.block_textures[name];
+                RawImage2d::from_raw_rgba_reversed(map, map.dimensions())
+            })
             .collect();
 
         let block_textures =
@@ -494,7 +496,7 @@ fn render_terrain<S: Surface>(
                 &buffers.vertices,
                 &buffers.indices,
                 &ctx.terrain_program,
-                &uniform! { 
+                &uniform! {
                     model: array4x4(transform.0.to_matrix()),
                     albedo_maps: ctx.block_textures.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
                     view: array4x4(view),

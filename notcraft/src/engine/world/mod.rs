@@ -10,6 +10,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, RwLockReadGuard, RwLockWriteGuard,
     },
+    time::Duration,
 };
 
 pub use self::chunk::ArrayChunk;
@@ -21,7 +22,7 @@ use self::{
 use super::transform::Transform;
 
 pub mod chunk;
-pub mod gen;
+pub mod generation;
 pub mod registry;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -121,14 +122,6 @@ impl BlockPos {
             z: self.z as f32,
         }
     }
-
-    // pub fn chunk_pos_offset(self) -> (ChunkPos, ChunkOffset) {
-    //     let cpos: ChunkPos = self.into();
-    //     let bpos = self.0 - cpos.origin().0;
-    //     let bpos = ChunkOffset::new(bpos.x as u16, bpos.y as u16, bpos.z as u16);
-
-    //     (cpos, bpos)
-    // }
 }
 
 impl WorldPos {
@@ -147,76 +140,6 @@ impl WorldPos {
     }
 }
 
-// #[derive(Debug)]
-// struct KeyedThreadedProducer<K, T> {
-//     pool: ThreadPool,
-
-//     // map of active keys to a cancellation key
-//     in_progress: flurry::HashMap<K, Arc<AtomicBool>>,
-//     cancelled: flurry::HashSet<K>,
-//     finished_tx: Sender<K>,
-
-//     destination: Arc<flurry::HashMap<K, T>>,
-// }
-
-// impl<K: Copy + Hash + Ord + Eq + Send + Sync + 'static, T: Send + Sync +
-// 'static>     KeyedThreadedProducer<K, T>
-// {
-//     pub fn new(
-//         num_threads: Option<usize>,
-//         destination: Arc<flurry::HashMap<K, T>>,
-//     ) -> (Self, Receiver<K>) {
-//         let pool = ThreadPoolBuilder::new()
-//             .num_threads(num_threads.unwrap_or(0))
-//             .build()
-//             .unwrap();
-
-//         let (finished_tx, finished_rx) = crossbeam_channel::unbounded();
-
-//         (
-//             Self {
-//                 pool,
-//                 in_progress: Default::default(),
-//                 cancelled: Default::default(),
-//                 finished_tx,
-//                 destination,
-//             },
-//             finished_rx,
-//         )
-//     }
-
-//     pub fn queue<F>(&self, key: K, computation: F)
-//     where
-//         F: FnOnce() -> T + Send + Sync + 'static,
-//         K: Send + Sync + 'static,
-//     {
-//         let guard = self.in_progress.guard();
-//         if !self.in_progress.contains_key(&key, &guard) {
-//             let cancelled = Arc::new(AtomicBool::new(false));
-//             self.in_progress.insert(key, Arc::clone(&cancelled), &guard);
-
-//             let destination = Arc::clone(&self.destination);
-//             self.pool.spawn(move || {
-//                 if !cancelled.load(Ordering::SeqCst) {
-//                     let result = computation();
-//                     destination.pin().insert(key, result);
-//                 }
-//             });
-//         }
-//     }
-
-//     pub fn is_queued(&self, key: K) -> bool {
-//         self.in_progress.pin().contains_key(&key)
-//     }
-
-//     pub fn cancel(&self, key: K) {
-//         if let Some(cancelled) = self.in_progress.pin().remove(&key) {
-//             cancelled.store(true, Ordering::SeqCst);
-//             self.cancelled.pin().insert(key);
-//         }
-//     }
-// }
-
 #[derive(Debug)]
 pub struct WorldChunks(Arc<flurry::HashMap<ChunkPos, Arc<Chunk>>>);
 
@@ -233,47 +156,38 @@ impl WorldChunks {
         self.0.get(&pos, guard).and_then(|chunk| chunk.read())
     }
 
-    // pub fn write(
-    //     &self,
-    //     pos: ChunkPos,
-    //     guard: &flurry::epoch::Guard,
-    // ) -> Option<RwLockWriteGuard<ChunkKind>> {
-    //     self.0.pin().get(&pos).and_then(|chunk| chunk.write())
-    // }
+    pub fn write<'g>(
+        &'g self,
+        pos: ChunkPos,
+        guard: &'g flurry::epoch::Guard,
+    ) -> Option<RwLockWriteGuard<'g, ChunkKind>> {
+        self.0.get(&pos, guard).and_then(|chunk| chunk.write())
+    }
 }
 
-// struct ReadLockedChunks<'w> {
-//     chunks: HashMap<ChunkPos, RwLockReadGuard<'w, ChunkKind>>,
-// }
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct ChunkHeightmapPos {
+    pub x: i32,
+    pub z: i32,
+}
 
-// impl<'w> ReadLockedChunks<'w> {
-//     pub fn lock<I>(
-//         chunks: &'w WorldChunks,
-//         guard: &'w flurry::epoch::Guard,
-//         iter: I,
-//     ) -> Option<Self>
-//     where
-//         I: IntoIterator<Item = ChunkPos>,
-//     {
-//         let chunks = iter
-//             .into_iter()
-//             .map(|pos| chunks.read(pos, guard).map(|guard| (pos, guard)))
-//             .collect::<Option<_>>()?;
-
-//         Some(ReadLockedChunks { chunks })
-//     }
-// }
+impl From<ChunkPos> for ChunkHeightmapPos {
+    fn from(pos: ChunkPos) -> Self {
+        Self { x: pos.x, z: pos.z }
+    }
+}
 
 #[derive(Debug)]
 pub struct VoxelWorld {
     pub registry: Arc<BlockRegistry>,
-    pub noise_generator: Arc<gen::NoiseGenerator>,
     pub chunk_event_notifier: Receiver<ChunkEvent>,
 
     chunks: Arc<flurry::HashMap<ChunkPos, Arc<Chunk>>>,
     chunk_event_sender: Sender<ChunkEvent>,
 
     world_gen_pool: ThreadPool,
+    chunk_generator: Arc<generation::ChunkGenerator>,
+    surface_cache: Arc<generation::SurfaceHeighmapCache>,
 
     // map of active keys to a cancellation key
     chunks_in_progress: Arc<flurry::HashMap<ChunkPos, Arc<AtomicBool>>>,
@@ -287,61 +201,66 @@ pub enum ChunkEvent {
 }
 
 impl VoxelWorld {
-    pub fn new(registry: Arc<BlockRegistry>) -> Self {
+    pub fn new(registry: Arc<BlockRegistry>) -> Arc<Self> {
         let (chunk_event_tx, chunk_event_rx) = crossbeam_channel::unbounded();
         let world_gen_pool = ThreadPoolBuilder::new().build().unwrap();
 
-        VoxelWorld {
-            noise_generator: Arc::new(gen::NoiseGenerator::new_default(&registry)),
+        let chunk_generator = Arc::new(generation::ChunkGenerator::new_default(&registry));
+
+        Arc::new(VoxelWorld {
             registry,
             chunks: Default::default(),
             chunks_in_progress: Default::default(),
 
             world_gen_pool,
+            chunk_generator,
+            surface_cache: Default::default(),
 
             chunk_event_sender: chunk_event_tx,
             chunk_event_notifier: chunk_event_rx,
-        }
+        })
     }
 
-    pub fn queue_world_gen_task<F>(&self, pos: ChunkPos, task: F)
-    where
-        F: FnOnce() -> ChunkKind + Send + Sync + 'static,
-    {
+    pub fn load_chunk(self: &Arc<Self>, pos: ChunkPos) {
+        if self.chunks_in_progress.pin().contains_key(&pos) || self.chunks.pin().contains_key(&pos)
+        {
+            return;
+        }
+
         let guard = self.chunks_in_progress.guard();
         if !self.chunks_in_progress.contains_key(&pos, &guard) {
             let is_cancelled = Arc::new(AtomicBool::new(false));
             self.chunks_in_progress
                 .insert(pos, Arc::clone(&is_cancelled), &guard);
 
-            let chunks = Arc::clone(&self.chunks);
-            let chunk_event_sender = Sender::clone(&self.chunk_event_sender);
-            let chunks_in_progress = Arc::clone(&self.chunks_in_progress);
-
+            let world = Arc::clone(self);
             self.world_gen_pool.spawn(move || {
                 if !is_cancelled.load(Ordering::SeqCst) {
-                    let chunk = Arc::new(Chunk::new(pos, task()));
+                    let heights = world.surface_cache.surface_heights(pos.into());
+                    let chunk_data = world.chunk_generator.make_chunk(pos, heights);
+
+                    let chunk = Arc::new(Chunk::new(pos, chunk_data));
+
+                    // insert before and remove if cancelled to prevent a user from cancelling world
+                    // chunk after we check whether the chunk was cancelled
+                    let guard = world.chunks_in_progress.guard();
+                    world.chunks.insert(pos, Arc::clone(&chunk), &guard);
+
                     if !is_cancelled.load(Ordering::SeqCst) {
-                        chunks.pin().insert(pos, Arc::clone(&chunk));
-                        chunk_event_sender.send(ChunkEvent::Added(chunk)).unwrap();
-                        chunks_in_progress.pin().remove(&pos);
+                        world
+                            .chunk_event_sender
+                            .send(ChunkEvent::Added(chunk))
+                            .unwrap();
+                        world.chunks_in_progress.pin().remove(&pos);
+                    } else {
+                        world.chunks.remove(&pos, &guard);
                     }
                 }
             });
         }
     }
 
-    pub fn load_chunk(&mut self, pos: ChunkPos) {
-        if self.chunks_in_progress.pin().contains_key(&pos) || self.chunks.pin().contains_key(&pos)
-        {
-            return;
-        }
-
-        let noise = Arc::clone(&self.noise_generator);
-        self.queue_world_gen_task(pos, move || noise.make_chunk(pos));
-    }
-
-    pub fn unload_chunk(&mut self, pos: ChunkPos) {
+    pub fn unload_chunk(&self, pos: ChunkPos) {
         if let Some(cancelled) = self.chunks_in_progress.pin().remove(&pos) {
             cancelled.store(true, Ordering::SeqCst);
         } else if let Some(chunk) = self.chunks.pin().remove(&pos) {
@@ -379,37 +298,14 @@ impl VoxelWorld {
         self.chunks.get(&pos, guard).and_then(|chunk| chunk.write())
     }
 
-    // pub fn registry(&self, pos: BlockPos) -> Option<RegistryRef> {
-    //     self.get_block_id(pos).map(|id| self.registry.get_ref(id))
-    // }
-
-    // pub fn trace_block(
-    //     &self,
-    //     ray: Ray3<f32>,
-    //     radius: f32,
-    //     // debug: &mut DebugSection,
-    // ) -> Option<(BlockPos, Option<Vector3<i32>>)> {
-    //     let mut ret_pos = WorldPos(ray.origin).into();
-    //     let mut ret_norm = None;
-
-    //     if trace_ray(ray, radius, |pos, norm| {
-    //         ret_pos = pos;
-    //         ret_norm = norm;
-    //         // debug.block(pos, 1.0, Vector4::new(1.0, 0.0, 1.0, 1.0));
-    //         self.registry(pos)
-    //             .map(|props| props.opaque())
-    //             .unwrap_or(false)
-    //     }) {
-    //         Some((ret_pos, ret_norm))
-    //     } else {
-    //         None
-    //     }
-    // }
+    fn update(&self) {
+        self.surface_cache.evict_after(Duration::from_secs(10));
+    }
 }
 
 #[legion::system]
-pub fn update_world(#[resource] _world: &mut VoxelWorld) {
-    // world.update();
+pub fn update_world(#[resource] world: &Arc<VoxelWorld>) {
+    world.update();
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
@@ -449,7 +345,7 @@ fn neighborhood(center: ChunkPos, radius: usize, mut func: impl FnMut(ChunkPos))
     }
 }
 
-fn recheck_loaded(ctx: &mut ChunkLoaderContext, voxel_world: &mut VoxelWorld) {
+fn recheck_loaded(ctx: &mut ChunkLoaderContext, voxel_world: &Arc<VoxelWorld>) {
     let mut keep_loaded = HashSet::new();
 
     for &(loader, pos) in ctx.loaders.values() {
@@ -478,14 +374,14 @@ fn recheck_loaded(ctx: &mut ChunkLoaderContext, voxel_world: &mut VoxelWorld) {
     }
 }
 
-fn remove_loader(ctx: &mut ChunkLoaderContext, voxel_world: &mut VoxelWorld, entity: Entity) {
+fn remove_loader(ctx: &mut ChunkLoaderContext, voxel_world: &Arc<VoxelWorld>, entity: Entity) {
     ctx.loaders.remove(&entity);
     recheck_loaded(ctx, voxel_world);
 }
 
 fn update_loader(
     ctx: &mut ChunkLoaderContext,
-    voxel_world: &mut VoxelWorld,
+    voxel_world: &Arc<VoxelWorld>,
     entity: Entity,
     loader: &ChunkLoader,
     pos: ChunkPos,
@@ -506,21 +402,21 @@ fn update_loader(
 #[read_component(Transform)]
 pub fn load_chunks(
     #[state] ctx: &mut ChunkLoaderContext,
-    #[resource] voxel_world: &mut VoxelWorld,
+    #[resource] voxel_world: &Arc<VoxelWorld>,
 
     world: &mut SubWorld,
 ) {
-    // let mut removed = HashSet::new();
-    // for event in ctx.loader_events.try_iter() {
-    //     match event {
-    //         legion::world::Event::EntityRemoved(entity, _) =>
-    // drop(removed.insert(entity)),         _ => {}
-    //     }
-    // }
+    let mut removed = HashSet::new();
+    for event in ctx.loader_events.try_iter() {
+        match event {
+            legion::world::Event::EntityRemoved(entity, _) => drop(removed.insert(entity)),
+            _ => {}
+        }
+    }
 
-    // removed
-    //     .into_iter()
-    //     .for_each(|entity| remove_loader(ctx, voxel_world, entity));
+    removed
+        .into_iter()
+        .for_each(|entity| remove_loader(ctx, voxel_world, entity));
 
     <(Entity, &ChunkLoader, &Transform)>::query()
         .filter(legion::maybe_changed::<Transform>())

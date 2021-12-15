@@ -255,7 +255,7 @@ fn queue_mesh_jobs(ctx: &mut MesherContext, voxel_world: &VoxelWorld) {
 pub fn chunk_mesher(
     cmd: &mut CommandBuffer,
     #[state] ctx: &mut MesherContext,
-    #[resource] voxel_world: &mut VoxelWorld,
+    #[resource] voxel_world: &Arc<VoxelWorld>,
     #[resource] mesh_context: &Arc<SharedMeshContext<TerrainMesh>>,
 ) {
     update_tracker(ctx, cmd);
@@ -691,7 +691,11 @@ impl MeshConstructor {
             .indices
             .extend(indices.iter().copied().map(|idx| idx_start + idx));
 
-        let face = self.registry.block_texture(quad.id, side).unwrap();
+        let face = self.registry.block_texture(quad.id, side);
+        if face.is_none() {
+            log::error!("???: id={:?}, side={:?}", quad.id, side);
+        }
+        let face = face.unwrap();
         let tex_id = *face.texture.select() as u16;
 
         let mut vert = |offset: Vector3<_>, ao| {
