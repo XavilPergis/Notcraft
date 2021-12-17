@@ -18,7 +18,7 @@ impl Camera {
 impl Default for Camera {
     fn default() -> Self {
         Camera {
-            projection: na::Perspective3::new(1.0, std::f32::consts::PI / 2.0, 0.01, 1000.0),
+            projection: na::Perspective3::new(1.0, std::f32::consts::PI / 2.0, 0.1, 1000.0),
         }
     }
 }
