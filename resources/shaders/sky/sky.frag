@@ -21,8 +21,8 @@ void main() {
     vec3 into_screen =  -vec3(-v_uv, 1.0);
     vec4 ray_dir_world = inverse(view_matrix) * normalize(vec4(into_screen, 0.0));
 
-    float up_closeness = pow(dot(ray_dir_world.xyz, UP), 0.7);
-    vec3 color = mix(SKY_COLOR_BASE, SKY_COLOR_BRIGHT, max(0.0, up_closeness));
+    float down_closeness = pow(dot(ray_dir_world.xyz, -UP), 0.6);
+    vec3 color = mix(SKY_COLOR_BASE, SKY_COLOR_BRIGHT, max(0.0, down_closeness));
 
     b_color = vec4(color, 1.0);
 }
