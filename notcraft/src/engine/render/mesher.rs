@@ -18,7 +18,7 @@ use std::{
     sync::{Arc, RwLockReadGuard},
 };
 
-use super::renderer::{MeshBuffers, RenderMeshComponent, SharedMeshContext, UploadableMesh};
+use super::renderer::{Aabb, MeshBuffers, RenderMeshComponent, SharedMeshContext, UploadableMesh};
 
 #[derive(Debug)]
 struct MeshTracker {
@@ -641,12 +641,14 @@ impl UploadableMesh for TerrainMesh {
             vertices: VertexBuffer::immutable(ctx, &self.vertices)?,
             indices: IndexBuffer::immutable(ctx, PrimitiveType::TrianglesList, &self.indices)?,
 
-            bounds_min: na::point![0.0, 0.0, 0.0],
-            bounds_max: na::point![
-                CHUNK_LENGTH as f32,
-                CHUNK_LENGTH as f32,
-                CHUNK_LENGTH as f32
-            ],
+            aabb: Aabb {
+                min: na::point![0.0, 0.0, 0.0],
+                max: na::point![
+                    CHUNK_LENGTH as f32,
+                    CHUNK_LENGTH as f32,
+                    CHUNK_LENGTH as f32
+                ],
+            },
         })
     }
 }

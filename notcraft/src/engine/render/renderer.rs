@@ -1,13 +1,16 @@
 use super::Tex;
-use crate::engine::{
-    loader,
-    math::*,
-    render::{
-        camera::{ActiveCamera, Camera},
-        mesher::TerrainMesh,
+use crate::{
+    engine::{
+        loader,
+        math::*,
+        render::{
+            camera::{ActiveCamera, Camera},
+            mesher::TerrainMesh,
+        },
+        transform::GlobalTransform,
+        world::registry::BlockRegistry,
     },
-    transform::GlobalTransform,
-    world::registry::BlockRegistry,
+    util,
 };
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
@@ -25,6 +28,7 @@ use glium::{
     Display, Program, Surface,
 };
 use legion::{world::Event, Entity, IntoQuery, Read, Resources, World};
+use na::Orthographic3;
 use nalgebra::{self as na, Perspective3};
 use std::{
     collections::{HashMap, HashSet},
@@ -263,10 +267,8 @@ fn render_sky<S: Surface>(
 pub struct MeshBuffers<V: Copy> {
     pub vertices: VertexBuffer<V>,
     pub indices: IndexBuffer<u32>,
-
-    // mesh bounds, relative to the mesh's origin
-    pub bounds_min: Point3<f32>,
-    pub bounds_max: Point3<f32>,
+    // mesh bounds, in model space
+    pub aabb: Aabb,
 }
 
 fn get_camera<'a>(
@@ -483,6 +485,7 @@ fn render_terrain<S: Surface>(
     // If we don't have any cameras anywhere, then just put it at the origin.
     let (width, height) = target.get_dimensions();
     let (view, proj) = get_view_projection(width, height, camera);
+    let viewproj = proj.as_matrix() * view;
 
     let mut query = <(&GlobalTransform, &RenderMeshComponent<TerrainMesh>)>::query();
     for &entity in ctx.terrain_meshes.render_component_entities.iter() {
@@ -492,15 +495,22 @@ fn render_terrain<S: Surface>(
                     "RenderMeshComponent existed for entity that was not in terrain_entities",
                 );
 
+            let model = transform.0.to_matrix();
+            let mvp = viewproj * model;
+
+            if !should_draw_aabb(&mvp, &buffers.aabb) {
+                continue;
+            }
+
             target.draw(
                 &buffers.vertices,
                 &buffers.indices,
                 &ctx.terrain_program,
                 &uniform! {
-                    model: array4x4(transform.0.to_matrix()),
-                    albedo_maps: ctx.block_textures.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
+                    model: array4x4(model),
                     view: array4x4(view),
                     projection: array4x4(proj.to_homogeneous()),
+                    albedo_maps: ctx.block_textures.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
                 },
                 &glium::DrawParameters {
                     depth: glium::Depth {
@@ -516,6 +526,64 @@ fn render_terrain<S: Surface>(
     }
 
     Ok(())
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Aabb {
+    pub min: Point3<f32>,
+    pub max: Point3<f32>,
+}
+
+impl Aabb {
+    #[rustfmt::skip]
+    fn contains(&self, point: &Point3<f32>) -> bool {
+        util::is_within(point.x, self.min.x, self.max.x) &&
+        util::is_within(point.y, self.min.y, self.max.y) &&
+        util::is_within(point.z, self.min.z, self.max.z)
+    }
+
+    #[rustfmt::skip]
+    pub fn intersects(&self, other: &Aabb) -> bool {
+        (self.contains(&other.min) || self.contains(&other.max)) ||
+        (other.contains(&self.min) || other.contains(&self.max))
+    }
+}
+
+fn should_draw_aabb(mvp: &Matrix4<f32>, aabb: &Aabb) -> bool {
+    // an AABB is excluded from the test if all its 8 corners lay outside any single
+    // frustum plane. we transform into clip space because the camera frustum planes
+    // have some very nice properties. each plane is 1 unit from the origin along
+    // its respective axis, and points inwards directly towards the origin. because
+    // of this, the test for e.x. the bottom plane is simply `point.y / point.w >
+    // -1.0`. we can just test `point.y > -point.w` though, by multiplying both
+    // sides of the inequality by `point.w`
+
+    // my first attempt at this only tested if each corner was inside the camera
+    // frustum, instead of outside any frustum plane, which led to some false
+    // negatives where the corners would straddle the corner of the frustum, so the
+    // line connecting them would cross through the frustum. this means that the
+    // object might potentially influence the resulting image, but was excluded
+    // because those points weren't actually inside the frustum.
+
+    let corners_clip = [
+        mvp * na::point![aabb.min.x, aabb.min.y, aabb.min.z, 1.0],
+        mvp * na::point![aabb.max.x, aabb.min.y, aabb.min.z, 1.0],
+        mvp * na::point![aabb.min.x, aabb.max.y, aabb.min.z, 1.0],
+        mvp * na::point![aabb.max.x, aabb.max.y, aabb.min.z, 1.0],
+        mvp * na::point![aabb.min.x, aabb.min.y, aabb.max.z, 1.0],
+        mvp * na::point![aabb.max.x, aabb.min.y, aabb.max.z, 1.0],
+        mvp * na::point![aabb.min.x, aabb.max.y, aabb.max.z, 1.0],
+        mvp * na::point![aabb.max.x, aabb.max.y, aabb.max.z, 1.0],
+    ];
+
+    let px = !corners_clip.iter().all(|point| point.x > point.w);
+    let nx = !corners_clip.iter().all(|point| point.x < -point.w);
+    let py = !corners_clip.iter().all(|point| point.y > point.w);
+    let ny = !corners_clip.iter().all(|point| point.y < -point.w);
+    let pz = !corners_clip.iter().all(|point| point.z > point.w);
+    let nz = !corners_clip.iter().all(|point| point.z < -point.w);
+
+    px && nx && py && ny && pz && nz
 }
 
 pub fn array4x4<T: Into<[[U; 4]; 4]>, U>(mat: T) -> [[U; 4]; 4] {
