@@ -16,19 +16,18 @@ use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use glium::{
     backend::Facade,
-    framebuffer::{MultiOutputFrameBuffer, ValidationError},
+    framebuffer::{SimpleFrameBuffer, ValidationError},
     index::IndexBuffer,
     texture::{
-        DepthTexture2d, MipmapsOption, RawImage2d, SrgbTexture2dArray, Texture2d,
-        UncompressedFloatFormat,
+        DepthTexture2d, DepthTexture2dMultisample, MipmapsOption, RawImage2d, SrgbTexture2dArray,
+        Texture2d, Texture2dMultisample, UncompressedFloatFormat,
     },
     uniform,
     uniforms::MagnifySamplerFilter,
     vertex::VertexBuffer,
-    Display, Program, Surface,
+    BlitTarget, Display, Program, Rect, Surface,
 };
 use legion::{world::Event, Entity, IntoQuery, Read, Resources, World};
-use na::Orthographic3;
 use nalgebra::{self as na, Perspective3};
 use std::{
     collections::{HashMap, HashSet},
@@ -132,11 +131,15 @@ impl Renderer {
     }
 }
 
+pub const MSAA_SAMPLES: u32 = 4;
+
 struct PostProcessRenderer {
     shared: Rc<CommonState>,
     post_program: Program,
-    post_process_color: Texture2d,
-    post_process_depth: DepthTexture2d,
+    post_process_color_target: Texture2dMultisample,
+    post_process_depth_target: DepthTexture2dMultisample,
+    post_process_color_resolved: Texture2d,
+    post_process_depth_resolved: DepthTexture2d,
 }
 
 impl PostProcessRenderer {
@@ -144,41 +147,73 @@ impl PostProcessRenderer {
         let post_program = loader::load_shader(shared.display(), "resources/shaders/post")?;
         let (width, height) = shared.display().get_framebuffer_dimensions();
 
-        let post_process_color = Texture2d::empty_with_format(
+        let post_process_color_target = Texture2dMultisample::empty_with_format(
+            shared.display(),
+            UncompressedFloatFormat::F32F32F32,
+            MipmapsOption::NoMipmap,
+            width,
+            height,
+            MSAA_SAMPLES,
+        )?;
+        let post_process_depth_target =
+            DepthTexture2dMultisample::empty(shared.display(), width, height, MSAA_SAMPLES)?;
+
+        let post_process_color_resolved = Texture2d::empty_with_format(
             shared.display(),
             UncompressedFloatFormat::F32F32F32,
             MipmapsOption::NoMipmap,
             width,
             height,
         )?;
-        let post_process_depth = DepthTexture2d::empty(shared.display(), width, height)?;
+        let post_process_depth_resolved = DepthTexture2d::empty(shared.display(), width, height)?;
 
         Ok(Self {
             shared,
             post_program,
-            post_process_color,
-            post_process_depth,
+            post_process_color_target,
+            post_process_depth_target,
+            post_process_color_resolved,
+            post_process_depth_resolved,
         })
     }
 
-    fn render_target(&self) -> Result<MultiOutputFrameBuffer, ValidationError> {
-        MultiOutputFrameBuffer::with_depth_buffer(
+    fn render_target(&self) -> Result<SimpleFrameBuffer, ValidationError> {
+        SimpleFrameBuffer::with_depth_buffer(
             self.shared.display(),
-            [("b_color", &self.post_process_color)].iter().cloned(),
-            &self.post_process_depth,
+            &self.post_process_color_target,
+            &self.post_process_depth_target,
+        )
+    }
+
+    fn resolve_target(&self) -> Result<SimpleFrameBuffer, ValidationError> {
+        SimpleFrameBuffer::with_depth_buffer(
+            self.shared.display(),
+            &self.post_process_color_resolved,
+            &self.post_process_depth_resolved,
         )
     }
 }
 
 fn recreate_post_textures(ctx: &mut PostProcessRenderer, width: u32, height: u32) -> Result<()> {
-    ctx.post_process_color = Texture2d::empty_with_format(
+    ctx.post_process_color_target = Texture2dMultisample::empty_with_format(
+        ctx.shared.display(),
+        UncompressedFloatFormat::F32F32F32,
+        MipmapsOption::NoMipmap,
+        width,
+        height,
+        MSAA_SAMPLES,
+    )?;
+    ctx.post_process_depth_target =
+        DepthTexture2dMultisample::empty(ctx.shared.display(), width, height, MSAA_SAMPLES)?;
+
+    ctx.post_process_color_resolved = Texture2d::empty_with_format(
         ctx.shared.display(),
         UncompressedFloatFormat::F32F32F32,
         MipmapsOption::NoMipmap,
         width,
         height,
     )?;
-    ctx.post_process_depth = DepthTexture2d::empty(ctx.shared.display(), width, height)?;
+    ctx.post_process_depth_resolved = DepthTexture2d::empty(ctx.shared.display(), width, height)?;
 
     Ok(())
 }
@@ -190,7 +225,7 @@ fn render_post<S: Surface>(
     resources: &mut Resources,
 ) -> anyhow::Result<()> {
     let (width, height) = target.get_dimensions();
-    let (buf_width, buf_height) = ctx.post_process_depth.dimensions();
+    let (buf_width, buf_height) = ctx.post_process_depth_resolved.dimensions();
     if buf_width != width || buf_height != height {
         recreate_post_textures(ctx, width, height)?;
     }
@@ -199,6 +234,23 @@ fn render_post<S: Surface>(
     let (view, proj) = get_view_projection(width, height, cam_transform);
     let cam_pos = get_cam_pos(cam_transform);
 
+    ctx.resolve_target()?.blit_from_simple_framebuffer(
+        &ctx.render_target()?,
+        &Rect {
+            left: 0,
+            bottom: 0,
+            width,
+            height,
+        },
+        &BlitTarget {
+            left: 0,
+            bottom: 0,
+            width: width as i32,
+            height: height as i32,
+        },
+        MagnifySamplerFilter::Linear,
+    );
+
     // post
     target.clear_color(0.0, 0.0, 0.0, 0.0);
     target.draw(
@@ -206,8 +258,8 @@ fn render_post<S: Surface>(
         glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
         &ctx.post_program,
         &uniform! {
-            b_color: ctx.post_process_color.sampled(),
-            b_depth: ctx.post_process_depth.sampled(),
+            b_color: ctx.post_process_color_resolved.sampled(),
+            b_depth: ctx.post_process_depth_resolved.sampled(),
 
             camera_pos: array3(cam_pos),
             projection_matrix: array4x4(proj.to_homogeneous()),
