@@ -7,7 +7,7 @@ use crate::{
             camera::{ActiveCamera, Camera},
             mesher::TerrainMesh,
         },
-        transform::GlobalTransform,
+        transform::Transform,
         world::registry::BlockRegistry,
     },
     util,
@@ -326,11 +326,11 @@ pub struct MeshBuffers<V: Copy> {
 fn get_camera<'a>(
     world: &'a mut World,
     resources: &mut Resources,
-) -> Option<(&'a Camera, &'a GlobalTransform)> {
+) -> Option<(&'a Camera, &'a Transform)> {
     let active = resources.get::<ActiveCamera>().and_then(|id| id.0)?;
 
     let camera = Read::<Camera>::query().get(world, active).ok()?;
-    let global = Read::<GlobalTransform>::query().get(world, active).ok()?;
+    let global = Read::<Transform>::query().get(world, active).ok()?;
 
     Some((camera, global))
 }
@@ -338,18 +338,18 @@ fn get_camera<'a>(
 fn get_view_projection(
     width: u32,
     height: u32,
-    cam_transform: Option<(&Camera, &GlobalTransform)>,
+    cam_transform: Option<(&Camera, &Transform)>,
 ) -> (Matrix4<f32>, Perspective3<f32>) {
     let (view, mut proj) = cam_transform
-        .map(|(cam, transform)| (transform.0.view_matrix(), cam.projection))
+        .map(|(cam, transform)| (transform.to_matrix().try_inverse().unwrap(), cam.projection))
         .unwrap_or_else(|| (na::Matrix4::identity(), Camera::default().projection));
     proj.set_aspect(width as f32 / height as f32);
     (view, proj)
 }
 
-fn get_cam_pos(cam_transform: Option<(&Camera, &GlobalTransform)>) -> Vector3<f32> {
+fn get_cam_pos(cam_transform: Option<(&Camera, &Transform)>) -> Vector3<f32> {
     match cam_transform {
-        Some((_, transform)) => transform.0.translation.vector,
+        Some((_, transform)) => transform.translation.vector,
         None => na::vector!(0.0, 0.0, 0.0),
     }
 }
@@ -539,7 +539,7 @@ fn render_terrain<S: Surface>(
     let (view, proj) = get_view_projection(width, height, camera);
     let viewproj = proj.as_matrix() * view;
 
-    let mut query = <(&GlobalTransform, &RenderMeshComponent<TerrainMesh>)>::query();
+    let mut query = <(&Transform, &RenderMeshComponent<TerrainMesh>)>::query();
     for &entity in ctx.terrain_meshes.render_component_entities.iter() {
         if let Ok((transform, RenderMeshComponent(handle))) = query.get(world, entity) {
             let buffers =
@@ -547,7 +547,7 @@ fn render_terrain<S: Surface>(
                     "RenderMeshComponent existed for entity that was not in terrain_entities",
                 );
 
-            let model = transform.0.to_matrix();
+            let model = transform.to_matrix();
             let mvp = viewproj * model;
 
             if !should_draw_aabb(&mvp, &buffers.aabb) {

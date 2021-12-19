@@ -65,7 +65,7 @@ impl Default for InputState {
 
             cursor_dx: 0.0,
             cursor_dy: 0.0,
-            sensitivity: 0.25,
+            sensitivity: 0.10,
 
             cursor_currently_grabbed: false,
             cursor_should_be_grabbed: false.into(),

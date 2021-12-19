@@ -6,8 +6,22 @@ extern crate serde_derive;
 pub mod engine;
 pub mod util;
 
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
-pub struct Player;
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PlayerController {
+    player: Entity,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum CameraControllerMode {
+    Follow(Entity),
+    Static,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct CameraController {
+    camera: Entity,
+    mode: CameraControllerMode,
+}
 
 use crate::engine::{
     input::{keys, InputState},
@@ -19,83 +33,143 @@ use crate::engine::{
 };
 use engine::{
     render::mesher::MesherContext,
-    transform::{Parent, Transform},
+    transform::Transform,
     world::{registry::BlockRegistry, ChunkLoader},
     Dt, StopGameLoop,
 };
 use glium::{
     glutin::{
-        event::{Event, KeyboardInput, VirtualKeyCode, WindowEvent},
+        event::{Event, KeyboardInput, ModifiersState, VirtualKeyCode, WindowEvent},
         event_loop::{ControlFlow, EventLoop},
         window::WindowBuilder,
         ContextBuilder,
     },
     Display,
 };
-use legion::{systems::CommandBuffer, *};
+use legion::{systems::CommandBuffer, world::SubWorld, *};
+use nalgebra::{UnitQuaternion, Vector2};
 use std::{
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-#[legion::system(for_each)]
-fn player_movement(
+#[legion::system]
+fn camera_controller(
     #[resource] input: &InputState,
-    #[resource] Dt(dt): &Dt,
-    transform: &mut Transform,
-    _player: &Player,
+    #[resource] camera_controller: &mut CameraController,
+    #[resource] player_controller: &mut PlayerController,
+    world: &mut SubWorld,
+    transform_query: &mut Query<&mut Transform>,
 ) {
-    use std::f32::consts::PI;
-    let pitch = input.cursor_delta().y * (PI / 180.0);
-    let yaw = input.cursor_delta().x * (PI / 180.0);
+    let mut update_camera_transform =
+        |camera_controller: &mut CameraController, entity| match transform_query
+            .get_mut(world, entity)
+            .ok()
+            .copied()
+        {
+            None => camera_controller.mode = CameraControllerMode::Static,
+            Some(player_transform) => {
+                let camera_transform = transform_query
+                    .get_mut(world, camera_controller.camera)
+                    .unwrap();
+                *camera_transform = player_transform;
+            }
+        };
 
-    transform.rotation.x -= pitch;
-    transform.rotation.x = f32::min(transform.rotation.x, PI / 2.0);
-    transform.rotation.x = f32::max(transform.rotation.x, -PI / 2.0);
-
-    transform.rotation.y -= yaw;
-
-    let speed = 100.0 * dt.as_secs_f32();
-
-    if input.key(keys::FORWARD).is_pressed() {
-        engine::transform::creative_flight(transform, nalgebra::vector!(0.0, -speed));
-    }
-    if input.key(keys::BACKWARD).is_pressed() {
-        engine::transform::creative_flight(transform, nalgebra::vector!(0.0, speed));
-    }
-    if input.key(keys::RIGHT).is_pressed() {
-        engine::transform::creative_flight(transform, nalgebra::vector!(speed, 0.0));
-    }
-    if input.key(keys::LEFT).is_pressed() {
-        engine::transform::creative_flight(transform, nalgebra::vector!(-speed, 0.0));
-    }
-    if input.key(keys::UP).is_pressed() {
-        transform.translate_global(&nalgebra::vector!(0.0, speed, 0.0).into());
-    }
-    if input.key(keys::DOWN).is_pressed() {
-        transform.translate_global(&nalgebra::vector!(0.0, -speed, 0.0).into());
+    match camera_controller.mode {
+        CameraControllerMode::Follow(entity) => update_camera_transform(camera_controller, entity),
+        CameraControllerMode::Static => {}
     }
 
-    if input.key(VirtualKeyCode::Tab).is_rising() {
-        let grabbed = input.is_cursor_grabbed();
+    if input
+        .key(VirtualKeyCode::S)
+        .require_modifiers(ModifiersState::CTRL)
+        .is_pressed()
+    {
+        update_camera_transform(camera_controller, player_controller.player);
+        camera_controller.mode = CameraControllerMode::Static;
+    }
 
-        input.grab_cursor(!grabbed);
-        input.hide_cursor(!grabbed);
+    if input
+        .key(VirtualKeyCode::F)
+        .require_modifiers(ModifiersState::CTRL)
+        .is_pressed()
+    {
+        camera_controller.mode = CameraControllerMode::Follow(player_controller.player);
     }
 }
 
-fn setup_world(cmd: &mut CommandBuffer) {
-    let player = cmd.push((Transform::default(), Player, ChunkLoader { radius: 7 }));
+#[legion::system]
+fn player_controller(
+    #[resource] Dt(dt): &Dt,
+    #[resource] input: &InputState,
+    #[resource] player_controller: &mut PlayerController,
+    world: &mut SubWorld,
+    player_query: &mut Query<(&mut Transform,)>,
+) {
+    use std::f32::consts::PI;
 
-    let camera_entity = cmd.push((Parent(player), Camera::default(), Transform::default()));
+    let pitch_delta = input.cursor_delta().y * (PI / 180.0);
+    let yaw_delta = input.cursor_delta().x * (PI / 180.0);
+
+    if let Some((transform,)) = player_query.get_mut(world, player_controller.player).ok() {
+        transform.rotation.yaw -= yaw_delta;
+        transform.rotation.pitch -= pitch_delta;
+        transform.rotation.pitch = util::clamp(transform.rotation.pitch, -PI / 2.0, PI / 2.0);
+
+        let speed = 35.0 * dt.as_secs_f32();
+
+        if input.key(keys::FORWARD).is_pressed() {
+            creative_flight(transform, nalgebra::vector![0.0, -speed]);
+        }
+        if input.key(keys::BACKWARD).is_pressed() {
+            creative_flight(transform, nalgebra::vector![0.0, speed]);
+        }
+        if input.key(keys::RIGHT).is_pressed() {
+            creative_flight(transform, nalgebra::vector![speed, 0.0]);
+        }
+        if input.key(keys::LEFT).is_pressed() {
+            creative_flight(transform, nalgebra::vector![-speed, 0.0]);
+        }
+        if input.key(keys::UP).is_pressed() {
+            transform.translate_global(nalgebra::vector![0.0, speed, 0.0].into());
+        }
+        if input.key(keys::DOWN).is_pressed() {
+            transform.translate_global(nalgebra::vector![0.0, -speed, 0.0].into());
+        }
+
+        if input
+            .key(VirtualKeyCode::C)
+            .require_modifiers(ModifiersState::CTRL)
+            .is_rising()
+        {
+            let grabbed = input.is_cursor_grabbed();
+
+            input.grab_cursor(!grabbed);
+            input.hide_cursor(!grabbed);
+        }
+    }
+}
+
+fn creative_flight(transform: &mut Transform, translation: Vector2<f32>) {
+    // remove all components of the rotation except for the rotation in the XZ plane
+    let lateral_rotation = UnitQuaternion::from_euler_angles(0.0, transform.rotation.yaw, 0.0);
+    let local_translation = nalgebra::vector![translation.x, 0.0, translation.y];
+    transform.translate_global(lateral_rotation * local_translation);
+}
+
+fn setup_world(cmd: &mut CommandBuffer) {
+    let player = cmd.push((Transform::default(), ChunkLoader { radius: 7 }));
+    let camera = cmd.push((Camera::default(), Transform::default()));
 
     cmd.exec_mut(move |_, res| {
-        res.insert(ActiveCamera(Some(camera_entity)));
-
-        res.insert(engine::input::InputState::default());
-        res.insert(StopGameLoop(false));
-        res.insert(Dt(Duration::from_secs(1)));
+        res.insert(ActiveCamera(Some(camera)));
+        res.insert(CameraController {
+            mode: CameraControllerMode::Follow(player),
+            camera,
+        });
+        res.insert(PlayerController { player });
     });
 }
 
@@ -184,6 +258,9 @@ fn main() {
         setup_buf.flush(&mut world, &mut resources);
 
         resources.insert(voxel_world);
+        resources.insert(engine::input::InputState::default());
+        resources.insert(StopGameLoop(false));
+        resources.insert(Dt(Duration::from_secs(1)));
     }
 
     let event_loop = EventLoop::new();
@@ -213,12 +290,12 @@ fn main() {
         .add_system(engine::render::mesher::chunk_mesher_system(mesher_ctx))
         .add_system(engine::world::update_world_system())
         .flush()
-        .add_system(player_movement_system())
+        .add_system(player_controller_system())
+        .flush()
+        .add_system(camera_controller_system())
         .add_system(engine::world::load_chunks_system(
             engine::world::ChunkLoaderContext::new(&mut world),
         ))
-        .flush()
-        .add_system(engine::transform::transform_hierarchy_system())
         .build();
 
     let mut main_ctx = MainContext {
@@ -262,11 +339,4 @@ fn main() {
         }
         _ => {}
     });
-
-    // while !resources
-    //     .get::<res::StopGameLoop>()
-    //     .map_or(true, |val| val.0)
-    // {
-
-    // }
 }
