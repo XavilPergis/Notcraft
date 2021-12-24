@@ -2,9 +2,9 @@ use crate::engine::{
     math::*,
     transform::Transform,
     world::{
-        chunk::{ChunkKind, ChunkPos, CHUNK_LENGTH},
+        chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
         registry::{BlockId, BlockRegistry},
-        ChunkEvent, VoxelWorld, WorldChunks,
+        ChunkEvent, VoxelWorld,
     },
     Side,
 };
@@ -15,7 +15,7 @@ use legion::{systems::CommandBuffer, Entity};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, RwLockReadGuard},
+    sync::Arc,
 };
 
 use super::renderer::{Aabb, MeshBuffers, RenderMeshComponent, SharedMeshContext, UploadableMesh};
@@ -46,6 +46,32 @@ impl MeshTracker {
 
     // INVARIANT: for a chunk X and each value Y of `constraining[X]`,
     // `constrained_by[Y]` must contain X
+
+    fn chunk_mesh_failed(&mut self, chunk: ChunkPos) {
+        // by the time it gets here, the failed chunk might have been unloaded itself,
+        // or might have had its neighbors been unloaded. if it was unloaded itself,
+        // there is nothing to do because of the `have_data` invariants.
+        if !self.have_data.contains(&chunk) {
+            return;
+        }
+
+        neighbors(chunk, |neighbor| {
+            if !self.have_data.contains(&neighbor) {
+                self.constraining.entry(neighbor).or_default().insert(chunk);
+                self.constrained_by
+                    .entry(chunk)
+                    .or_default()
+                    .insert(neighbor);
+            }
+        });
+
+        // it might be the case that a mesh failed because of unloaded neighbors, but
+        // between the time that the failed response was queued and now, the neighbors
+        // became loaded.
+        if !self.constrained_by.contains_key(&chunk) {
+            self.unconstrained.insert(chunk);
+        }
+    }
 
     fn chunk_added(&mut self, chunk: ChunkPos) {
         self.have_data.insert(chunk);
@@ -193,7 +219,7 @@ fn update_tracker(ctx: &mut MesherContext, cmd: &mut CommandBuffer) {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
-pub struct HashTerrainMesh;
+pub struct HasTerrainMesh;
 
 fn update_completed_meshes(
     ctx: &mut MesherContext,
@@ -201,39 +227,70 @@ fn update_completed_meshes(
     mesh_context: &Arc<SharedMeshContext<TerrainMesh>>,
 ) {
     for completed in ctx.mesh_rx.try_iter() {
-        if ctx.tracker.have_data.contains(&completed.pos) {
-            let entity = *ctx
-                .terrain_entities
-                .entry(completed.pos)
-                .or_insert_with(|| cmd.push(()));
+        match completed {
+            CompletedMesh::Completed { pos, terrain } => {
+                if ctx.tracker.have_data.contains(&pos) {
+                    let entity = *ctx
+                        .terrain_entities
+                        .entry(pos)
+                        .or_insert_with(|| cmd.push(()));
 
-            let world_pos: Point3<f32> = completed.pos.origin().origin().into();
-            let transform = Transform::from(world_pos);
+                    let world_pos: Point3<f32> = pos.origin().origin().into();
+                    let transform = Transform::from(world_pos);
 
-            let mesh_handle = mesh_context.upload(completed.terrain);
-            cmd.add_component(entity, RenderMeshComponent::new(mesh_handle));
-            cmd.add_component(entity, transform);
+                    let mesh_handle = mesh_context.upload(terrain);
+                    cmd.add_component(entity, RenderMeshComponent::new(mesh_handle));
+                    cmd.add_component(entity, transform);
+                }
+            }
+            CompletedMesh::Failed { pos } => ctx.tracker.chunk_mesh_failed(pos),
         }
     }
 }
 
-fn queue_mesh_jobs(ctx: &mut MesherContext, voxel_world: &VoxelWorld) {
+fn next_mesh_chunk(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) -> Option<ChunkSnapshot> {
+    let &pos = ctx.tracker.unconstrained.iter().next()?;
+    match world.chunk(pos) {
+        Some(chunk) => Some(chunk.snapshot()),
+        None => {
+            log::warn!(
+                "chunk {:?} was tracked for meshing but didnt exist in the world",
+                pos
+            );
+            ctx.tracker.unconstrained.remove(&pos);
+            None
+        }
+    }
+}
+
+fn queue_mesh_jobs(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) {
     let mut remaining_this_frame = 4;
-    while let Some(&pos) = ctx.tracker.unconstrained.iter().next() {
-        match voxel_world.read(pos, &voxel_world.guard()).as_deref() {
-            Some(ChunkKind::Homogeneous(_id)) => {
-                // FIXME: causes holes when a solid homogeneous chunk touches air
+
+    while let Some(chunk) = next_mesh_chunk(ctx, world) {
+        if remaining_this_frame == 0 {
+            break;
+        }
+
+        let pos = chunk.pos();
+        match chunk.data() {
+            ChunkData::Homogeneous(_id) => {
+                // FIXME: causes holes when a solid homogeneous chunk touches
+                // air
                 ctx.tracker.unconstrained.remove(&pos);
             }
 
-            Some(ChunkKind::Array(_)) => {
-                let chunks = voxel_world.chunks();
-                let registry = Arc::clone(&voxel_world.registry);
+            ChunkData::Array(_) => {
+                let world = Arc::clone(world);
                 let sender = ctx.mesh_tx.clone();
 
+                // note that we explicittly dont move the locked chunk to the new thread,
+                // because otherwise we would keep the chunk locked while no progress on meshing
+                // the chunk would be made.
                 ctx.mesher_pool.spawn(move || {
-                    if let Some(neighbors) = ChunkNeighbors::lock(&chunks, &chunks.guard(), pos) {
-                        MeshCreationContext::new(pos, neighbors, registry).mesh(sender);
+                    if let Some(neighbors) = ChunkNeighbors::lock(&world, pos) {
+                        MeshCreationContext::new(pos, neighbors, &world).mesh(sender);
+                    } else {
+                        sender.send(CompletedMesh::Failed { pos }).unwrap();
                     }
                 });
 
@@ -241,12 +298,7 @@ fn queue_mesh_jobs(ctx: &mut MesherContext, voxel_world: &VoxelWorld) {
                 ctx.tracker.unconstrained.remove(&pos);
 
                 remaining_this_frame -= 1;
-                if remaining_this_frame == 0 {
-                    break;
-                }
             }
-
-            None => {}
         }
     }
 }
@@ -263,8 +315,8 @@ pub fn chunk_mesher(
     update_completed_meshes(ctx, cmd, mesh_context);
 }
 
-struct ChunkNeighbors<'w> {
-    chunks: Vec<RwLockReadGuard<'w, ChunkKind>>,
+struct ChunkNeighbors {
+    chunks: Vec<ChunkSnapshot>,
 }
 
 fn chunks_index_and_offset(n: ChunkAxisOffset) -> (usize, usize) {
@@ -276,18 +328,14 @@ fn chunks_index_and_offset(n: ChunkAxisOffset) -> (usize, usize) {
     }
 }
 
-impl<'w> ChunkNeighbors<'w> {
-    fn lock(
-        world: &'w WorldChunks,
-        guard: &'w flurry::epoch::Guard,
-        pos: ChunkPos,
-    ) -> Option<Self> {
+impl ChunkNeighbors {
+    fn lock(world: &Arc<VoxelWorld>, pos: ChunkPos) -> Option<Self> {
         let mut chunks = Vec::with_capacity(27);
 
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    chunks.push(world.read(pos.offset([dx, dy, dz]), guard)?);
+                    chunks.push(world.chunk(pos.offset([dx, dy, dz]))?.snapshot());
                 }
             }
         }
@@ -301,9 +349,9 @@ impl<'w> ChunkNeighbors<'w> {
         let (cy, my) = chunks_index_and_offset(y);
         let (cz, mz) = chunks_index_and_offset(z);
 
-        match &*self.chunks[9 * cx + 3 * cy + cz] {
-            ChunkKind::Homogeneous(id) => *id,
-            ChunkKind::Array(arr) => arr[[mx, my, mz]],
+        match self.chunks[9 * cx + 3 * cy + cz].data() {
+            ChunkData::Homogeneous(id) => *id,
+            ChunkData::Array(arr) => arr[[mx, my, mz]],
         }
     }
 }
@@ -337,9 +385,9 @@ struct VoxelFace {
     visited: bool,
 }
 
-struct MeshCreationContext<'w> {
+struct MeshCreationContext {
     registry: Arc<BlockRegistry>,
-    chunks: ChunkNeighbors<'w>,
+    chunks: ChunkNeighbors,
     mesh_constructor: MeshConstructor,
     pos: ChunkPos,
     slice: Vec<VoxelFace>,
@@ -350,15 +398,15 @@ const fn idx(u: ChunkAxis, v: ChunkAxis) -> usize {
     CHUNK_LENGTH * u as usize + v as usize
 }
 
-impl<'w> MeshCreationContext<'w> {
-    pub fn new(pos: ChunkPos, neighbors: ChunkNeighbors<'w>, registry: Arc<BlockRegistry>) -> Self {
+impl MeshCreationContext {
+    pub fn new(pos: ChunkPos, neighbors: ChunkNeighbors, world: &Arc<VoxelWorld>) -> Self {
         let mesh_constructor = MeshConstructor {
-            registry: Arc::clone(&registry),
+            registry: Arc::clone(&world.registry),
             terrain_mesh: Default::default(),
         };
 
         MeshCreationContext {
-            registry: Arc::clone(&registry),
+            registry: Arc::clone(&world.registry),
             chunks: neighbors,
             pos,
             slice: vec![VoxelFace::default(); crate::engine::world::chunk::CHUNK_AREA],
@@ -535,7 +583,7 @@ impl<'w> MeshCreationContext<'w> {
         self.mesh_slice(Side::Back, |layer, u, v| na::point!(u, v, layer));
 
         sender
-            .send(CompletedMesh {
+            .send(CompletedMesh::Completed {
                 pos: self.pos,
                 terrain: self.mesh_constructor.terrain_mesh,
             })
@@ -543,9 +591,9 @@ impl<'w> MeshCreationContext<'w> {
     }
 }
 
-struct CompletedMesh {
-    pos: ChunkPos,
-    terrain: TerrainMesh,
+enum CompletedMesh {
+    Completed { pos: ChunkPos, terrain: TerrainMesh },
+    Failed { pos: ChunkPos },
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]

@@ -32,9 +32,21 @@ use crate::engine::{
     world::VoxelWorld,
 };
 use engine::{
-    render::mesher::MesherContext,
+    audio::{intermittent_music_system, MusicState},
+    input::input_compiler_system,
+    physics::{
+        apply_gravity_system, apply_rigidbody_motion_system, terrain_collision_system,
+        update_previous_colliders_system, AabbCollider, RigidBody,
+    },
+    render::{
+        mesher::{chunk_mesher_system, MesherContext},
+        renderer::Aabb,
+    },
     transform::Transform,
-    world::{registry::BlockRegistry, ChunkLoader},
+    world::{
+        load_chunks_system, registry::BlockRegistry, update_world_system, ChunkLoaderContext,
+        DynamicChunkLoader,
+    },
     Dt, StopGameLoop,
 };
 use glium::{
@@ -47,7 +59,7 @@ use glium::{
     Display,
 };
 use legion::{systems::CommandBuffer, world::SubWorld, *};
-use nalgebra::{UnitQuaternion, Vector2};
+use nalgebra::{UnitQuaternion, Vector2, Vector3};
 use std::{
     rc::Rc,
     sync::Arc,
@@ -73,7 +85,7 @@ fn camera_controller(
                 let camera_transform = transform_query
                     .get_mut(world, camera_controller.camera)
                     .unwrap();
-                *camera_transform = player_transform;
+                *camera_transform = player_transform.translated(&nalgebra::vector![0.0, 1.8, 0.0]);
             }
         };
 
@@ -85,7 +97,7 @@ fn camera_controller(
     if input
         .key(VirtualKeyCode::S)
         .require_modifiers(ModifiersState::CTRL)
-        .is_pressed()
+        .is_rising()
     {
         update_camera_transform(camera_controller, player_controller.player);
         camera_controller.mode = CameraControllerMode::Static;
@@ -94,7 +106,7 @@ fn camera_controller(
     if input
         .key(VirtualKeyCode::F)
         .require_modifiers(ModifiersState::CTRL)
-        .is_pressed()
+        .is_rising()
     {
         camera_controller.mode = CameraControllerMode::Follow(player_controller.player);
     }
@@ -106,37 +118,60 @@ fn player_controller(
     #[resource] input: &InputState,
     #[resource] player_controller: &mut PlayerController,
     world: &mut SubWorld,
-    player_query: &mut Query<(&mut Transform,)>,
+    player_query: &mut Query<(&mut Transform, &mut RigidBody)>,
 ) {
     use std::f32::consts::PI;
 
     let pitch_delta = input.cursor_delta().y * (PI / 180.0);
     let yaw_delta = input.cursor_delta().x * (PI / 180.0);
 
-    if let Some((transform,)) = player_query.get_mut(world, player_controller.player).ok() {
+    if let Some((transform, rigidbody)) = player_query.get_mut(world, player_controller.player).ok()
+    {
         transform.rotation.yaw -= yaw_delta;
         transform.rotation.pitch -= pitch_delta;
         transform.rotation.pitch = util::clamp(transform.rotation.pitch, -PI / 2.0, PI / 2.0);
 
-        let speed = 35.0 * dt.as_secs_f32();
+        let acceleration = 4.0;
+        const JUMP_VELOCITY: f32 = 20.0;
+
+        let mut speed = 5.0 * dt.as_secs_f32();
+
+        if input.key(VirtualKeyCode::LControl).is_pressed() {
+            speed *= 10.0;
+        }
 
         if input.key(keys::FORWARD).is_pressed() {
-            creative_flight(transform, nalgebra::vector![0.0, -speed]);
+            // rigidbody.acceleration +=
+            //     transform_project_xz(transform, nalgebra::vector![0.0, -acceleration]);
+            transform.translation.vector +=
+                transform_project_xz(transform, nalgebra::vector![0.0, -speed]);
         }
         if input.key(keys::BACKWARD).is_pressed() {
-            creative_flight(transform, nalgebra::vector![0.0, speed]);
+            // rigidbody.acceleration +=
+            //     transform_project_xz(transform, nalgebra::vector![0.0, acceleration]);
+            transform.translation.vector +=
+                transform_project_xz(transform, nalgebra::vector![0.0, speed]);
         }
         if input.key(keys::RIGHT).is_pressed() {
-            creative_flight(transform, nalgebra::vector![speed, 0.0]);
+            // rigidbody.acceleration +=
+            //     transform_project_xz(transform, nalgebra::vector![acceleration, 0.0]);
+            transform.translation.vector +=
+                transform_project_xz(transform, nalgebra::vector![speed, 0.0]);
         }
         if input.key(keys::LEFT).is_pressed() {
-            creative_flight(transform, nalgebra::vector![-speed, 0.0]);
+            // rigidbody.acceleration +=
+            //     transform_project_xz(transform, nalgebra::vector![-acceleration, 0.0]);
+            transform.translation.vector +=
+                transform_project_xz(transform, nalgebra::vector![-speed, 0.0]);
         }
         if input.key(keys::UP).is_pressed() {
-            transform.translate_global(nalgebra::vector![0.0, speed, 0.0].into());
+            // rigidbody.velocity.y = acceleration;
+            transform.translation.vector.y += speed;
         }
         if input.key(keys::DOWN).is_pressed() {
-            transform.translate_global(nalgebra::vector![0.0, -speed, 0.0].into());
+            // rigidbody.acceleration += nalgebra::vector![0.0, -acceleration,
+            // 0.0];
+            transform.translation.vector.y -= speed;
         }
 
         if input
@@ -152,15 +187,25 @@ fn player_controller(
     }
 }
 
-fn creative_flight(transform: &mut Transform, translation: Vector2<f32>) {
+fn transform_project_xz(transform: &Transform, translation: Vector2<f32>) -> Vector3<f32> {
     // remove all components of the rotation except for the rotation in the XZ plane
     let lateral_rotation = UnitQuaternion::from_euler_angles(0.0, transform.rotation.yaw, 0.0);
     let local_translation = nalgebra::vector![translation.x, 0.0, translation.y];
-    transform.translate_global(lateral_rotation * local_translation);
+    lateral_rotation * local_translation
 }
 
 fn setup_world(cmd: &mut CommandBuffer) {
-    let player = cmd.push((Transform::default(), ChunkLoader { radius: 7 }));
+    let player = cmd.push((
+        Transform::default().translated(&nalgebra::vector![0.0, 10.0, 0.0]),
+        AabbCollider {
+            aabb: Aabb::with_dimensions(nalgebra::vector![0.8, 2.0, 0.8]),
+        },
+        RigidBody::default(),
+        DynamicChunkLoader {
+            load_radius: 7,
+            unload_radius: 8,
+        },
+    ));
     let camera = cmd.push((Camera::default(), Transform::default()));
 
     cmd.exec_mut(move |_, res| {
@@ -267,7 +312,7 @@ fn main() {
     let (window_events_tx, window_events_rx) = crossbeam_channel::unbounded();
 
     let window = WindowBuilder::new().with_title("Notcraft™");
-    let ctx = ContextBuilder::new().with_depth_buffer(24);
+    let ctx = ContextBuilder::new().with_depth_buffer(24).with_vsync(true);
 
     let display = Rc::new(Display::new(window, ctx, &event_loop).unwrap());
 
@@ -280,22 +325,29 @@ fn main() {
     .unwrap();
 
     let schedule = Schedule::builder()
-        .add_thread_local(engine::input::input_compiler_system(
-            window_events_rx,
-            Rc::clone(&display),
-        ))
-        .add_thread_local(engine::audio::intermittent_music_system(
-            engine::audio::MusicState::new(),
-        ))
-        .add_system(engine::render::mesher::chunk_mesher_system(mesher_ctx))
-        .add_system(engine::world::update_world_system())
+        .add_thread_local(input_compiler_system(window_events_rx, Rc::clone(&display)))
+        .add_thread_local(intermittent_music_system(MusicState::new()))
+        .add_system(chunk_mesher_system(mesher_ctx))
+        // all modifications to entities with `Transform`s + `AabbCollider`s should be made after
+        // this system has been flushed.
+        .add_system(update_previous_colliders_system())
+        // maintain the world (primarily flush queued chunk writes). systems that read the current
+        // state of the world should happen after this sytem has been flushed.
+        .add_system(update_world_system())
         .flush()
         .add_system(player_controller_system())
+        // .add_system(apply_gravity_system())
         .flush()
+        .add_system(apply_rigidbody_motion_system())
+        .flush()
+        // all modifications to entities with `Transform`s + `AabbCollider`s should be flushed by
+        // this point.
+        .add_system(terrain_collision_system())
+        .flush()
+        // modifications to the entity being followed by the camera controller should be flushed by
+        // this point.
         .add_system(camera_controller_system())
-        .add_system(engine::world::load_chunks_system(
-            engine::world::ChunkLoaderContext::new(&mut world),
-        ))
+        .add_system(load_chunks_system(ChunkLoaderContext::new(&mut world)))
         .build();
 
     let mut main_ctx = MainContext {

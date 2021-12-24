@@ -1,17 +1,6 @@
 use nalgebra::{vector, Point3, Vector3};
 use std::cmp::Ordering;
 
-// pub fn aspect_ratio(window: &GlWindow) -> Option<f32> {
-//     window.get_inner_size().map(|size| {
-//         let size: (f64, f64) =
-// size.to_physical(window.get_hidpi_factor()).into();         size.0 as f32 /
-// size.1 as f32     })
-// }
-
-// pub fn lerp_angle(a: Deg<f32>, b: Deg<f32>, t: f32) -> Deg<f32> {
-//     Deg(a.0 * (1.0 - t) + b.0 * clamp(t, 0.0, 1.0))
-// }
-
 #[inline(always)]
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a * (1.0 - t) + b * t
@@ -57,6 +46,11 @@ pub fn is_within<T: PartialOrd + Copy>(t: T, min: T, max: T) -> bool {
     t >= min && t <= max
 }
 
+#[inline(always)]
+pub fn is_between<T: PartialOrd + Copy>(t: T, min: T, max: T) -> bool {
+    t > min && t < max
+}
+
 /// x / y, round towards negative inf
 #[inline(always)]
 pub fn floor_div(x: i32, y: i32) -> i32 {
@@ -68,14 +62,6 @@ pub fn floor_div(x: i32, y: i32) -> i32 {
         result
     }
 }
-
-// pub fn to_vector<S>(point: Point3<S>) -> Vector3<S> {
-//     Vector3::new(point.x, point.y, point.z)
-// }
-
-// pub fn to_point<S>(vec: Vector3<S>) -> Point3<S> {
-//     Point3::new(vec.x, vec.y, vec.z)
-// }
 
 /// Tests if `pos` is within `r` units from `center`
 pub fn in_range(pos: Point3<i32>, center: Point3<i32>, radii: Vector3<i32>) -> bool {
@@ -102,3 +88,19 @@ pub fn read_file<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<String> 
 
     Ok(buffer)
 }
+
+pub struct Defer<F: FnOnce()>(pub Option<F>);
+impl<F: FnOnce()> Drop for Defer<F> {
+    fn drop(&mut self) {
+        (self.0.take().unwrap())();
+    }
+}
+
+#[macro_export]
+macro_rules! defer {
+    ($($code:tt)*) => {
+        let _defer = $crate::util::Defer(Some(|| drop({ $($code)* })));
+    };
+}
+
+pub use defer;

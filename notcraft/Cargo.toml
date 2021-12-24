@@ -30,3 +30,10 @@ nalgebra = "0.29.0"
 
 glium = "0.30.2"
 legion = "0.4.0"
+
+arc-swap = "1.5.0"
+
+# NOTE: the `send_guard` feature is important because we use raw rwlocks in chunk management code,
+# where it is very possible that locked chunks get send across thread boundaries, such that a raw
+# unlock happens on a different thread than the raw lock.
+parking_lot = { version = "0.11.2", features = ["send_guard"] }

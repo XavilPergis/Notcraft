@@ -1,5 +1,5 @@
 use super::{
-    chunk::ChunkKind,
+    chunk::ChunkData,
     registry::{BlockId, BlockRegistry, AIR},
     ChunkHeightmapPos, ChunkPos,
 };
@@ -63,13 +63,15 @@ fn generate_surface_heights(
                 CHUNK_LENGTH as f32 * pos.z as f32 + dz as f32,
             );
 
-            let wx = x + 200.0 * warp_noise_x.sample(x, z);
-            let wz = z + 200.0 * warp_noise_z.sample(x, z);
+            // let wx = x + 200.0 * warp_noise_x.sample(x, z);
+            // let wz = z + 200.0 * warp_noise_z.sample(x, z);
 
-            let warped = 2000.0 * (mountainous_noise.sample(wx, wz) * 0.5 + 0.5);
-            let mountain = 800.0 * (mountainous_noise_unwarped.sample(x, z) * 0.5 + 0.5);
-            let rolling = 100.0 * rolling_noise.sample(x, z);
-            let result = rolling + mix_noise.sample(x, z) * (warped + mountain);
+            // let warped = 2000.0 * (mountainous_noise.sample(wx, wz) * 0.5 + 0.5);
+            // let mountain = 800.0 * (mountainous_noise_unwarped.sample(x, z) * 0.5 + 0.5);
+            // let rolling = 100.0 * rolling_noise.sample(x, z);
+            // let result = rolling + mix_noise.sample(x, z) * (warped + mountain);
+
+            let result = 100.0 * f32::sin(x / 30.0) * f32::cos(z / 30.0);
 
             min = f32::min(min, result);
             max = f32::max(max, result);
@@ -175,13 +177,13 @@ impl ChunkGenerator {
         }
     }
 
-    pub fn make_chunk(&self, pos: ChunkPos, heights: SurfaceHeightmap) -> ChunkKind {
+    pub fn make_chunk(&self, pos: ChunkPos, heights: SurfaceHeightmap) -> ChunkData {
         let base_y = pos.origin().y as f32;
 
         if base_y > heights.max {
-            return ChunkKind::Homogeneous(AIR);
+            return ChunkData::Homogeneous(AIR);
         } else if (base_y + CHUNK_LENGTH as f32) < heights.min {
-            return ChunkKind::Homogeneous(self.stone_id);
+            return ChunkData::Homogeneous(self.stone_id);
         }
 
         let mut chunk_data = Vec::with_capacity(CHUNK_VOLUME);
@@ -194,6 +196,6 @@ impl ChunkGenerator {
         }
 
         assert!(!chunk_data.is_empty());
-        ChunkKind::Array(chunk_data.into_boxed_slice().try_into().unwrap())
+        ChunkData::Array(chunk_data.into_boxed_slice().try_into().unwrap())
     }
 }

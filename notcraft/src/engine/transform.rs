@@ -34,6 +34,15 @@ impl Transform {
         self.translation.vector += translation.component_mul(&self.scale);
     }
 
+    pub fn translated(&self, translation: &Vector3<f32>) -> Transform {
+        Transform {
+            translation: Translation3::from(
+                self.translation.vector + translation.component_mul(&self.scale),
+            ),
+            ..*self
+        }
+    }
+
     pub fn to_matrix(&self) -> Matrix4<f32> {
         // The model/world matrix takes points in local space and vonverts them to world
         // space.

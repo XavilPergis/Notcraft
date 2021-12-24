@@ -1,8 +1,15 @@
-use crate::engine::world::registry::BlockId;
+use crate::{engine::world::registry::BlockId, util};
+use arc_swap::ArcSwap;
+use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Point3;
+use parking_lot::{lock_api::RawRwLock as RawRwLockApi, RawRwLock};
 use std::{
+    cell::UnsafeCell,
     ops::{Index, IndexMut},
-    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 // The width of the chunk is `2 ^ SIZE_BITS`
@@ -12,17 +19,99 @@ pub const CHUNK_LENGTH: usize = 1 << CHUNK_LENGTH_BITS;
 pub const CHUNK_AREA: usize = CHUNK_LENGTH * CHUNK_LENGTH;
 pub const CHUNK_VOLUME: usize = CHUNK_LENGTH * CHUNK_LENGTH * CHUNK_LENGTH;
 
-#[derive(Debug)]
-pub struct Chunk {
-    pos: ChunkPos,
-    kind: RwLock<ChunkKind>,
+#[derive(Clone)]
+pub struct ChunkSnapshot {
+    inner: Arc<ChunkInner>,
 }
 
-impl Chunk {
-    pub fn new(pos: ChunkPos, kind: ChunkKind) -> Self {
+impl ChunkSnapshot {
+    fn acquire(inner: Arc<ChunkInner>) -> Self {
+        inner.lock.lock_shared();
+        Self { inner }
+    }
+
+    pub fn pos(&self) -> ChunkPos {
+        self.inner.pos
+    }
+
+    pub fn data(&self) -> &ChunkData {
+        unsafe { &*self.inner.data.get() }
+    }
+
+    /// returns true if this chunk reader is known to be orphaned, and therefore
+    /// not the most up-to-date version of the chunk data in this location. it
+    /// is important to note that this _may_ return false even if the reader has
+    /// been orphaned, and is meant more for coarse-grained optimizations.
+    pub fn is_orphaned(&self) -> bool {
+        self.inner.orphaned.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for ChunkSnapshot {
+    fn drop(&mut self) {
+        unsafe { self.inner.lock.unlock_shared() };
+    }
+}
+
+struct ChunkInner {
+    pos: ChunkPos,
+    lock: RawRwLock,
+    data: UnsafeCell<ChunkData>,
+    orphaned: AtomicBool,
+}
+
+// impl Drop for ChunkInner {
+//     fn drop(&mut self) {
+//         log::debug!(
+//             "inner dropped! {} {} {}",
+//             self.pos.x,
+//             self.pos.y,
+//             self.pos.z
+//         );
+//     }
+// }
+
+impl ChunkInner {
+    pub fn new(pos: ChunkPos, data: ChunkData) -> Self {
         Self {
             pos,
-            kind: RwLock::new(kind),
+            lock: RawRwLock::INIT,
+            data: UnsafeCell::new(data),
+            orphaned: AtomicBool::new(false),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ChunkUpdate {
+    pub index: ChunkIndex,
+    pub id: BlockId,
+}
+
+pub struct Chunk {
+    pos: ChunkPos,
+    inner: ArcSwap<ChunkInner>,
+    dirty: AtomicBool,
+    dirty_sender: Sender<ChunkPos>,
+    write_queue_tx: Sender<ChunkUpdate>,
+    write_queue_rx: Receiver<ChunkUpdate>,
+}
+
+unsafe impl Send for Chunk {}
+unsafe impl Sync for Chunk {}
+
+impl Chunk {
+    pub fn new(dirty_sender: &Sender<ChunkPos>, pos: ChunkPos, kind: ChunkData) -> Self {
+        let (write_queue_tx, write_queue_rx) = crossbeam_channel::unbounded();
+        let inner = ArcSwap::from_pointee(ChunkInner::new(pos, kind));
+
+        Self {
+            pos,
+            inner,
+            dirty: AtomicBool::new(false),
+            dirty_sender: dirty_sender.clone(),
+            write_queue_tx,
+            write_queue_rx,
         }
     }
 
@@ -30,33 +119,108 @@ impl Chunk {
         self.pos
     }
 
-    pub fn read(&self) -> Option<RwLockReadGuard<ChunkKind>> {
-        match self.kind.try_read() {
-            Ok(guard) => Some(guard),
-            Err(TryLockError::WouldBlock) => None,
-            Err(TryLockError::Poisoned(_)) => panic!("chunk was poisoned"),
-        }
+    pub fn snapshot(&self) -> ChunkSnapshot {
+        ChunkSnapshot::acquire(self.inner.load_full())
     }
 
-    pub fn write(&self) -> Option<RwLockWriteGuard<ChunkKind>> {
-        match self.kind.try_write() {
-            Ok(guard) => Some(guard),
-            Err(TryLockError::WouldBlock) => None,
-            Err(TryLockError::Poisoned(_)) => panic!("chunk was poisoned"),
+    pub fn queue_write(&self, index: ChunkIndex, id: BlockId) {
+        self.write_queue_tx.send(ChunkUpdate { index, id }).unwrap();
+
+        if !self.dirty.swap(true, Ordering::SeqCst) {
+            self.dirty_sender.send(self.pos).unwrap();
         }
     }
 }
 
+fn write_chunk_updates_array<I: Iterator<Item = ChunkUpdate>>(data: &mut ArrayChunk, updates: I) {
+    updates.for_each(|update| data[update.index] = update.id);
+}
+
+fn write_chunk_updates<I: Iterator<Item = ChunkUpdate>>(data: &mut ChunkData, mut updates: I) {
+    match data {
+        &mut ChunkData::Homogeneous(id) => {
+            let differing = loop {
+                match updates.next() {
+                    None => return,
+                    Some(update) if update.id == id => {}
+                    Some(update) => break update,
+                }
+            };
+
+            let mut chunk = ArrayChunk::homogeneous(id);
+            chunk[differing.index] = differing.id;
+            write_chunk_updates_array(&mut chunk, updates);
+
+            *data = ChunkData::Array(chunk);
+        }
+        ChunkData::Array(data) => write_chunk_updates_array(data, updates),
+    };
+}
+
+// the idea here is to queue writes to this chunk, and flush the queue once a
+// frame when there are modifications, and importantly, orphaning any current
+// readers to prevent race conditions when we go to write our updates to actual
+// chunk data.
+//
+// NOTE: this should not be called concurrently, the only guarantee is
+// concurrent calls will not produce UB.
+pub(crate) fn flush_chunk_writes(chunk: &Chunk) {
+    // we clear the dirty flag here before processing anything in the queue, which
+    // is okay. it just means that if we get updates before the queue is drained and
+    // none after it is, then this chunk will be queued to be rechecked when there
+    // are no pending updates.
+    if !chunk.dirty.swap(false, Ordering::SeqCst) || chunk.write_queue_rx.is_empty() {
+        return;
+    }
+
+    let old_inner = chunk.inner.load();
+    if old_inner.lock.try_lock_exclusive() {
+        util::defer!(unsafe { old_inner.lock.unlock_exclusive() });
+
+        let data = unsafe { &mut *old_inner.data.get() };
+        write_chunk_updates(data, chunk.write_queue_rx.try_iter());
+    } else {
+        log::debug!("flush failed, orphaning");
+        old_inner.lock.lock_shared();
+        util::defer!(unsafe { old_inner.lock.unlock_shared() });
+
+        let mut chunk_data_copy = unsafe { (*old_inner.data.get()).clone() };
+        write_chunk_updates(&mut chunk_data_copy, chunk.write_queue_rx.try_iter());
+
+        chunk
+            .inner
+            .store(Arc::new(ChunkInner::new(chunk.pos, chunk_data_copy)));
+        old_inner.orphaned.store(true, Ordering::SeqCst);
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub enum ChunkKind {
+pub enum ChunkData {
     Homogeneous(BlockId),
     Array(ArrayChunk),
+}
+
+impl ChunkData {
+    pub fn get(&self, index: ChunkIndex) -> BlockId {
+        match self {
+            &ChunkData::Homogeneous(id) => id,
+            ChunkData::Array(data) => data[index],
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ArrayChunk {
     // data order is XZY
     data: Box<[BlockId]>,
+}
+
+impl ArrayChunk {
+    pub fn homogeneous(id: BlockId) -> Self {
+        Self {
+            data: vec![id; CHUNK_VOLUME].into_boxed_slice(),
+        }
+    }
 }
 
 pub fn is_in_chunk_bounds(x: usize, y: usize, z: usize) -> bool {
@@ -78,6 +242,8 @@ impl<I: Into<[usize; 3]>> Index<I> for ArrayChunk {
         )
     }
 }
+
+pub type ChunkIndex = [usize; 3];
 
 impl<I: Into<[usize; 3]>> IndexMut<I> for ArrayChunk {
     fn index_mut(&mut self, index: I) -> &mut Self::Output {

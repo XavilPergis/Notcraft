@@ -1,4 +1,4 @@
-use crate::engine::world::chunk::{ChunkKind, CHUNK_LENGTH};
+use crate::engine::world::chunk::CHUNK_LENGTH;
 use crossbeam_channel::{Receiver, Sender};
 use legion::{world::SubWorld, Entity, IntoQuery, World};
 use nalgebra::Point3;
@@ -8,7 +8,7 @@ use std::{
     hash::Hash,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, RwLockReadGuard, RwLockWriteGuard,
+        Arc,
     },
     time::Duration,
 };
@@ -122,6 +122,18 @@ impl BlockPos {
             z: self.z as f32,
         }
     }
+
+    pub fn chunk_and_offset(self) -> (ChunkPos, [usize; 3]) {
+        let chunk_pos = ChunkPos::from(self);
+        let block_base = chunk_pos.origin();
+        let offset = [
+            (self.x - block_base.x) as usize,
+            (self.y - block_base.y) as usize,
+            (self.z - block_base.z) as usize,
+        ];
+
+        (chunk_pos, offset)
+    }
 }
 
 impl WorldPos {
@@ -140,31 +152,6 @@ impl WorldPos {
     }
 }
 
-#[derive(Debug)]
-pub struct WorldChunks(Arc<flurry::HashMap<ChunkPos, Arc<Chunk>>>);
-
-impl WorldChunks {
-    pub fn guard(&self) -> flurry::epoch::Guard {
-        self.0.guard()
-    }
-
-    pub fn read<'g>(
-        &'g self,
-        pos: ChunkPos,
-        guard: &'g flurry::epoch::Guard,
-    ) -> Option<RwLockReadGuard<'g, ChunkKind>> {
-        self.0.get(&pos, guard).and_then(|chunk| chunk.read())
-    }
-
-    pub fn write<'g>(
-        &'g self,
-        pos: ChunkPos,
-        guard: &'g flurry::epoch::Guard,
-    ) -> Option<RwLockWriteGuard<'g, ChunkKind>> {
-        self.0.get(&pos, guard).and_then(|chunk| chunk.write())
-    }
-}
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ChunkHeightmapPos {
     pub x: i32,
@@ -177,13 +164,14 @@ impl From<ChunkPos> for ChunkHeightmapPos {
     }
 }
 
-#[derive(Debug)]
 pub struct VoxelWorld {
     pub registry: Arc<BlockRegistry>,
     pub chunk_event_notifier: Receiver<ChunkEvent>,
 
     chunks: Arc<flurry::HashMap<ChunkPos, Arc<Chunk>>>,
     chunk_event_sender: Sender<ChunkEvent>,
+    dirty_chunks_rx: Receiver<ChunkPos>,
+    dirty_chunks_tx: Sender<ChunkPos>,
 
     world_gen_pool: ThreadPool,
     chunk_generator: Arc<generation::ChunkGenerator>,
@@ -193,7 +181,7 @@ pub struct VoxelWorld {
     chunks_in_progress: Arc<flurry::HashMap<ChunkPos, Arc<AtomicBool>>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum ChunkEvent {
     Added(Arc<Chunk>),
     Removed(Arc<Chunk>),
@@ -203,6 +191,7 @@ pub enum ChunkEvent {
 impl VoxelWorld {
     pub fn new(registry: Arc<BlockRegistry>) -> Arc<Self> {
         let (chunk_event_tx, chunk_event_rx) = crossbeam_channel::unbounded();
+        let (dirty_chunks_tx, dirty_chunks_rx) = crossbeam_channel::unbounded();
         let world_gen_pool = ThreadPoolBuilder::new().build().unwrap();
 
         let chunk_generator = Arc::new(generation::ChunkGenerator::new_default(&registry));
@@ -218,6 +207,8 @@ impl VoxelWorld {
 
             chunk_event_sender: chunk_event_tx,
             chunk_event_notifier: chunk_event_rx,
+            dirty_chunks_tx,
+            dirty_chunks_rx,
         })
     }
 
@@ -239,7 +230,7 @@ impl VoxelWorld {
                     let heights = world.surface_cache.surface_heights(pos.into());
                     let chunk_data = world.chunk_generator.make_chunk(pos, heights);
 
-                    let chunk = Arc::new(Chunk::new(pos, chunk_data));
+                    let chunk = Arc::new(Chunk::new(&world.dirty_chunks_tx, pos, chunk_data));
 
                     // insert before and remove if cancelled to prevent a user from cancelling world
                     // chunk after we check whether the chunk was cancelled
@@ -274,32 +265,14 @@ impl VoxelWorld {
         self.chunks.pin().get(&pos).map(Arc::clone)
     }
 
-    pub fn chunks(&self) -> WorldChunks {
-        WorldChunks(Arc::clone(&self.chunks))
-    }
-
-    pub fn guard(&self) -> flurry::epoch::Guard {
-        self.chunks.guard()
-    }
-
-    pub fn read<'w>(
-        &'w self,
-        pos: ChunkPos,
-        guard: &'w flurry::epoch::Guard,
-    ) -> Option<RwLockReadGuard<'w, ChunkKind>> {
-        self.chunks.get(&pos, guard).and_then(|chunk| chunk.read())
-    }
-
-    pub fn write<'w>(
-        &'w self,
-        pos: ChunkPos,
-        guard: &'w flurry::epoch::Guard,
-    ) -> Option<RwLockWriteGuard<'w, ChunkKind>> {
-        self.chunks.get(&pos, guard).and_then(|chunk| chunk.write())
-    }
-
     fn update(&self) {
         self.surface_cache.evict_after(Duration::from_secs(10));
+        let guard = self.chunks.guard();
+        for chunk in self.dirty_chunks_rx.try_iter() {
+            if let Some(chunk) = self.chunks.get(&chunk, &guard) {
+                chunk::flush_chunk_writes(chunk);
+            }
+        }
     }
 }
 
@@ -309,22 +282,23 @@ pub fn update_world(#[resource] world: &Arc<VoxelWorld>) {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
-pub struct ChunkLoader {
-    pub radius: usize,
+pub struct DynamicChunkLoader {
+    pub load_radius: usize,
+    pub unload_radius: usize,
 }
 
 #[derive(Debug)]
 pub struct ChunkLoaderContext {
     loader_events: Receiver<legion::world::Event>,
 
-    loaders: HashMap<Entity, (ChunkLoader, ChunkPos)>,
+    loaders: HashMap<Entity, (DynamicChunkLoader, ChunkPos)>,
     loaded_set: HashSet<ChunkPos>,
 }
 
 impl ChunkLoaderContext {
     pub fn new(world: &mut World) -> Self {
         let (sender, loader_events) = crossbeam_channel::unbounded();
-        world.subscribe(sender, legion::component::<ChunkLoader>());
+        world.subscribe(sender, legion::component::<DynamicChunkLoader>());
 
         Self {
             loader_events,
@@ -346,16 +320,31 @@ fn neighborhood(center: ChunkPos, radius: usize, mut func: impl FnMut(ChunkPos))
 }
 
 fn recheck_loaded(ctx: &mut ChunkLoaderContext, voxel_world: &Arc<VoxelWorld>) {
-    let mut keep_loaded = HashSet::new();
+    let mut should_be_loaded = HashSet::new();
+    let mut should_keep_loaded = HashSet::new();
 
     for &(loader, pos) in ctx.loaders.values() {
-        neighborhood(pos, loader.radius, |pos| {
-            keep_loaded.insert(pos);
+        neighborhood(pos, loader.load_radius, |pos| {
+            should_be_loaded.insert(pos);
         });
     }
 
-    let to_unload: Vec<_> = ctx.loaded_set.difference(&keep_loaded).copied().collect();
-    let mut to_load: Vec<_> = keep_loaded.difference(&ctx.loaded_set).copied().collect();
+    for &(loader, pos) in ctx.loaders.values() {
+        neighborhood(pos, loader.unload_radius, |pos| {
+            should_keep_loaded.insert(pos);
+        });
+    }
+
+    let to_unload: Vec<_> = ctx
+        .loaded_set
+        .difference(&should_keep_loaded)
+        .copied()
+        .collect();
+
+    let mut to_load: Vec<_> = should_be_loaded
+        .difference(&ctx.loaded_set)
+        .copied()
+        .collect();
 
     // TODO: sort by distance to closest loader
     // group all positions that only differ in their vertical position, so that
@@ -383,7 +372,7 @@ fn update_loader(
     ctx: &mut ChunkLoaderContext,
     voxel_world: &Arc<VoxelWorld>,
     entity: Entity,
-    loader: &ChunkLoader,
+    loader: &DynamicChunkLoader,
     pos: ChunkPos,
 ) {
     if let Some(&(_, previous_pos)) = ctx.loaders.get(&entity) {
@@ -398,7 +387,7 @@ fn update_loader(
 }
 
 #[legion::system]
-#[read_component(ChunkLoader)]
+#[read_component(DynamicChunkLoader)]
 #[read_component(Transform)]
 pub fn load_chunks(
     #[state] ctx: &mut ChunkLoaderContext,
@@ -418,7 +407,7 @@ pub fn load_chunks(
         .into_iter()
         .for_each(|entity| remove_loader(ctx, voxel_world, entity));
 
-    <(Entity, &ChunkLoader, &Transform)>::query()
+    <(Entity, &DynamicChunkLoader, &Transform)>::query()
         .filter(legion::maybe_changed::<Transform>())
         .for_each(world, |(&entity, loader, transform)| {
             let pos = WorldPos::new(transform.translation.vector).into();
