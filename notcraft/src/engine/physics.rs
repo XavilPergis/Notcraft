@@ -30,6 +30,16 @@ pub struct RigidBody {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct AabbCollider {
     pub aabb: Aabb,
+    pub on_ground: bool,
+}
+
+impl AabbCollider {
+    pub fn new(aabb: Aabb) -> Self {
+        Self {
+            aabb,
+            on_ground: false,
+        }
+    }
 }
 
 /// a cache for multiple unaligned world accesses over a short period of time.
@@ -147,7 +157,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
                 let block_pos = BlockPos { x, y, z };
                 if does_block_collide(ctx, block_pos)? {
                     add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                        bounds: block_aabb(block_pos),
+                        bounds: block_aabb(block_pos).inflate(0.003),
                         rgba: [1.0, 0.2, 0.2, 0.6],
                         kind: DebugBoxKind::Solid,
                     });
@@ -170,7 +180,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
                 let block_pos = BlockPos { x, y, z };
                 if does_block_collide(ctx, block_pos)? {
                     add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                        bounds: block_aabb(block_pos),
+                        bounds: block_aabb(block_pos).inflate(0.003),
                         rgba: [0.2, 1.0, 0.2, 0.6],
                         kind: DebugBoxKind::Solid,
                     });
@@ -193,7 +203,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
                 let block_pos = BlockPos { x, y, z };
                 if does_block_collide(ctx, block_pos)? {
                     add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                        bounds: block_aabb(block_pos),
+                        bounds: block_aabb(block_pos).inflate(0.003),
                         rgba: [0.2, 0.2, 1.0, 0.6],
                         kind: DebugBoxKind::Solid,
                     });
@@ -309,6 +319,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
 
 fn resolve_terrain_collisions_main(
     ctx: &mut CollisionContext,
+    collider: &mut AabbCollider,
     rigidbody: &mut RigidBody,
     transform: &mut Transform,
 ) {
@@ -327,6 +338,9 @@ fn resolve_terrain_collisions_main(
             rigidbody.velocity.z = 0.0;
             rigidbody.acceleration.z = 0.0;
         }
+
+        collider.on_ground = resolved.y > 0.0;
+
         transform.translation.vector += resolved;
     } else {
         let reverse = ctx.previous.center() - ctx.current.center();
@@ -344,7 +358,7 @@ pub fn terrain_collision(
     #[resource] voxel_world: &Arc<VoxelWorld>,
     world: &mut SubWorld,
     query: &mut Query<(
-        &AabbCollider,
+        &mut AabbCollider,
         &PreviousCollider,
         &mut RigidBody,
         &mut Transform,
@@ -362,7 +376,7 @@ pub fn terrain_collision(
                 previous_collider.aabb_world,
             );
 
-            resolve_terrain_collisions_main(&mut ctx, rigidbody, transform);
+            resolve_terrain_collisions_main(&mut ctx, collider, rigidbody, transform);
             // let post_aabb = collider.aabb.transformed(transform);
 
             // add_debug_box(DebugBox {

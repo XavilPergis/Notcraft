@@ -117,21 +117,22 @@ fn player_controller(
     #[resource] input: &InputState,
     #[resource] player_controller: &mut PlayerController,
     world: &mut SubWorld,
-    player_query: &mut Query<(&mut Transform, &mut RigidBody)>,
+    player_query: &mut Query<(&mut Transform, &mut RigidBody, &AabbCollider)>,
 ) {
     use std::f32::consts::PI;
 
     let pitch_delta = input.cursor_delta().y * (PI / 180.0);
     let yaw_delta = input.cursor_delta().x * (PI / 180.0);
 
-    if let Some((transform, rigidbody)) = player_query.get_mut(world, player_controller.player).ok()
+    if let Some((transform, rigidbody, collider)) =
+        player_query.get_mut(world, player_controller.player).ok()
     {
         transform.rotation.yaw -= yaw_delta;
         transform.rotation.pitch -= pitch_delta;
         transform.rotation.pitch = util::clamp(transform.rotation.pitch, -PI / 2.0, PI / 2.0);
 
-        let mut vert_acceleration = 9.0;
-        let mut horiz_acceleration = 65.0;
+        let mut vert_acceleration = 10.5;
+        let mut horiz_acceleration = 45.0;
 
         // let mut speed = 5.0 * dt.as_secs_f32();
 
@@ -170,7 +171,9 @@ fn player_controller(
             // 0.0]);
         }
         if input.key(keys::UP).is_pressed() {
-            rigidbody.velocity.y = vert_acceleration;
+            if collider.on_ground {
+                rigidbody.velocity.y = vert_acceleration;
+            }
             // transform.translation.vector.y += speed;
         }
         if input.key(keys::DOWN).is_pressed() {
@@ -209,9 +212,7 @@ fn transform_project_xz(transform: &Transform, translation: Vector2<f32>) -> Vec
 fn setup_world(cmd: &mut CommandBuffer) {
     let player = cmd.push((
         Transform::default().translated(&nalgebra::vector![0.0, 20.0, 0.0]),
-        AabbCollider {
-            aabb: Aabb::with_dimensions(nalgebra::vector![0.8, 2.0, 0.8]),
-        },
+        AabbCollider::new(Aabb::with_dimensions(nalgebra::vector![0.8, 2.0, 0.8])),
         RigidBody::default(),
         DynamicChunkLoader {
             load_radius: 7,

@@ -640,6 +640,13 @@ impl Aabb {
         }
     }
 
+    pub fn inflate(&self, distance: f32) -> Aabb {
+        Aabb {
+            min: self.min - vector![distance, distance, distance],
+            max: self.max + vector![distance, distance, distance],
+        }
+    }
+
     pub fn transformed(&self, transform: &Transform) -> Aabb {
         // you can think of this as a vector based at `self.min`, with its tip in the
         // center of the AABB.
@@ -760,6 +767,7 @@ struct DebugLinesRenderer {
     next_transient_id: usize,
     transient_debug_boxes: HashMap<usize, (Instant, Duration, DebugBox)>,
     dead_transient_debug_boxes: HashSet<usize>,
+    line_buf: Vec<DebugVertex>,
 }
 
 impl DebugLinesRenderer {
@@ -779,6 +787,7 @@ impl DebugLinesRenderer {
             next_transient_id: 0,
             transient_debug_boxes: Default::default(),
             dead_transient_debug_boxes: Default::default(),
+            line_buf: Default::default(),
         })
     }
 }
@@ -837,19 +846,15 @@ fn render_debug<S: Surface>(
     world: &mut World,
     resources: &mut Resources,
 ) -> anyhow::Result<()> {
-    if ctx.debug_box_channel.rx.is_empty() {
-        return Ok(());
-    }
-
-    let mut buf = Vec::with_capacity(ctx.debug_box_channel.rx.len() * 12 * 2);
+    ctx.line_buf.clear();
     for debug_box in ctx.debug_box_channel.rx.try_iter() {
-        write_debug_box(&mut buf, &debug_box);
+        write_debug_box(&mut ctx.line_buf, &debug_box);
     }
     for (duration, debug_box) in ctx.transient_debug_box_channel.rx.try_iter() {
         ctx.transient_debug_boxes
             .insert(ctx.next_transient_id, (Instant::now(), duration, debug_box));
         ctx.next_transient_id += 1;
-        write_debug_box(&mut buf, &debug_box);
+        write_debug_box(&mut ctx.line_buf, &debug_box);
     }
 
     for (&i, (start, duration, debug_box)) in ctx.transient_debug_boxes.iter_mut() {
@@ -860,7 +865,7 @@ fn render_debug<S: Surface>(
             let percent_completed = elapsed.as_secs_f32() / duration.as_secs_f32();
             let mut rgba = debug_box.rgba;
             rgba[3] *= 1.0 - percent_completed;
-            write_debug_box(&mut buf, &DebugBox { rgba, ..*debug_box });
+            write_debug_box(&mut ctx.line_buf, &DebugBox { rgba, ..*debug_box });
         }
     }
 
@@ -868,7 +873,7 @@ fn render_debug<S: Surface>(
         ctx.transient_debug_boxes.remove(&i);
     }
 
-    let vertices = VertexBuffer::immutable(ctx.shared.display(), &buf)?;
+    let vertices = VertexBuffer::immutable(ctx.shared.display(), &ctx.line_buf)?;
 
     let cam_transform = get_camera(world, resources);
     let (width, height) = ctx.shared.display().get_framebuffer_dimensions();
