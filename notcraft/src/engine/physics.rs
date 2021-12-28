@@ -1,5 +1,6 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
+    ops::RangeInclusive,
     sync::Arc,
 };
 
@@ -8,7 +9,7 @@ use nalgebra::{point, vector, Point3, Vector3};
 use num_traits::Zero;
 
 use super::{
-    render::renderer::Aabb,
+    render::renderer::{add_debug_box, Aabb, DebugBox, DebugBoxKind},
     transform::Transform,
     world::{
         chunk::{ChunkPos, ChunkSnapshot},
@@ -66,6 +67,15 @@ fn block_aabb(block: BlockPos) -> Aabb {
     }
 }
 
+fn make_collision_range(min: f32, max: f32) -> RangeInclusive<i32> {
+    assert!(min < max);
+    if max.floor() == max {
+        min.floor() as i32..=max.floor() as i32 - 1
+    } else {
+        min.floor() as i32..=max.floor() as i32
+    }
+}
+
 fn resolve_terrain_collisions_positive_face(
     cache: &mut ChunkSnapshotCache,
     registry: &BlockRegistry,
@@ -75,10 +85,31 @@ fn resolve_terrain_collisions_positive_face(
     let delta = aabb.center() - prev_aabb.center();
     let mut displacement = vector![0.0, 0.0, 0.0];
 
+    let proj_x = prev_aabb.translated(delta.x * Vector3::x());
+    add_debug_box(DebugBox {
+        bounds: proj_x,
+        rgba: [1.0, 0.0, 0.0, 0.6],
+        kind: DebugBoxKind::Dashed,
+    });
+
+    let proj_y = prev_aabb.translated(delta.y * Vector3::y());
+    add_debug_box(DebugBox {
+        bounds: proj_y,
+        rgba: [0.0, 1.0, 0.0, 0.6],
+        kind: DebugBoxKind::Dashed,
+    });
+
+    let proj_z = prev_aabb.translated(delta.z * Vector3::z());
+    add_debug_box(DebugBox {
+        bounds: proj_z,
+        rgba: [0.0, 0.0, 1.0, 0.6],
+        kind: DebugBoxKind::Dashed,
+    });
+
     if delta.x < 0.0 {
         // for +X face, only check the bottom of the collision box (YZ-plane slice)
-        'outer_px: for y in prev_aabb.min.y.floor() as i32..=prev_aabb.max.y.floor() as i32 {
-            for z in prev_aabb.min.z.floor() as i32..=prev_aabb.max.z.floor() as i32 {
+        for y in make_collision_range(prev_aabb.min.y, prev_aabb.max.y) {
+            for z in make_collision_range(prev_aabb.min.z, prev_aabb.max.z) {
                 let x = aabb.min.x.floor() as i32;
                 let block_pos = BlockPos { x, y, z };
 
@@ -87,55 +118,19 @@ fn resolve_terrain_collisions_positive_face(
                     max: prev_aabb.max.map(f32::ceil),
                 });
                 if !prev_intersects && registry.collidable(cache.block(block_pos)?) {
-                    displacement.x += x as f32 + 1.0 - aabb.min.x;
-                    break 'outer_px;
+                    add_debug_box(DebugBox {
+                        bounds: block_aabb(block_pos),
+                        rgba: [1.0, 0.5, 0.5, 0.4],
+                        kind: DebugBoxKind::Solid,
+                    });
+                    displacement.x = x as f32 + 1.0 - aabb.min.x;
                 }
             }
         }
-    }
-
-    if delta.y < 0.0 {
-        // for +Y face, only check the bottom of the collision box (XZ-plane slice)
-        'outer_py: for x in prev_aabb.min.x.floor() as i32..=prev_aabb.max.x.floor() as i32 {
-            for z in prev_aabb.min.z.floor() as i32..=prev_aabb.max.z.floor() as i32 {
-                let y = aabb.min.y.floor() as i32;
-                let block_pos = BlockPos { x, y, z };
-
-                let prev_intersects = block_aabb(block_pos).intersects(&Aabb {
-                    min: prev_aabb.min.map(f32::floor),
-                    max: prev_aabb.max.map(f32::ceil),
-                });
-                if !prev_intersects && registry.collidable(cache.block(block_pos)?) {
-                    displacement.y += y as f32 + 1.0 - aabb.min.y;
-                    break 'outer_py;
-                }
-            }
-        }
-    }
-
-    if delta.z < 0.0 {
-        // for +Z face, only check the bottom of the collision box (XY-plane slice)
-        'outer_pz: for x in prev_aabb.min.x.floor() as i32..=prev_aabb.max.x.floor() as i32 {
-            for y in prev_aabb.min.y.floor() as i32..=prev_aabb.max.y.floor() as i32 {
-                let z = aabb.min.z.floor() as i32;
-                let block_pos = BlockPos { x, y, z };
-
-                let prev_intersects = block_aabb(block_pos).intersects(&Aabb {
-                    min: prev_aabb.min.map(f32::floor),
-                    max: prev_aabb.max.map(f32::ceil),
-                });
-                if !prev_intersects && registry.collidable(cache.block(block_pos)?) {
-                    displacement.z += z as f32 + 1.0 - aabb.min.z;
-                    break 'outer_pz;
-                }
-            }
-        }
-    }
-
-    if delta.x > 0.0 {
+    } else if delta.x > 0.0 {
         // for -X face, only check the bottom of the collision box (YZ-plane slice)
-        'outer_nx: for y in prev_aabb.min.y.floor() as i32..=prev_aabb.max.y.floor() as i32 {
-            for z in prev_aabb.min.z.floor() as i32..=prev_aabb.max.z.floor() as i32 {
+        for y in make_collision_range(prev_aabb.min.y, prev_aabb.max.y) {
+            for z in make_collision_range(prev_aabb.min.z, prev_aabb.max.z) {
                 let x = aabb.max.x.floor() as i32;
                 let block_pos = BlockPos { x, y, z };
 
@@ -144,17 +139,42 @@ fn resolve_terrain_collisions_positive_face(
                     max: prev_aabb.max.map(f32::ceil),
                 });
                 if !prev_intersects && registry.collidable(cache.block(block_pos)?) {
-                    displacement.x += x as f32 - aabb.max.x;
-                    break 'outer_nx;
+                    add_debug_box(DebugBox {
+                        bounds: block_aabb(block_pos),
+                        rgba: [1.0, 0.5, 0.5, 0.4],
+                        kind: DebugBoxKind::Solid,
+                    });
+                    displacement.x = x as f32 - aabb.max.x;
                 }
             }
         }
     }
 
-    if delta.y > 0.0 {
+    if delta.y < 0.0 {
+        // for +Y face, only check the bottom of the collision box (XZ-plane slice)
+        for x in make_collision_range(prev_aabb.min.x, prev_aabb.max.x) {
+            for z in make_collision_range(prev_aabb.min.z, prev_aabb.max.z) {
+                let y = aabb.min.y.floor() as i32;
+                let block_pos = BlockPos { x, y, z };
+
+                let prev_intersects = block_aabb(block_pos).intersects(&Aabb {
+                    min: prev_aabb.min.map(f32::floor),
+                    max: prev_aabb.max.map(f32::ceil),
+                });
+                if !prev_intersects && registry.collidable(cache.block(block_pos)?) {
+                    add_debug_box(DebugBox {
+                        bounds: block_aabb(block_pos),
+                        rgba: [0.5, 1.0, 0.5, 0.4],
+                        kind: DebugBoxKind::Solid,
+                    });
+                    displacement.y = y as f32 + 1.0 - aabb.min.y;
+                }
+            }
+        }
+    } else if delta.y > 0.0 {
         // for -Y face, only check the bottom of the collision box (XZ-plane slice)
-        'outer_ny: for x in prev_aabb.min.x.floor() as i32..=prev_aabb.max.x.floor() as i32 {
-            for z in prev_aabb.min.z.floor() as i32..=prev_aabb.max.z.floor() as i32 {
+        for x in make_collision_range(prev_aabb.min.x, prev_aabb.max.x) {
+            for z in make_collision_range(prev_aabb.min.z, prev_aabb.max.z) {
                 let y = aabb.max.y.floor() as i32;
                 let block_pos = BlockPos { x, y, z };
 
@@ -163,17 +183,42 @@ fn resolve_terrain_collisions_positive_face(
                     max: prev_aabb.max.map(f32::ceil),
                 });
                 if !prev_intersects && registry.collidable(cache.block(block_pos)?) {
-                    displacement.y += y as f32 - aabb.max.y;
-                    break 'outer_ny;
+                    add_debug_box(DebugBox {
+                        bounds: block_aabb(block_pos),
+                        rgba: [0.5, 1.0, 0.5, 0.4],
+                        kind: DebugBoxKind::Solid,
+                    });
+                    displacement.y = y as f32 - aabb.max.y;
                 }
             }
         }
     }
 
-    if delta.z > 0.0 {
+    if delta.z < 0.0 {
+        // for +Z face, only check the bottom of the collision box (XY-plane slice)
+        for x in make_collision_range(prev_aabb.min.x, prev_aabb.max.x) {
+            for y in make_collision_range(prev_aabb.min.y, prev_aabb.max.y) {
+                let z = aabb.min.z.floor() as i32;
+                let block_pos = BlockPos { x, y, z };
+
+                let prev_intersects = block_aabb(block_pos).intersects(&Aabb {
+                    min: prev_aabb.min.map(f32::floor),
+                    max: prev_aabb.max.map(f32::ceil),
+                });
+                if !prev_intersects && registry.collidable(cache.block(block_pos)?) {
+                    add_debug_box(DebugBox {
+                        bounds: block_aabb(block_pos),
+                        rgba: [0.5, 0.5, 1.0, 0.4],
+                        kind: DebugBoxKind::Solid,
+                    });
+                    displacement.z = z as f32 + 1.0 - aabb.min.z;
+                }
+            }
+        }
+    } else if delta.z > 0.0 {
         // for -Z face, only check the bottom of the collision box (XY-plane slice)
-        'outer_nz: for x in prev_aabb.min.x.floor() as i32..=prev_aabb.max.x.floor() as i32 {
-            for y in prev_aabb.min.y.floor() as i32..=prev_aabb.max.y.floor() as i32 {
+        for x in make_collision_range(prev_aabb.min.x, prev_aabb.max.x) {
+            for y in make_collision_range(prev_aabb.min.y, prev_aabb.max.y) {
                 let z = aabb.max.z.floor() as i32;
                 let block_pos = BlockPos { x, y, z };
 
@@ -182,8 +227,12 @@ fn resolve_terrain_collisions_positive_face(
                     max: prev_aabb.max.map(f32::ceil),
                 });
                 if !prev_intersects && registry.collidable(cache.block(block_pos)?) {
-                    displacement.z += z as f32 - aabb.max.z;
-                    break 'outer_nz;
+                    add_debug_box(DebugBox {
+                        bounds: block_aabb(block_pos),
+                        rgba: [0.5, 0.5, 1.0, 0.4],
+                        kind: DebugBoxKind::Solid,
+                    });
+                    displacement.z = z as f32 - aabb.max.z;
                 }
             }
         }
@@ -224,12 +273,25 @@ pub fn terrain_collision(
     query: &mut Query<(&AabbCollider, &PreviousCollider, &mut Transform)>,
 ) {
     query.for_each_mut(world, |(collider, previous_collider, transform)| {
+        let prev_aabb = collider.aabb.transformed(transform);
         resolve_terrain_collisions(
             voxel_world,
-            &collider.aabb.transformed(transform),
+            &prev_aabb,
             &previous_collider.aabb_world,
             transform,
         );
+        let post_aabb = collider.aabb.transformed(transform);
+
+        add_debug_box(DebugBox {
+            bounds: prev_aabb,
+            rgba: [0.8, 0.0, 1.0, 1.0],
+            kind: DebugBoxKind::Dashed,
+        });
+        add_debug_box(DebugBox {
+            bounds: post_aabb,
+            rgba: [0.0, 0.8, 1.0, 1.0],
+            kind: DebugBoxKind::Dashed,
+        });
     });
 }
 
