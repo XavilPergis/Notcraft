@@ -104,3 +104,19 @@ macro_rules! defer {
 }
 
 pub use defer;
+
+pub struct ChannelPair<T> {
+    pub rx: crossbeam_channel::Receiver<T>,
+    pub tx: crossbeam_channel::Sender<T>,
+}
+
+impl<T> ChannelPair<T> {
+    pub fn new() -> Self {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        Self { rx, tx }
+    }
+
+    pub fn sender(&self) -> crossbeam_channel::Sender<T> {
+        self.tx.clone()
+    }
+}

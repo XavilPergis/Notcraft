@@ -25,10 +25,12 @@ use glium::{
     uniform,
     uniforms::MagnifySamplerFilter,
     vertex::VertexBuffer,
-    BlitTarget, Display, Program, Rect, Surface,
+    Blend, BlitTarget, Display, DrawParameters, Program, Rect, Surface,
 };
 use legion::{world::Event, Entity, IntoQuery, Read, Resources, World};
+use na::vector;
 use nalgebra::{self as na, Perspective3};
+use parking_lot::RwLock;
 use std::{
     collections::{HashMap, HashSet},
     marker::PhantomData,
@@ -72,6 +74,7 @@ pub struct Renderer {
     terrain_renderer: TerrainRenderer,
     post_renderer: PostProcessRenderer,
     sky_renderer: SkyRenderer,
+    debug_renderer: DebugLinesRenderer,
 }
 
 fn render_all<S: Surface>(
@@ -89,6 +92,13 @@ fn render_all<S: Surface>(
 
     render_terrain(
         &mut ctx.terrain_renderer,
+        &mut ctx.post_renderer.render_target()?,
+        world,
+        resources,
+    )?;
+
+    render_debug(
+        &mut ctx.debug_renderer,
         &mut ctx.post_renderer.render_target()?,
         world,
         resources,
@@ -112,12 +122,14 @@ impl Renderer {
             TerrainRenderer::new(Rc::clone(&shared), registry, world, resources)?;
         let post_renderer = PostProcessRenderer::new(Rc::clone(&shared))?;
         let sky_renderer = SkyRenderer::new(Rc::clone(&shared))?;
+        let debug_renderer = DebugLinesRenderer::new(Rc::clone(&shared))?;
 
         Ok(Renderer {
             _shared: shared,
             terrain_renderer,
             post_renderer,
             sky_renderer,
+            debug_renderer,
         })
     }
 
@@ -261,9 +273,9 @@ fn render_post<S: Surface>(
             b_color: ctx.post_process_color_resolved.sampled(),
             b_depth: ctx.post_process_depth_resolved.sampled(),
 
-            camera_pos: array3(cam_pos),
-            projection_matrix: array4x4(proj.to_homogeneous()),
-            view_matrix: array4x4(view),
+            camera_pos: array3(&cam_pos),
+            projection_matrix: array4x4(&proj.to_homogeneous()),
+            view_matrix: array4x4(&view),
         },
         &Default::default(),
     )?;
@@ -305,9 +317,9 @@ fn render_sky<S: Surface>(
         glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
         &ctx.sky_program,
         &uniform! {
-            camera_pos: array3(cam_pos),
-            projection_matrix: array4x4(proj.to_homogeneous()),
-            view_matrix: array4x4(view),
+            camera_pos: array3(&cam_pos),
+            projection_matrix: array4x4(&proj.to_homogeneous()),
+            view_matrix: array4x4(&view),
         },
         &Default::default(),
     )?;
@@ -559,9 +571,9 @@ fn render_terrain<S: Surface>(
                 &buffers.indices,
                 &ctx.terrain_program,
                 &uniform! {
-                    model: array4x4(model),
-                    view: array4x4(view),
-                    projection: array4x4(proj.to_homogeneous()),
+                    model: array4x4(&model),
+                    view: array4x4(&view),
+                    projection: array4x4(&proj.to_homogeneous()),
                     albedo_maps: ctx.block_textures.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
                 },
                 &glium::DrawParameters {
@@ -683,10 +695,163 @@ fn should_draw_aabb(mvp: &Matrix4<f32>, aabb: &Aabb) -> bool {
     px && nx && py && ny && pz && nz
 }
 
-pub fn array4x4<T: Into<[[U; 4]; 4]>, U>(mat: T) -> [[U; 4]; 4] {
-    mat.into()
+pub fn array4x4<T: Copy + Into<[[U; 4]; 4]>, U>(mat: &T) -> [[U; 4]; 4] {
+    (*mat).into()
 }
 
-pub fn array3<T: Into<[U; 3]>, U>(vec: T) -> [U; 3] {
-    vec.into()
+pub fn array3<T: Copy + Into<[U; 3]>, U>(vec: &T) -> [U; 3] {
+    (*vec).into()
+}
+
+lazy_static::lazy_static! {
+    static ref DEBUG_BOX_SENDER: RwLock<Option<Sender<DebugBox>>> = RwLock::new(None);
+}
+
+pub fn add_debug_box(debug_box: DebugBox) {
+    if let Some(sender) = DEBUG_BOX_SENDER.read().as_ref() {
+        sender.send(debug_box).unwrap();
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[repr(C)]
+struct DebugVertex {
+    pub pos: [f32; 3],
+    pub color: [f32; 4],
+    pub kind_end: u32,
+}
+glium::implement_vertex!(DebugVertex, pos, color, kind_end);
+
+#[derive(Copy, Clone, Debug)]
+#[repr(u8)]
+pub enum DebugBoxKind {
+    Solid = 0,
+    Dashed = 1,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct DebugBox {
+    pub bounds: Aabb,
+    pub rgba: [f32; 4],
+    pub kind: DebugBoxKind,
+}
+
+impl DebugBox {
+    pub fn with_kind(mut self, kind: DebugBoxKind) -> Self {
+        self.kind = kind;
+        self
+    }
+}
+
+struct DebugLinesRenderer {
+    shared: Rc<CommonState>,
+    debug_program: Program,
+    debug_box_channel: util::ChannelPair<DebugBox>,
+}
+
+impl DebugLinesRenderer {
+    fn new(shared: Rc<CommonState>) -> Result<Self> {
+        let debug_program = loader::load_shader(shared.display(), "resources/shaders/debug")?;
+        let debug_box_channel = util::ChannelPair::new();
+
+        *DEBUG_BOX_SENDER.write() = Some(debug_box_channel.sender());
+
+        Ok(Self {
+            shared,
+            debug_program,
+            debug_box_channel,
+        })
+    }
+}
+
+fn aabb_corners(aabb: &Aabb) -> [Vector3<f32>; 8] {
+    [
+        vector![aabb.min.x, aabb.min.y, aabb.min.z],
+        vector![aabb.min.x, aabb.min.y, aabb.max.z],
+        vector![aabb.min.x, aabb.max.y, aabb.min.z],
+        vector![aabb.min.x, aabb.max.y, aabb.max.z],
+        vector![aabb.max.x, aabb.min.y, aabb.min.z],
+        vector![aabb.max.x, aabb.min.y, aabb.max.z],
+        vector![aabb.max.x, aabb.max.y, aabb.min.z],
+        vector![aabb.max.x, aabb.max.y, aabb.max.z],
+    ]
+}
+
+fn write_debug_box(buf: &mut Vec<DebugVertex>, debug_box: &DebugBox) {
+    let [nnn, nnp, npn, npp, pnn, pnp, ppn, ppp] = aabb_corners(&debug_box.bounds);
+
+    let mut line = |start: &Vector3<f32>, end: &Vector3<f32>| {
+        buf.push(DebugVertex {
+            pos: array3(start),
+            color: debug_box.rgba,
+            kind_end: (debug_box.kind as u32) << 1,
+        });
+        buf.push(DebugVertex {
+            pos: array3(end),
+            color: debug_box.rgba,
+            kind_end: ((debug_box.kind as u32) << 1) | 1,
+        });
+    };
+
+    // bottom
+    line(&nnn, &nnp);
+    line(&nnp, &pnp);
+    line(&pnp, &pnn);
+    line(&pnn, &nnn);
+
+    // top
+    line(&npn, &npp);
+    line(&npp, &ppp);
+    line(&ppp, &ppn);
+    line(&ppn, &npn);
+
+    // connecting lines
+    line(&nnn, &npn);
+    line(&nnp, &npp);
+    line(&pnp, &ppp);
+    line(&pnn, &ppn);
+}
+
+fn render_debug<S: Surface>(
+    ctx: &mut DebugLinesRenderer,
+    target: &mut S,
+    world: &mut World,
+    resources: &mut Resources,
+) -> anyhow::Result<()> {
+    if ctx.debug_box_channel.rx.is_empty() {
+        return Ok(());
+    }
+
+    let mut buf = Vec::with_capacity(ctx.debug_box_channel.rx.len() * 12 * 2);
+    for debug_box in ctx.debug_box_channel.rx.try_iter() {
+        write_debug_box(&mut buf, &debug_box);
+    }
+
+    let vertices = VertexBuffer::immutable(ctx.shared.display(), &buf)?;
+
+    let cam_transform = get_camera(world, resources);
+    let (width, height) = ctx.shared.display().get_framebuffer_dimensions();
+    let (view, proj) = get_view_projection(width, height, cam_transform);
+
+    target.draw(
+        &vertices,
+        glium::index::NoIndices(glium::index::PrimitiveType::LinesList),
+        &ctx.debug_program,
+        &uniform! {
+            view: array4x4(&view),
+            projection: array4x4(&proj.to_homogeneous()),
+        },
+        &DrawParameters {
+            line_width: Some(1.0),
+            blend: Blend::alpha_blending(),
+            depth: glium::Depth {
+                test: glium::DepthTest::IfLess,
+                write: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )?;
+
+    Ok(())
 }
