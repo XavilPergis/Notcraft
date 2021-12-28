@@ -19,7 +19,10 @@ use self::{
     registry::BlockRegistry,
 };
 
-use super::transform::Transform;
+use super::{
+    render::renderer::{add_transient_debug_box, Aabb, DebugBox, DebugBoxKind},
+    transform::Transform,
+};
 
 pub mod chunk;
 pub mod generation;
@@ -243,6 +246,11 @@ impl VoxelWorld {
                             .send(ChunkEvent::Added(chunk))
                             .unwrap();
                         world.chunks_in_progress.pin().remove(&pos);
+                        add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                            bounds: chunk_aabb(pos),
+                            rgba: [0.0, 1.0, 0.0, 1.0],
+                            kind: DebugBoxKind::Solid,
+                        });
                     } else {
                         world.chunks.remove(&pos, &guard);
                     }
@@ -255,6 +263,11 @@ impl VoxelWorld {
         if let Some(cancelled) = self.chunks_in_progress.pin().remove(&pos) {
             cancelled.store(true, Ordering::SeqCst);
         } else if let Some(chunk) = self.chunks.pin().remove(&pos) {
+            add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                bounds: chunk_aabb(chunk.pos()),
+                rgba: [1.0, 0.0, 0.0, 1.0],
+                kind: DebugBoxKind::Solid,
+            });
             self.chunk_event_sender
                 .send(ChunkEvent::Removed(Arc::clone(chunk)))
                 .unwrap();
@@ -279,6 +292,15 @@ impl VoxelWorld {
 #[legion::system]
 pub fn update_world(#[resource] world: &Arc<VoxelWorld>) {
     world.update();
+}
+
+pub fn chunk_aabb(pos: ChunkPos) -> Aabb {
+    let len = chunk::CHUNK_LENGTH as f32;
+    let pos = len * nalgebra::point![pos.x as f32, pos.y as f32, pos.z as f32];
+    Aabb {
+        min: pos,
+        max: pos + len * nalgebra::vector![1.0, 1.0, 1.0],
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]

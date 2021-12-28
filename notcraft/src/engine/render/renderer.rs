@@ -39,6 +39,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
+    time::{Duration, Instant},
 };
 
 struct CommonState {
@@ -705,11 +706,18 @@ pub fn array3<T: Copy + Into<[U; 3]>, U>(vec: &T) -> [U; 3] {
 
 lazy_static::lazy_static! {
     static ref DEBUG_BOX_SENDER: RwLock<Option<Sender<DebugBox>>> = RwLock::new(None);
+    static ref TRANSIENT_DEBUG_BOX_SENDER: RwLock<Option<Sender<(Duration, DebugBox)>>> = RwLock::new(None);
 }
 
 pub fn add_debug_box(debug_box: DebugBox) {
     if let Some(sender) = DEBUG_BOX_SENDER.read().as_ref() {
         sender.send(debug_box).unwrap();
+    }
+}
+
+pub fn add_transient_debug_box(duration: Duration, debug_box: DebugBox) {
+    if let Some(sender) = TRANSIENT_DEBUG_BOX_SENDER.read().as_ref() {
+        sender.send((duration, debug_box)).unwrap();
     }
 }
 
@@ -727,6 +735,7 @@ glium::implement_vertex!(DebugVertex, pos, color, kind_end);
 pub enum DebugBoxKind {
     Solid = 0,
     Dashed = 1,
+    Dotted = 2,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -747,19 +756,29 @@ struct DebugLinesRenderer {
     shared: Rc<CommonState>,
     debug_program: Program,
     debug_box_channel: util::ChannelPair<DebugBox>,
+    transient_debug_box_channel: util::ChannelPair<(Duration, DebugBox)>,
+    next_transient_id: usize,
+    transient_debug_boxes: HashMap<usize, (Instant, Duration, DebugBox)>,
+    dead_transient_debug_boxes: HashSet<usize>,
 }
 
 impl DebugLinesRenderer {
     fn new(shared: Rc<CommonState>) -> Result<Self> {
         let debug_program = loader::load_shader(shared.display(), "resources/shaders/debug")?;
         let debug_box_channel = util::ChannelPair::new();
+        let transient_debug_box_channel = util::ChannelPair::new();
 
         *DEBUG_BOX_SENDER.write() = Some(debug_box_channel.sender());
+        *TRANSIENT_DEBUG_BOX_SENDER.write() = Some(transient_debug_box_channel.sender());
 
         Ok(Self {
             shared,
             debug_program,
             debug_box_channel,
+            transient_debug_box_channel,
+            next_transient_id: 0,
+            transient_debug_boxes: Default::default(),
+            dead_transient_debug_boxes: Default::default(),
         })
     }
 }
@@ -825,6 +844,28 @@ fn render_debug<S: Surface>(
     let mut buf = Vec::with_capacity(ctx.debug_box_channel.rx.len() * 12 * 2);
     for debug_box in ctx.debug_box_channel.rx.try_iter() {
         write_debug_box(&mut buf, &debug_box);
+    }
+    for (duration, debug_box) in ctx.transient_debug_box_channel.rx.try_iter() {
+        ctx.transient_debug_boxes
+            .insert(ctx.next_transient_id, (Instant::now(), duration, debug_box));
+        ctx.next_transient_id += 1;
+        write_debug_box(&mut buf, &debug_box);
+    }
+
+    for (&i, (start, duration, debug_box)) in ctx.transient_debug_boxes.iter_mut() {
+        let elapsed = start.elapsed();
+        if elapsed > *duration {
+            ctx.dead_transient_debug_boxes.insert(i);
+        } else {
+            let percent_completed = elapsed.as_secs_f32() / duration.as_secs_f32();
+            let mut rgba = debug_box.rgba;
+            rgba[3] *= 1.0 - percent_completed;
+            write_debug_box(&mut buf, &DebugBox { rgba, ..*debug_box });
+        }
+    }
+
+    for i in ctx.dead_transient_debug_boxes.drain() {
+        ctx.transient_debug_boxes.remove(&i);
     }
 
     let vertices = VertexBuffer::immutable(ctx.shared.display(), &buf)?;

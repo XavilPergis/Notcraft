@@ -27,6 +27,7 @@ image = "0.21"
 rodio = "0.14"
 rand = "0.6"
 nalgebra = "0.29.0"
+approx = "0.5.0"
 
 glium = "0.30.2"
 legion = "0.4.0"

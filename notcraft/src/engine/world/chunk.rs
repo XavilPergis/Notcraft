@@ -82,6 +82,9 @@ impl ChunkInner {
     }
 }
 
+unsafe impl Send for ChunkInner {}
+unsafe impl Sync for ChunkInner {}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ChunkUpdate {
     pub index: ChunkIndex,
@@ -96,9 +99,6 @@ pub struct Chunk {
     write_queue_tx: Sender<ChunkUpdate>,
     write_queue_rx: Receiver<ChunkUpdate>,
 }
-
-unsafe impl Send for Chunk {}
-unsafe impl Sync for Chunk {}
 
 impl Chunk {
     pub fn new(dirty_sender: &Sender<ChunkPos>, pos: ChunkPos, kind: ChunkData) -> Self {

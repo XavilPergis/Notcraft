@@ -3,6 +3,7 @@ use crate::engine::{
     transform::Transform,
     world::{
         chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
+        chunk_aabb,
         registry::{BlockId, BlockRegistry},
         ChunkEvent, VoxelWorld,
     },
@@ -16,9 +17,13 @@ use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
+    time::Duration,
 };
 
-use super::renderer::{Aabb, MeshBuffers, RenderMeshComponent, SharedMeshContext, UploadableMesh};
+use super::renderer::{
+    add_transient_debug_box, Aabb, DebugBox, DebugBoxKind, MeshBuffers, RenderMeshComponent,
+    SharedMeshContext, UploadableMesh,
+};
 
 #[derive(Debug)]
 struct MeshTracker {
@@ -277,6 +282,11 @@ fn queue_mesh_jobs(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) {
                 // FIXME: causes holes when a solid homogeneous chunk touches
                 // air
                 ctx.tracker.unconstrained.remove(&pos);
+                add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                    bounds: chunk_aabb(chunk.pos()),
+                    rgba: [1.0, 0.0, 1.0, 0.3],
+                    kind: DebugBoxKind::Dashed,
+                });
             }
 
             ChunkData::Array(_) => {
@@ -289,8 +299,18 @@ fn queue_mesh_jobs(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) {
                 ctx.mesher_pool.spawn(move || {
                     if let Some(neighbors) = ChunkNeighbors::lock(&world, pos) {
                         MeshCreationContext::new(pos, neighbors, &world).mesh(sender);
+                        add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                            bounds: chunk_aabb(chunk.pos()),
+                            rgba: [1.0, 1.0, 0.0, 1.0],
+                            kind: DebugBoxKind::Solid,
+                        });
                     } else {
                         sender.send(CompletedMesh::Failed { pos }).unwrap();
+                        add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                            bounds: chunk_aabb(chunk.pos()),
+                            rgba: [1.0, 0.0, 0.0, 1.0],
+                            kind: DebugBoxKind::Dashed,
+                        });
                     }
                 });
 

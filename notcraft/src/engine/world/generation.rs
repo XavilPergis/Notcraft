@@ -63,15 +63,15 @@ fn generate_surface_heights(
                 CHUNK_LENGTH as f32 * pos.z as f32 + dz as f32,
             );
 
-            // let wx = x + 200.0 * warp_noise_x.sample(x, z);
-            // let wz = z + 200.0 * warp_noise_z.sample(x, z);
+            let wx = x + 200.0 * warp_noise_x.sample(x, z);
+            let wz = z + 200.0 * warp_noise_z.sample(x, z);
 
-            // let warped = 2000.0 * (mountainous_noise.sample(wx, wz) * 0.5 + 0.5);
-            // let mountain = 800.0 * (mountainous_noise_unwarped.sample(x, z) * 0.5 + 0.5);
-            // let rolling = 100.0 * rolling_noise.sample(x, z);
-            // let result = rolling + mix_noise.sample(x, z) * (warped + mountain);
+            let warped = 2000.0 * (mountainous_noise.sample(wx, wz) * 0.5 + 0.5);
+            let mountain = 800.0 * (mountainous_noise_unwarped.sample(x, z) * 0.5 + 0.5);
+            let rolling = 100.0 * rolling_noise.sample(x, z);
+            let result = rolling + mix_noise.sample(x, z) * (warped + mountain);
 
-            let result = 100.0 * f32::sin(x / 30.0) * f32::cos(z / 30.0);
+            // let result = 100.0 * f32::sin(x / 30.0) * f32::cos(z / 30.0);
 
             min = f32::min(min, result);
             max = f32::max(max, result);

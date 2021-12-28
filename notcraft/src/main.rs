@@ -85,7 +85,7 @@ fn camera_controller(
                 let camera_transform = transform_query
                     .get_mut(world, camera_controller.camera)
                     .unwrap();
-                *camera_transform = player_transform.translated(&nalgebra::vector![0.0, 1.8, 0.0]);
+                *camera_transform = player_transform.translated(&nalgebra::vector![0.0, 0.5, 0.0]);
             }
         };
 
@@ -96,7 +96,7 @@ fn camera_controller(
 
     if input
         .key(VirtualKeyCode::S)
-        .require_modifiers(ModifiersState::CTRL)
+        .require_modifiers(ModifiersState::CTRL | ModifiersState::SHIFT)
         .is_rising()
     {
         update_camera_transform(camera_controller, player_controller.player);
@@ -105,7 +105,7 @@ fn camera_controller(
 
     if input
         .key(VirtualKeyCode::F)
-        .require_modifiers(ModifiersState::CTRL)
+        .require_modifiers(ModifiersState::CTRL | ModifiersState::SHIFT)
         .is_rising()
     {
         camera_controller.mode = CameraControllerMode::Follow(player_controller.player);
@@ -114,7 +114,6 @@ fn camera_controller(
 
 #[legion::system]
 fn player_controller(
-    #[resource] Dt(dt): &Dt,
     #[resource] input: &InputState,
     #[resource] player_controller: &mut PlayerController,
     world: &mut SubWorld,
@@ -131,48 +130,61 @@ fn player_controller(
         transform.rotation.pitch -= pitch_delta;
         transform.rotation.pitch = util::clamp(transform.rotation.pitch, -PI / 2.0, PI / 2.0);
 
-        let acceleration = 4.0;
-        const JUMP_VELOCITY: f32 = 20.0;
+        let mut vert_acceleration = 9.0;
+        let mut horiz_acceleration = 65.0;
 
-        let mut speed = 5.0 * dt.as_secs_f32();
+        // let mut speed = 5.0 * dt.as_secs_f32();
 
         if input.key(VirtualKeyCode::LControl).is_pressed() {
-            speed *= 10.0;
+            // speed *= 10.0;
+            horiz_acceleration *= 4.0;
+            vert_acceleration *= 5.0;
         }
 
         if input.key(keys::FORWARD).is_pressed() {
-            // rigidbody.acceleration +=
-            //     transform_project_xz(transform, nalgebra::vector![0.0, -acceleration]);
-            transform.translation.vector +=
-                transform_project_xz(transform, nalgebra::vector![0.0, -speed]);
+            rigidbody.acceleration +=
+                transform_project_xz(transform, nalgebra::vector![0.0, -horiz_acceleration]);
+            // transform.translation.vector +=
+            //     transform_project_xz(transform, nalgebra::vector![0.0,
+            // -speed]);
         }
         if input.key(keys::BACKWARD).is_pressed() {
-            // rigidbody.acceleration +=
-            //     transform_project_xz(transform, nalgebra::vector![0.0, acceleration]);
-            transform.translation.vector +=
-                transform_project_xz(transform, nalgebra::vector![0.0, speed]);
+            rigidbody.acceleration +=
+                transform_project_xz(transform, nalgebra::vector![0.0, horiz_acceleration]);
+            // transform.translation.vector +=
+            //     transform_project_xz(transform, nalgebra::vector![0.0,
+            // speed]);
         }
         if input.key(keys::RIGHT).is_pressed() {
-            // rigidbody.acceleration +=
-            //     transform_project_xz(transform, nalgebra::vector![acceleration, 0.0]);
-            transform.translation.vector +=
-                transform_project_xz(transform, nalgebra::vector![speed, 0.0]);
+            rigidbody.acceleration +=
+                transform_project_xz(transform, nalgebra::vector![horiz_acceleration, 0.0]);
+            // transform.translation.vector +=
+            //     transform_project_xz(transform, nalgebra::vector![speed,
+            // 0.0]);
         }
         if input.key(keys::LEFT).is_pressed() {
-            // rigidbody.acceleration +=
-            //     transform_project_xz(transform, nalgebra::vector![-acceleration, 0.0]);
-            transform.translation.vector +=
-                transform_project_xz(transform, nalgebra::vector![-speed, 0.0]);
+            rigidbody.acceleration +=
+                transform_project_xz(transform, nalgebra::vector![-horiz_acceleration, 0.0]);
+            // transform.translation.vector +=
+            //     transform_project_xz(transform, nalgebra::vector![-speed,
+            // 0.0]);
         }
         if input.key(keys::UP).is_pressed() {
-            // rigidbody.velocity.y = acceleration;
-            transform.translation.vector.y += speed;
+            rigidbody.velocity.y = vert_acceleration;
+            // transform.translation.vector.y += speed;
         }
         if input.key(keys::DOWN).is_pressed() {
             // rigidbody.acceleration += nalgebra::vector![0.0, -acceleration,
             // 0.0];
-            transform.translation.vector.y -= speed;
+            // transform.translation.vector.y -= speed;
         }
+
+        // 0.96 with horiz_acceleration=30.0 is good for flight or slippery surfaces or
+        // such rigidbody.velocity.x *= 0.96;
+        // rigidbody.velocity.z *= 0.96;
+
+        rigidbody.velocity.x *= 0.88;
+        rigidbody.velocity.z *= 0.88;
 
         if input
             .key(VirtualKeyCode::C)
@@ -196,7 +208,7 @@ fn transform_project_xz(transform: &Transform, translation: Vector2<f32>) -> Vec
 
 fn setup_world(cmd: &mut CommandBuffer) {
     let player = cmd.push((
-        Transform::default().translated(&nalgebra::vector![0.0, 10.0, 0.0]),
+        Transform::default().translated(&nalgebra::vector![0.0, 20.0, 0.0]),
         AabbCollider {
             aabb: Aabb::with_dimensions(nalgebra::vector![0.8, 2.0, 0.8]),
         },
@@ -336,7 +348,7 @@ fn main() {
         .add_system(update_world_system())
         .flush()
         .add_system(player_controller_system())
-        // .add_system(apply_gravity_system())
+        .add_system(apply_gravity_system())
         .flush()
         .add_system(apply_rigidbody_motion_system())
         .flush()
