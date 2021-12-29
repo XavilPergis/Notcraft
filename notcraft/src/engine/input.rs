@@ -2,8 +2,8 @@ use crossbeam_channel::Receiver;
 use glium::{
     glutin::{
         event::{
-            DeviceEvent, DeviceId, ElementState, KeyboardInput, ModifiersState, MouseScrollDelta,
-            VirtualKeyCode,
+            ButtonId, DeviceEvent, DeviceId, ElementState, KeyboardInput, ModifiersState,
+            MouseScrollDelta, VirtualKeyCode,
         },
         window::Window,
     },
@@ -15,21 +15,23 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+// digital as in "on or off"
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum Key {
+pub enum DigitalInput {
     Physical(u32),
+    Button(u32),
     Virtual(VirtualKeyCode),
 }
 
-impl From<VirtualKeyCode> for Key {
+impl From<VirtualKeyCode> for DigitalInput {
     fn from(vkk: VirtualKeyCode) -> Self {
-        Key::Virtual(vkk)
+        DigitalInput::Virtual(vkk)
     }
 }
 
-impl From<u32> for Key {
+impl From<u32> for DigitalInput {
     fn from(sc: u32) -> Self {
-        Key::Physical(sc)
+        DigitalInput::Physical(sc)
     }
 }
 
@@ -40,6 +42,10 @@ pub struct InputState {
     rising_keys: HashSet<u32>,
     falling_keys: HashSet<u32>,
     pressed_keys: HashSet<u32>,
+
+    rising_buttons: HashSet<u32>,
+    falling_buttons: HashSet<u32>,
+    pressed_buttons: HashSet<u32>,
 
     current_modifiers: ModifiersState,
 
@@ -60,6 +66,9 @@ impl Default for InputState {
             rising_keys: Default::default(),
             falling_keys: Default::default(),
             pressed_keys: Default::default(),
+            rising_buttons: Default::default(),
+            falling_buttons: Default::default(),
+            pressed_buttons: Default::default(),
 
             current_modifiers: Default::default(),
 
@@ -96,7 +105,7 @@ impl InputState {
         self.sensitivity * nalgebra::vector![self.cursor_dx, self.cursor_dy]
     }
 
-    pub fn key<K: Into<Key>>(&self, key: K) -> KeyRef {
+    pub fn key<K: Into<DigitalInput>>(&self, key: K) -> KeyRef {
         KeyRef {
             state: self,
             key: key.into(),
@@ -108,19 +117,23 @@ impl InputState {
         modifiers.map_or(true, |modifiers| self.current_modifiers == modifiers)
     }
 
-    fn is_key_in_set<'s>(&'s self, key: Key, set: &'s HashSet<u32>) -> Option<bool> {
-        let scancode = match key {
-            Key::Virtual(vkk) => *self.physical_map.get(&vkk)?,
-            Key::Physical(code) => code,
-        };
-
-        Some(set.contains(&scancode))
+    fn is_key_in_set<'s>(
+        &'s self,
+        key: DigitalInput,
+        key_set: &'s HashSet<u32>,
+        button_set: &'s HashSet<u32>,
+    ) -> Option<bool> {
+        Some(match key {
+            DigitalInput::Button(id) => button_set.contains(&id),
+            DigitalInput::Virtual(vkk) => key_set.contains(self.physical_map.get(&vkk)?),
+            DigitalInput::Physical(code) => key_set.contains(&code),
+        })
     }
 }
 
 pub struct KeyRef<'s> {
     state: &'s InputState,
-    key: Key,
+    key: DigitalInput,
     modifiers_to_match: Option<ModifiersState>,
 }
 
@@ -135,7 +148,11 @@ impl<'s> KeyRef<'s> {
     pub fn is_pressed(&self) -> bool {
         let key = self
             .state
-            .is_key_in_set(self.key, &self.state.pressed_keys)
+            .is_key_in_set(
+                self.key,
+                &self.state.pressed_keys,
+                &self.state.pressed_buttons,
+            )
             .unwrap_or(false);
         key && self.state.modifiers_match(self.modifiers_to_match)
     }
@@ -143,7 +160,11 @@ impl<'s> KeyRef<'s> {
     pub fn is_rising(&self) -> bool {
         let key = self
             .state
-            .is_key_in_set(self.key, &self.state.rising_keys)
+            .is_key_in_set(
+                self.key,
+                &self.state.rising_keys,
+                &self.state.rising_buttons,
+            )
             .unwrap_or(false);
         key && self.state.modifiers_match(self.modifiers_to_match)
     }
@@ -151,7 +172,11 @@ impl<'s> KeyRef<'s> {
     pub fn is_falling(&self) -> bool {
         let key = self
             .state
-            .is_key_in_set(self.key, &self.state.falling_keys)
+            .is_key_in_set(
+                self.key,
+                &self.state.falling_keys,
+                &self.state.falling_buttons,
+            )
             .unwrap_or(false);
         key && self.state.modifiers_match(self.modifiers_to_match)
     }
@@ -189,6 +214,9 @@ fn maintain_input_state(state: &mut InputState, window: &Window) {
 
     state.rising_keys.clear();
     state.falling_keys.clear();
+
+    state.rising_buttons.clear();
+    state.falling_buttons.clear();
 
     state.cursor_dx = 0.0;
     state.cursor_dy = 0.0;
@@ -229,6 +257,17 @@ fn notify_mouse_motion(state: &mut InputState, dx: f64, dy: f64) {
 
 fn notify_mouse_scroll(_state: &mut InputState, _delta: MouseScrollDelta) {}
 
+fn notify_mouse_click(state: &mut InputState, button: ButtonId, elem_state: ElementState) {
+    let pressed = matches!(elem_state, ElementState::Pressed);
+
+    // update rising/falling sets
+    if pressed && state.pressed_buttons.insert(button) {
+        state.rising_buttons.insert(button);
+    } else if !pressed && state.pressed_buttons.remove(&button) {
+        state.falling_buttons.insert(button);
+    }
+}
+
 #[legion::system]
 pub fn input_compiler(
     #[resource] state: &mut InputState,
@@ -242,9 +281,12 @@ pub fn input_compiler(
             DeviceEvent::MouseMotion { delta } => notify_mouse_motion(state, delta.0, delta.1),
             DeviceEvent::MouseWheel { delta } => notify_mouse_scroll(state, delta),
             DeviceEvent::Key(input) => notify_keyboard_input(state, input),
+            DeviceEvent::Button {
+                button,
+                state: elem_state,
+            } => notify_mouse_click(state, button, elem_state),
 
             // DeviceEvent::Motion { axis, value } => todo!(),
-            // DeviceEvent::Button { button, state } => todo!(),
             // DeviceEvent::Text { codepoint } => todo!(),
             _ => {}
         }

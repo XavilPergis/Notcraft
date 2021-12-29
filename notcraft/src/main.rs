@@ -24,12 +24,12 @@ pub struct CameraController {
 }
 
 use crate::engine::{
-    input::{keys, InputState},
+    input::{keys, DigitalInput, InputState},
     render::{
         camera::{ActiveCamera, Camera},
-        renderer::Renderer,
+        renderer::{add_debug_box, DebugBox, DebugBoxKind, Renderer},
     },
-    world::{registry::AIR, BlockPos, VoxelWorld},
+    world::{registry::AIR, BlockPos, Ray3, VoxelWorld},
 };
 use engine::{
     audio::{intermittent_music_system, MusicState},
@@ -44,8 +44,8 @@ use engine::{
     },
     transform::Transform,
     world::{
-        load_chunks_system, registry::BlockRegistry, update_world_system, ChunkLoaderContext,
-        DynamicChunkLoader,
+        chunk::ChunkSnapshotCache, load_chunks_system, registry::BlockRegistry, trace_ray,
+        update_world_system, ChunkLoaderContext, DynamicChunkLoader,
     },
     Dt, StopGameLoop,
 };
@@ -135,22 +135,44 @@ fn player_controller(
         let mut vert_acceleration = 10.5;
         let mut horiz_acceleration = 45.0;
 
-        if input.key(VirtualKeyCode::Q).is_rising() {
-            let bounds = Aabb {
-                min: Point3::from(transform.translation.vector),
-                max: Point3::from(transform.translation.vector),
+        // button 1 - left click
+        // button 2 - middle click
+        // button 3 - right click
+        let mut cache = ChunkSnapshotCache::new(voxel_world);
+        if let Some(hit) = trace_ray(
+            &mut cache,
+            Ray3 {
+                direction: transform
+                    .rotation
+                    .to_quaternion()
+                    .transform_vector(&-Vector3::z()),
+                origin: Point3::from(
+                    transform.translation.vector + nalgebra::vector![0.0, 0.5, 0.0],
+                ),
+            },
+            20.0,
+        ) {
+            add_debug_box(DebugBox {
+                bounds: util::block_aabb(hit.pos).inflate(0.005),
+                rgba: [0.0, 0.0, 0.0, 0.8],
+                kind: DebugBoxKind::Solid,
+            });
+            if input.key(DigitalInput::Button(1)).is_rising() {
+                voxel_world.set_block(hit.pos, AIR);
             }
-            .inflate(10.0);
-
-            for x in bounds.min.x.floor() as i32..=bounds.max.x.floor() as i32 {
-                for y in bounds.min.y.floor() as i32..=bounds.max.y.floor() as i32 {
-                    for z in bounds.min.z.floor() as i32..=bounds.max.z.floor() as i32 {
-                        voxel_world.set_block(BlockPos { x, y, z }, AIR);
-                    }
+            if input.key(DigitalInput::Button(3)).is_rising() {
+                let id = voxel_world.registry.get_id("sand");
+                if let Some(side) = hit.side {
+                    let norm = side.normal::<i32>();
+                    let offset = BlockPos {
+                        x: hit.pos.x + norm.x,
+                        y: hit.pos.y + norm.y,
+                        z: hit.pos.z + norm.z,
+                    };
+                    voxel_world.set_block(offset, id);
                 }
             }
         }
-
         // let mut speed = 5.0 * dt.as_secs_f32();
 
         if input.key(VirtualKeyCode::LControl).is_pressed() {

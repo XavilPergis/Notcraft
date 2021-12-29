@@ -264,7 +264,7 @@ pub(crate) fn flush_chunk_writes(chunk: &Chunk, rebuild: &mut HashSet<ChunkPos>)
 
 /// a cache for multiple unaligned world accesses over a short period of time.
 pub struct ChunkSnapshotCache {
-    world: Arc<VoxelWorld>,
+    pub world: Arc<VoxelWorld>,
     chunks: HashMap<ChunkPos, ChunkSnapshot>,
 }
 

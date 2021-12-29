@@ -1,7 +1,7 @@
 use crate::engine::world::chunk::CHUNK_LENGTH;
 use crossbeam_channel::{Receiver, Sender};
 use legion::{world::SubWorld, Entity, IntoQuery, World};
-use nalgebra::Point3;
+use nalgebra::{Point3, Scalar, Vector3};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     collections::{HashMap, HashSet},
@@ -15,13 +15,14 @@ use std::{
 
 pub use self::chunk::ArrayChunk;
 use self::{
-    chunk::{Chunk, ChunkPos},
+    chunk::{Chunk, ChunkPos, ChunkSnapshotCache},
     registry::{BlockId, BlockRegistry},
 };
 
 use super::{
     render::renderer::{add_transient_debug_box, Aabb, DebugBox, DebugBoxKind},
     transform::Transform,
+    Axis, Side,
 };
 
 pub mod chunk;
@@ -451,86 +452,139 @@ pub fn load_chunks(
         });
 }
 
-// fn int_bound(ray: Ray3<f32>, axis: usize) -> f32 {
-//     if ray.direction[axis] < 0.0 {
-//         let mut new = ray;
-//         new.origin[axis] *= -1.0;
-//         new.direction[axis] *= -1.0;
-//         int_bound(new, axis)
-//     } else {
-//         (1.0 - crate::util::modulo(ray.origin[axis], 1.0)) /
-// ray.direction[axis]     }
-// }
+fn block_distance_sq(a: BlockPos, b: BlockPos) -> f32 {
+    let x = f32::abs(a.x as f32 - b.x as f32);
+    let y = f32::abs(a.y as f32 - b.y as f32);
+    let z = f32::abs(a.z as f32 - b.z as f32);
+    x * x + y * y + z * z
+}
 
-// fn trace_ray<F>(ray: Ray3<f32>, radius: f32, mut func: F) -> bool
-// where
-//     F: FnMut(BlockPos, Option<Vector3<i32>>) -> bool,
-// {
-//     // FIXME: actually do something when looking straight up/down! please!
-//     if ray.direction.y == 0.0 {
-//         return false;
-//     }
+#[derive(Copy, Clone, Debug)]
+pub struct Ray3<T: Scalar> {
+    pub direction: Vector3<T>,
+    pub origin: Point3<T>,
+}
 
-//     // init phase
-//     let origin: BlockPos = WorldPos(ray.origin).into();
-//     let mut current = origin.0;
-//     let step_x = ray.direction.x.signum();
-//     let step_y = ray.direction.y.signum();
-//     let step_z = ray.direction.z.signum();
+#[must_use]
+pub fn trace_ray(
+    cache: &mut ChunkSnapshotCache,
+    ray: Ray3<f32>,
+    radius: f32,
+) -> Option<RaycastHit> {
+    let start_block = BlockPos {
+        x: ray.origin.x.floor() as i32,
+        y: ray.origin.y.floor() as i32,
+        z: ray.origin.z.floor() as i32,
+    };
+    trace_ray_generic(ray, |pos| {
+        if block_distance_sq(start_block, pos) > radius * radius {
+            return RaycastStep::Exit;
+        }
+        let id = match cache.block(pos) {
+            None => return RaycastStep::Exit,
+            Some(id) => id,
+        };
+        match cache.world.registry.collidable(id) {
+            true => RaycastStep::Hit,
+            false => RaycastStep::Continue,
+        }
+    })
+}
 
-//     let mut t_max_x = int_bound(ray, 0);
-//     let mut t_max_y = int_bound(ray, 1);
-//     let mut t_max_z = int_bound(ray, 2);
+#[derive(Copy, Clone, Debug)]
+pub struct RaycastHit {
+    pub pos: BlockPos,
+    // a `None` side means the block we started in was an immediate hit
+    pub side: Option<Side>,
+}
 
-//     let t_delta_x = step_x / ray.direction.x;
-//     let t_delta_y = step_y / ray.direction.y;
-//     let t_delta_z = step_z / ray.direction.z;
+#[derive(Copy, Clone, Debug)]
+pub enum RaycastStep {
+    Continue,
+    Exit,
+    Hit,
+}
 
-//     let step_x = step_x as i32;
-//     let step_y = step_y as i32;
-//     let step_z = step_z as i32;
-//     let mut normal = None;
+fn f32_checked_div(num: f32, denom: f32) -> Option<f32> {
+    if denom == 0.0 {
+        None
+    } else {
+        Some(num / denom)
+    }
+}
 
-//     // incremental pahse
-//     for _ in 0..3000 {
-//         if func(BlockPos(current), normal) {
-//             return true;
-//         }
+fn trace_ray_generic<F>(ray: Ray3<f32>, mut func: F) -> Option<RaycastHit>
+where
+    F: FnMut(BlockPos) -> RaycastStep,
+{
+    // init phase
+    let origin = BlockPos {
+        x: ray.origin.x.floor() as i32,
+        y: ray.origin.y.floor() as i32,
+        z: ray.origin.z.floor() as i32,
+    };
 
-//         if t_max_x < t_max_y {
-//             if t_max_x < t_max_z {
-//                 if t_max_x > radius {
-//                     break;
-//                 }
-//                 current.x += step_x;
-//                 t_max_x += t_delta_x;
-//                 normal = Some(vector!(-step_x, 0, 0));
-//             } else {
-//                 if t_max_z > radius {
-//                     break;
-//                 }
-//                 current.z += step_z;
-//                 t_max_z += t_delta_z;
-//                 normal = Some(vector!(0, 0, -step_z));
-//             }
-//         } else {
-//             if t_max_y < t_max_z {
-//                 if t_max_y > radius {
-//                     break;
-//                 }
-//                 current.y += step_y;
-//                 t_max_y += t_delta_y;
-//                 normal = Some(vector!(0, -step_y, 0));
-//             } else {
-//                 if t_max_z > radius {
-//                     break;
-//                 }
-//                 current.z += step_z;
-//                 t_max_z += t_delta_z;
-//                 normal = Some(vector!(0, 0, -step_z));
-//             }
-//         }
-//     }
+    let mut current = origin;
+    let step_x = ray.direction.x.signum();
+    let step_y = ray.direction.y.signum();
+    let step_z = ray.direction.z.signum();
 
-//     false
-// }
+    let next_x = origin.x as f32 + if step_x < 0.0 { 0.0 } else { 1.0 };
+    let next_y = origin.y as f32 + if step_y < 0.0 { 0.0 } else { 1.0 };
+    let next_z = origin.z as f32 + if step_z < 0.0 { 0.0 } else { 1.0 };
+
+    // the distance along the ray from `current` where each axis meets the next
+    // voxel. if the ray is parallel with an axis, then the ray will never
+    // intersect, and we should never try to step in that axis, so we use f32::MAX
+    // in that case, so everything will compare smaller.
+    let mut t_max_x = f32_checked_div(next_x - ray.origin.x, ray.direction.x).unwrap_or(f32::MAX);
+    let mut t_max_y = f32_checked_div(next_y - ray.origin.y, ray.direction.y).unwrap_or(f32::MAX);
+    let mut t_max_z = f32_checked_div(next_z - ray.origin.z, ray.direction.z).unwrap_or(f32::MAX);
+
+    // if the ray direction is 0 on a particular axis, then we don't ever step along
+    // that axis, and this delta value is kind of meaningless, so we just stuff it
+    // with a dummy value.
+    let t_delta_x = f32_checked_div(step_x, ray.direction.x).unwrap_or(f32::MAX);
+    let t_delta_y = f32_checked_div(step_y, ray.direction.y).unwrap_or(f32::MAX);
+    let t_delta_z = f32_checked_div(step_z, ray.direction.z).unwrap_or(f32::MAX);
+
+    let step_x = step_x as i32;
+    let step_y = step_y as i32;
+    let step_z = step_z as i32;
+    let mut hit_axis = None;
+
+    // incremental pahse
+    loop {
+        match func(current) {
+            RaycastStep::Continue => {}
+            RaycastStep::Exit => break None,
+            RaycastStep::Hit => {
+                let side = hit_axis.map(|axis| match axis {
+                    Axis::X if step_x > 0 => Side::Left,
+                    Axis::X => Side::Right,
+                    Axis::Y if step_y > 0 => Side::Bottom,
+                    Axis::Y => Side::Top,
+                    Axis::Z if step_z > 0 => Side::Back,
+                    Axis::Z => Side::Front,
+                });
+                break Some(RaycastHit { pos: current, side });
+            }
+        }
+
+        // find smallest step along the ray that we can take and still remain inside the
+        // current voxel, which will put us on the boundary of the next.
+        if t_max_x < t_max_y && t_max_x < t_max_z {
+            current.x += step_x;
+            t_max_x += t_delta_x;
+            hit_axis = Some(Axis::X);
+        } else if t_max_y < t_max_z {
+            current.y += step_y;
+            t_max_y += t_delta_y;
+            hit_axis = Some(Axis::Y);
+        } else {
+            current.z += step_z;
+            t_max_z += t_delta_z;
+            hit_axis = Some(Axis::Z);
+        }
+    }
+}

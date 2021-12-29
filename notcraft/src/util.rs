@@ -1,4 +1,5 @@
-use nalgebra::{vector, Point3, Vector3};
+use crate::engine::{render::renderer::Aabb, world::BlockPos};
+use nalgebra::{point, vector, Point3, Vector3};
 use std::cmp::Ordering;
 
 #[inline(always)]
@@ -118,5 +119,13 @@ impl<T> ChannelPair<T> {
 
     pub fn sender(&self) -> crossbeam_channel::Sender<T> {
         self.tx.clone()
+    }
+}
+
+pub fn block_aabb(block: BlockPos) -> Aabb {
+    let pos = point![block.x as f32, block.y as f32, block.z as f32];
+    Aabb {
+        min: pos,
+        max: pos + vector![1.0, 1.0, 1.0],
     }
 }

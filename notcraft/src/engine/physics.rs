@@ -1,7 +1,9 @@
 use std::{ops::RangeInclusive, sync::Arc};
 
 use legion::{systems::CommandBuffer, world::SubWorld, Entity, Query};
-use nalgebra::{point, vector, Vector3};
+use nalgebra::{vector, Vector3};
+
+use crate::util;
 
 use super::{
     render::renderer::{add_debug_box, Aabb, DebugBox, DebugBoxKind},
@@ -30,14 +32,6 @@ impl AabbCollider {
             aabb,
             on_ground: false,
         }
-    }
-}
-
-fn block_aabb(block: BlockPos) -> Aabb {
-    let pos = point![block.x as f32, block.y as f32, block.z as f32];
-    Aabb {
-        min: pos,
-        max: pos + vector![1.0, 1.0, 1.0],
     }
 }
 
@@ -78,7 +72,7 @@ impl<'a> CollisionContext<'a> {
 }
 
 fn does_block_collide(ctx: &mut CollisionContext, block_pos: BlockPos) -> Option<bool> {
-    let prev_intersects = block_aabb(block_pos).intersects(&Aabb {
+    let prev_intersects = util::block_aabb(block_pos).intersects(&Aabb {
         min: ctx.previous.min.map(f32::floor),
         max: ctx.previous.max.map(f32::ceil),
     });
@@ -121,7 +115,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
                 let block_pos = BlockPos { x, y, z };
                 if does_block_collide(ctx, block_pos)? {
                     add_debug_box(DebugBox {
-                        bounds: block_aabb(block_pos).inflate(0.003),
+                        bounds: util::block_aabb(block_pos).inflate(0.003),
                         rgba: [1.0, 0.2, 0.2, 0.6],
                         kind: DebugBoxKind::Solid,
                     });
@@ -144,7 +138,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
                 let block_pos = BlockPos { x, y, z };
                 if does_block_collide(ctx, block_pos)? {
                     add_debug_box(DebugBox {
-                        bounds: block_aabb(block_pos).inflate(0.003),
+                        bounds: util::block_aabb(block_pos).inflate(0.003),
                         rgba: [0.2, 1.0, 0.2, 0.6],
                         kind: DebugBoxKind::Solid,
                     });
@@ -167,7 +161,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
                 let block_pos = BlockPos { x, y, z };
                 if does_block_collide(ctx, block_pos)? {
                     add_debug_box(DebugBox {
-                        bounds: block_aabb(block_pos).inflate(0.003),
+                        bounds: util::block_aabb(block_pos).inflate(0.003),
                         rgba: [0.2, 0.2, 1.0, 0.6],
                         kind: DebugBoxKind::Solid,
                     });
