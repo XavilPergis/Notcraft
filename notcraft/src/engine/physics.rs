@@ -1,21 +1,12 @@
-use std::{
-    collections::{hash_map::Entry, HashMap},
-    ops::RangeInclusive,
-    sync::Arc,
-    time::Duration,
-};
+use std::{ops::RangeInclusive, sync::Arc};
 
 use legion::{systems::CommandBuffer, world::SubWorld, Entity, Query};
 use nalgebra::{point, vector, Vector3};
 
 use super::{
-    render::renderer::{add_debug_box, add_transient_debug_box, Aabb, DebugBox, DebugBoxKind},
+    render::renderer::{add_debug_box, Aabb, DebugBox, DebugBoxKind},
     transform::Transform,
-    world::{
-        chunk::{ChunkPos, ChunkSnapshot},
-        registry::{BlockId, BlockRegistry},
-        BlockPos, VoxelWorld,
-    },
+    world::{chunk::ChunkSnapshotCache, registry::BlockRegistry, BlockPos, VoxelWorld},
     Dt,
 };
 
@@ -39,33 +30,6 @@ impl AabbCollider {
             aabb,
             on_ground: false,
         }
-    }
-}
-
-/// a cache for multiple unaligned world accesses over a short period of time.
-pub struct ChunkSnapshotCache {
-    world: Arc<VoxelWorld>,
-    chunks: HashMap<ChunkPos, ChunkSnapshot>,
-}
-
-impl ChunkSnapshotCache {
-    pub fn new(world: &Arc<VoxelWorld>) -> Self {
-        Self {
-            world: Arc::clone(world),
-            chunks: Default::default(),
-        }
-    }
-
-    pub fn chunk(&mut self, pos: ChunkPos) -> Option<&ChunkSnapshot> {
-        Some(match self.chunks.entry(pos) {
-            Entry::Occupied(entry) => &*entry.into_mut(),
-            Entry::Vacant(entry) => &*entry.insert(self.world.chunk(pos)?.snapshot()),
-        })
-    }
-
-    pub fn block(&mut self, pos: BlockPos) -> Option<BlockId> {
-        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
-        Some(self.chunk(chunk_pos)?.data().get(chunk_index))
     }
 }
 
@@ -156,7 +120,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
             for z in make_collision_range(ctx.previous.min.z, ctx.previous.max.z) {
                 let block_pos = BlockPos { x, y, z };
                 if does_block_collide(ctx, block_pos)? {
-                    add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                    add_debug_box(DebugBox {
                         bounds: block_aabb(block_pos).inflate(0.003),
                         rgba: [1.0, 0.2, 0.2, 0.6],
                         kind: DebugBoxKind::Solid,
@@ -179,7 +143,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
             for z in make_collision_range(ctx.previous.min.z, ctx.previous.max.z) {
                 let block_pos = BlockPos { x, y, z };
                 if does_block_collide(ctx, block_pos)? {
-                    add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                    add_debug_box(DebugBox {
                         bounds: block_aabb(block_pos).inflate(0.003),
                         rgba: [0.2, 1.0, 0.2, 0.6],
                         kind: DebugBoxKind::Solid,
@@ -202,7 +166,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
             for y in make_collision_range(ctx.previous.min.y, ctx.previous.max.y) {
                 let block_pos = BlockPos { x, y, z };
                 if does_block_collide(ctx, block_pos)? {
-                    add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                    add_debug_box(DebugBox {
                         bounds: block_aabb(block_pos).inflate(0.003),
                         rgba: [0.2, 0.2, 1.0, 0.6],
                         kind: DebugBoxKind::Solid,

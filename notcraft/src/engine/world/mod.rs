@@ -16,7 +16,7 @@ use std::{
 pub use self::chunk::ArrayChunk;
 use self::{
     chunk::{Chunk, ChunkPos},
-    registry::BlockRegistry,
+    registry::{BlockId, BlockRegistry},
 };
 
 use super::{
@@ -283,9 +283,23 @@ impl VoxelWorld {
         let guard = self.chunks.guard();
         for chunk in self.dirty_chunks_rx.try_iter() {
             if let Some(chunk) = self.chunks.get(&chunk, &guard) {
-                chunk::flush_chunk_writes(chunk);
+                let mut rebuild_set = HashSet::new();
+                chunk::flush_chunk_writes(chunk, &mut rebuild_set);
+                for &pos in rebuild_set.iter() {
+                    if let Some(chunk) = self.chunk(pos) {
+                        self.chunk_event_sender
+                            .send(ChunkEvent::Modified(chunk))
+                            .unwrap();
+                    }
+                }
             }
         }
+    }
+
+    pub fn set_block(&self, pos: BlockPos, id: BlockId) -> Option<()> {
+        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
+        self.chunk(chunk_pos)?.queue_write(chunk_index, id);
+        Some(())
     }
 }
 

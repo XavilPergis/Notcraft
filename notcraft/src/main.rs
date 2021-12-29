@@ -29,7 +29,7 @@ use crate::engine::{
         camera::{ActiveCamera, Camera},
         renderer::Renderer,
     },
-    world::VoxelWorld,
+    world::{registry::AIR, BlockPos, VoxelWorld},
 };
 use engine::{
     audio::{intermittent_music_system, MusicState},
@@ -59,7 +59,7 @@ use glium::{
     Display,
 };
 use legion::{systems::CommandBuffer, world::SubWorld, *};
-use nalgebra::{UnitQuaternion, Vector2, Vector3};
+use nalgebra::{Point3, UnitQuaternion, Vector2, Vector3};
 use std::{
     rc::Rc,
     sync::Arc,
@@ -114,6 +114,7 @@ fn camera_controller(
 
 #[legion::system]
 fn player_controller(
+    #[resource] voxel_world: &Arc<VoxelWorld>,
     #[resource] input: &InputState,
     #[resource] player_controller: &mut PlayerController,
     world: &mut SubWorld,
@@ -133,6 +134,22 @@ fn player_controller(
 
         let mut vert_acceleration = 10.5;
         let mut horiz_acceleration = 45.0;
+
+        if input.key(VirtualKeyCode::Q).is_rising() {
+            let bounds = Aabb {
+                min: Point3::from(transform.translation.vector),
+                max: Point3::from(transform.translation.vector),
+            }
+            .inflate(10.0);
+
+            for x in bounds.min.x.floor() as i32..=bounds.max.x.floor() as i32 {
+                for y in bounds.min.y.floor() as i32..=bounds.max.y.floor() as i32 {
+                    for z in bounds.min.z.floor() as i32..=bounds.max.z.floor() as i32 {
+                        voxel_world.set_block(BlockPos { x, y, z }, AIR);
+                    }
+                }
+            }
+        }
 
         // let mut speed = 5.0 * dt.as_secs_f32();
 

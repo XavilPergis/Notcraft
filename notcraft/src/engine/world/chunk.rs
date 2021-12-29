@@ -5,12 +5,15 @@ use nalgebra::Point3;
 use parking_lot::{lock_api::RawRwLock as RawRwLockApi, RawRwLock};
 use std::{
     cell::UnsafeCell,
+    collections::{hash_map::Entry, HashMap, HashSet},
     ops::{Index, IndexMut},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
 };
+
+use super::{BlockPos, VoxelWorld};
 
 // The width of the chunk is `2 ^ SIZE_BITS`
 pub const CHUNK_LENGTH_BITS: usize = 5;
@@ -132,11 +135,68 @@ impl Chunk {
     }
 }
 
-fn write_chunk_updates_array<I: Iterator<Item = ChunkUpdate>>(data: &mut ArrayChunk, updates: I) {
-    updates.for_each(|update| data[update.index] = update.id);
+fn write_chunk_updates_array<I: Iterator<Item = ChunkUpdate>>(
+    data: &mut ArrayChunk,
+    center: ChunkPos,
+    rebuild: &mut HashSet<ChunkPos>,
+    updates: I,
+) {
+    const MAX_AXIS_INDEX: usize = CHUNK_LENGTH - 1;
+
+    let mut c = false;
+    let mut nx = false;
+    let mut px = false;
+    let mut ny = false;
+    let mut py = false;
+    let mut nz = false;
+    let mut pz = false;
+
+    updates.for_each(|update| {
+        let slot = &mut data[update.index];
+        if *slot != update.id {
+            c = true;
+            nx |= update.index[0] == 0;
+            px |= update.index[0] == MAX_AXIS_INDEX;
+            ny |= update.index[1] == 0;
+            py |= update.index[1] == MAX_AXIS_INDEX;
+            nz |= update.index[2] == 0;
+            pz |= update.index[2] == MAX_AXIS_INDEX;
+            *slot = update.id;
+        }
+    });
+
+    if c {
+        rebuild.insert(center);
+    }
+
+    if nx {
+        rebuild.insert(center.offset([-1, 0, 0]));
+    }
+    if px {
+        rebuild.insert(center.offset([1, 0, 0]));
+    }
+
+    if ny {
+        rebuild.insert(center.offset([0, -1, 0]));
+    }
+    if py {
+        rebuild.insert(center.offset([0, 1, 0]));
+    }
+
+    if nz {
+        rebuild.insert(center.offset([0, 0, -1]));
+    }
+    if pz {
+        rebuild.insert(center.offset([0, 0, 1]));
+    }
 }
 
-fn write_chunk_updates<I: Iterator<Item = ChunkUpdate>>(data: &mut ChunkData, mut updates: I) {
+fn write_chunk_updates<I: Iterator<Item = ChunkUpdate>>(
+    data: &mut ChunkData,
+    center: ChunkPos,
+    rebuild: &mut HashSet<ChunkPos>,
+    mut updates: I,
+) {
     match data {
         &mut ChunkData::Homogeneous(id) => {
             let differing = loop {
@@ -148,13 +208,13 @@ fn write_chunk_updates<I: Iterator<Item = ChunkUpdate>>(data: &mut ChunkData, mu
             };
 
             let mut chunk = ArrayChunk::homogeneous(id);
-            chunk[differing.index] = differing.id;
-            write_chunk_updates_array(&mut chunk, updates);
+            write_chunk_updates_array(&mut chunk, center, rebuild, std::iter::once(differing));
+            write_chunk_updates_array(&mut chunk, center, rebuild, updates);
 
             *data = ChunkData::Array(chunk);
         }
-        ChunkData::Array(data) => write_chunk_updates_array(data, updates),
-    };
+        ChunkData::Array(data) => write_chunk_updates_array(data, center, rebuild, updates),
+    }
 }
 
 // the idea here is to queue writes to this chunk, and flush the queue once a
@@ -164,7 +224,9 @@ fn write_chunk_updates<I: Iterator<Item = ChunkUpdate>>(data: &mut ChunkData, mu
 //
 // NOTE: this should not be called concurrently, the only guarantee is
 // concurrent calls will not produce UB.
-pub(crate) fn flush_chunk_writes(chunk: &Chunk) {
+//
+// returns whether any modifications happened
+pub(crate) fn flush_chunk_writes(chunk: &Chunk, rebuild: &mut HashSet<ChunkPos>) {
     // we clear the dirty flag here before processing anything in the queue, which
     // is okay. it just means that if we get updates before the queue is drained and
     // none after it is, then this chunk will be queued to be rechecked when there
@@ -178,19 +240,59 @@ pub(crate) fn flush_chunk_writes(chunk: &Chunk) {
         util::defer!(unsafe { old_inner.lock.unlock_exclusive() });
 
         let data = unsafe { &mut *old_inner.data.get() };
-        write_chunk_updates(data, chunk.write_queue_rx.try_iter());
+        write_chunk_updates(data, chunk.pos(), rebuild, chunk.write_queue_rx.try_iter())
     } else {
         log::debug!("flush failed, orphaning");
         old_inner.lock.lock_shared();
         util::defer!(unsafe { old_inner.lock.unlock_shared() });
 
         let mut chunk_data_copy = unsafe { (*old_inner.data.get()).clone() };
-        write_chunk_updates(&mut chunk_data_copy, chunk.write_queue_rx.try_iter());
+        write_chunk_updates(
+            &mut chunk_data_copy,
+            chunk.pos(),
+            rebuild,
+            chunk.write_queue_rx.try_iter(),
+        );
+        if rebuild.contains(&chunk.pos()) {
+            chunk
+                .inner
+                .store(Arc::new(ChunkInner::new(chunk.pos, chunk_data_copy)));
+            old_inner.orphaned.store(true, Ordering::SeqCst);
+        }
+    }
+}
 
-        chunk
-            .inner
-            .store(Arc::new(ChunkInner::new(chunk.pos, chunk_data_copy)));
-        old_inner.orphaned.store(true, Ordering::SeqCst);
+/// a cache for multiple unaligned world accesses over a short period of time.
+pub struct ChunkSnapshotCache {
+    world: Arc<VoxelWorld>,
+    chunks: HashMap<ChunkPos, ChunkSnapshot>,
+}
+
+impl ChunkSnapshotCache {
+    pub fn new(world: &Arc<VoxelWorld>) -> Self {
+        Self {
+            world: Arc::clone(world),
+            chunks: Default::default(),
+        }
+    }
+
+    pub fn chunk(&mut self, pos: ChunkPos) -> Option<&ChunkSnapshot> {
+        Some(match self.chunks.entry(pos) {
+            Entry::Occupied(entry) => &*entry.into_mut(),
+            Entry::Vacant(entry) => &*entry.insert(self.world.chunk(pos)?.snapshot()),
+        })
+    }
+
+    #[must_use]
+    pub fn block(&mut self, pos: BlockPos) -> Option<BlockId> {
+        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
+        Some(self.chunk(chunk_pos)?.data().get(chunk_index))
+    }
+
+    pub fn set_block(&self, pos: BlockPos, id: BlockId) -> Option<()> {
+        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
+        self.world.chunk(chunk_pos)?.queue_write(chunk_index, id);
+        Some(())
     }
 }
 
