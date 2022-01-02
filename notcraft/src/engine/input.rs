@@ -113,6 +113,22 @@ impl InputState {
         }
     }
 
+    pub fn ctrl(&self) -> bool {
+        self.current_modifiers.ctrl()
+    }
+
+    pub fn alt(&self) -> bool {
+        self.current_modifiers.alt()
+    }
+
+    pub fn shift(&self) -> bool {
+        self.current_modifiers.shift()
+    }
+
+    pub fn logo(&self) -> bool {
+        self.current_modifiers.logo()
+    }
+
     fn modifiers_match(&self, modifiers: Option<ModifiersState>) -> bool {
         modifiers.map_or(true, |modifiers| self.current_modifiers == modifiers)
     }

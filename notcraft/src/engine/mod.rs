@@ -3,14 +3,13 @@ use num_traits::{One, Zero};
 use std::ops::Neg;
 
 // pub mod error;
-pub mod world;
-
 pub mod audio;
 pub mod input;
 pub mod loader;
 pub mod physics;
 pub mod render;
 pub mod transform;
+pub mod world;
 
 use std::time::Duration;
 

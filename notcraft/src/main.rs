@@ -44,14 +44,19 @@ use engine::{
     },
     transform::Transform,
     world::{
-        chunk::ChunkSnapshotCache, load_chunks_system, registry::BlockRegistry, trace_ray,
-        update_world_system, ChunkLoaderContext, DynamicChunkLoader,
+        chunk::ChunkSnapshotCache,
+        load_chunks_system,
+        registry::{BlockId, BlockRegistry},
+        trace_ray, update_world_system, ChunkLoaderContext, DynamicChunkLoader, RaycastHit,
     },
-    Dt, StopGameLoop,
+    Axis, Dt, Side, StopGameLoop,
 };
 use glium::{
     glutin::{
-        event::{Event, KeyboardInput, ModifiersState, VirtualKeyCode, WindowEvent},
+        event::{
+            ButtonId, ElementState, Event, KeyboardInput, ModifiersState, VirtualKeyCode,
+            WindowEvent,
+        },
         event_loop::{ControlFlow, EventLoop},
         window::WindowBuilder,
         ContextBuilder,
@@ -59,7 +64,7 @@ use glium::{
     Display,
 };
 use legion::{systems::CommandBuffer, world::SubWorld, *};
-use nalgebra::{Point3, UnitQuaternion, Vector2, Vector3};
+use nalgebra::{point, vector, Point3, UnitQuaternion, Vector2, Vector3};
 use std::{
     rc::Rc,
     sync::Arc,
@@ -112,9 +117,340 @@ fn camera_controller(
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct TerrainManipulator {
+    start_pos: Option<BlockPos>,
+    start_button: Option<ButtonId>,
+}
+
+fn make_ray(transform: &Transform, reference: &Vector3<f32>) -> Ray3<f32> {
+    Ray3 {
+        direction: transform
+            .rotation
+            .to_quaternion()
+            .transform_vector(reference),
+        origin: Point3::from(transform.translation.vector),
+    }
+}
+
+fn iter_blocks_in(a: BlockPos, b: BlockPos, mut func: impl FnMut(BlockPos)) {
+    let xmin = i32::min(a.x, b.x);
+    let ymin = i32::min(a.y, b.y);
+    let zmin = i32::min(a.z, b.z);
+    let xmax = i32::max(a.x, b.x);
+    let ymax = i32::max(a.y, b.y);
+    let zmax = i32::max(a.z, b.z);
+    for x in xmin..=xmax {
+        for z in zmin..=zmax {
+            for y in ymin..=ymax {
+                func(BlockPos { x, y, z });
+            }
+        }
+    }
+}
+
+fn box_enclosing(a: BlockPos, b: BlockPos) -> Aabb {
+    let xmin = i32::min(a.x, b.x);
+    let ymin = i32::min(a.y, b.y);
+    let zmin = i32::min(a.z, b.z);
+    let xmax = i32::max(a.x, b.x) + 1;
+    let ymax = i32::max(a.y, b.y) + 1;
+    let zmax = i32::max(a.z, b.z) + 1;
+    let min = point![xmin as f32, ymin as f32, zmin as f32];
+    let max = point![xmax as f32, ymax as f32, zmax as f32];
+    Aabb { min, max }
+}
+
+fn terrain_manipulation_area(
+    input: &InputState,
+    hit: &RaycastHit,
+    ctx: &mut TerrainManipulationContext,
+) {
+    if let Some(start_pos) = ctx.manip.start_pos {
+        let start_button = ctx.manip.start_button.unwrap();
+
+        if start_button == 1 {
+            add_debug_box(DebugBox {
+                bounds: box_enclosing(start_pos, hit.pos),
+                rgba: [1.0, 0.7, 0.2, 0.8],
+                kind: DebugBoxKind::Dotted,
+            });
+            if input.key(DigitalInput::Button(1)).is_falling() {
+                iter_blocks_in(start_pos, hit.pos, |pos| {
+                    ctx.set_block(pos, AIR);
+                });
+                ctx.manip.start_pos = None;
+                ctx.manip.start_button = None;
+            }
+        }
+
+        if start_button == 3 {
+            let offset = hit
+                .side
+                .map(|side| side.normal::<i32>())
+                .unwrap_or_default();
+            let end_pos = BlockPos {
+                x: hit.pos.x + offset.x,
+                y: hit.pos.y + offset.y,
+                z: hit.pos.z + offset.z,
+            };
+            add_debug_box(DebugBox {
+                bounds: box_enclosing(start_pos, end_pos),
+                rgba: [0.2, 0.2, 1.0, 0.8],
+                kind: DebugBoxKind::Dotted,
+            });
+            if input.key(DigitalInput::Button(3)).is_falling() {
+                let id = ctx.world.registry.get_id("stone");
+                iter_blocks_in(start_pos, end_pos, |pos| {
+                    ctx.set_block(pos, id);
+                });
+                ctx.manip.start_pos = None;
+                ctx.manip.start_button = None;
+            }
+        }
+    } else {
+        if input.key(DigitalInput::Button(1)).is_rising() {
+            ctx.manip.start_pos = Some(hit.pos);
+            ctx.manip.start_button = Some(1);
+        } else if input.key(DigitalInput::Button(3)).is_rising() {
+            let offset = hit
+                .side
+                .map(|side| side.normal::<i32>())
+                .unwrap_or_default();
+            let start_pos = BlockPos {
+                x: hit.pos.x + offset.x,
+                y: hit.pos.y + offset.y,
+                z: hit.pos.z + offset.z,
+            };
+            ctx.manip.start_pos = Some(start_pos);
+            ctx.manip.start_button = Some(3);
+        }
+    }
+}
+
+fn replace_axis(mut pos: BlockPos, axis: Axis, value: i32) -> BlockPos {
+    pos[axis] = value;
+    pos
+}
+
+fn build_to_me_positive(
+    ctx: &TerrainManipulationContext,
+    input: &InputState,
+    axis: Axis,
+    from: BlockPos,
+    to: BlockPos,
+    id: BlockId,
+) {
+    if from[axis] > to[axis] {
+        return;
+    }
+
+    let mut cache = ChunkSnapshotCache::new(ctx.world);
+
+    let mut max_n = from[axis];
+    for n in from[axis]..=to[axis] {
+        let pos = replace_axis(from, axis, n);
+        if cache
+            .block(pos)
+            .map_or(true, |id| ctx.world.registry.collidable(id))
+        {
+            break;
+        }
+        max_n = n;
+    }
+
+    add_debug_box(DebugBox {
+        bounds: box_enclosing(from, replace_axis(from, axis, max_n)),
+        rgba: [0.2, 0.2, 1.0, 0.8],
+        kind: DebugBoxKind::Dotted,
+    });
+
+    if input.key(DigitalInput::Button(3)).is_rising() {
+        for n in from[axis]..=max_n {
+            ctx.set_block(replace_axis(from, axis, n), id);
+        }
+    }
+}
+
+fn build_to_me_negative(
+    ctx: &TerrainManipulationContext,
+    input: &InputState,
+    axis: Axis,
+    from: BlockPos,
+    to: BlockPos,
+    id: BlockId,
+) {
+    if from[axis] < to[axis] {
+        return;
+    }
+
+    let mut cache = ChunkSnapshotCache::new(ctx.world);
+
+    let mut min_n = from[axis];
+    for n in (to[axis]..=from[axis]).rev() {
+        let pos = replace_axis(from, axis, n);
+        if cache
+            .block(pos)
+            .map_or(true, |id| ctx.world.registry.collidable(id))
+        {
+            break;
+        }
+        min_n = n;
+    }
+
+    add_debug_box(DebugBox {
+        bounds: box_enclosing(from, replace_axis(from, axis, min_n)),
+        rgba: [0.2, 0.2, 1.0, 0.8],
+        kind: DebugBoxKind::Dotted,
+    });
+
+    if input.key(DigitalInput::Button(3)).is_rising() {
+        for n in min_n..=from[axis] {
+            ctx.set_block(replace_axis(from, axis, n), id);
+        }
+    }
+}
+
+fn terrain_manipulation_build_to_me(
+    input: &InputState,
+    hit: &RaycastHit,
+    ctx: &mut TerrainManipulationContext,
+) {
+    let id = ctx.world.registry.get_id("stone");
+    if let Some(side) = hit.side {
+        let offset = side.normal::<i32>();
+        let start_pos = BlockPos {
+            x: hit.pos.x + offset.x,
+            y: hit.pos.y + offset.y,
+            z: hit.pos.z + offset.z,
+        };
+        let player_pos = BlockPos {
+            x: ctx.transform.translation.x.floor() as i32,
+            y: ctx.transform.translation.y.floor() as i32,
+            z: ctx.transform.translation.z.floor() as i32,
+        };
+
+        match side {
+            Side::Top => {
+                build_to_me_positive(ctx, input, Axis::Y, start_pos, player_pos, id);
+            }
+            Side::Bottom => {
+                build_to_me_negative(ctx, input, Axis::Y, start_pos, player_pos, id);
+            }
+            Side::Right => {
+                build_to_me_positive(ctx, input, Axis::X, start_pos, player_pos, id);
+            }
+            Side::Left => {
+                build_to_me_negative(ctx, input, Axis::X, start_pos, player_pos, id);
+            }
+            Side::Front => {
+                build_to_me_positive(ctx, input, Axis::Z, start_pos, player_pos, id);
+            }
+            Side::Back => {
+                build_to_me_negative(ctx, input, Axis::Z, start_pos, player_pos, id);
+            }
+
+            _ => {}
+        }
+    }
+}
+
+fn terrain_manipulation_single(
+    input: &InputState,
+    hit: &RaycastHit,
+    ctx: &mut TerrainManipulationContext,
+) {
+    add_debug_box(DebugBox {
+        bounds: util::block_aabb(hit.pos),
+        rgba: [1.0, 0.7, 0.2, 0.8],
+        kind: DebugBoxKind::Dotted,
+    });
+    if input.key(DigitalInput::Button(1)).is_rising() {
+        ctx.set_block(hit.pos, AIR);
+    }
+
+    if let Some(side) = hit.side {
+        let norm = side.normal::<i32>();
+        let offset = BlockPos {
+            x: hit.pos.x + norm.x,
+            y: hit.pos.y + norm.y,
+            z: hit.pos.z + norm.z,
+        };
+        add_debug_box(DebugBox {
+            bounds: util::block_aabb(offset),
+            rgba: [0.2, 0.2, 1.0, 0.8],
+            kind: DebugBoxKind::Dotted,
+        });
+        if input.key(DigitalInput::Button(3)).is_rising() {
+            let id = ctx.world.registry.get_id("stone");
+            ctx.set_block(offset, id);
+        }
+    }
+}
+
+struct TerrainManipulationContext<'a> {
+    world: &'a Arc<VoxelWorld>,
+    manip: &'a mut TerrainManipulator,
+    transform: &'a Transform,
+    // collider: &'a AabbCollider,
+}
+
+impl<'a> TerrainManipulationContext<'a> {
+    fn set_block(&self, pos: BlockPos, id: BlockId) {
+        // if !self
+        //     .collider
+        //     .aabb
+        //     .transformed(self.transform)
+        //     .intersects(&util::block_aabb(pos))
+        // {
+        // }
+        self.world.set_block(pos, id);
+    }
+}
+
+#[legion::system(for_each)]
+fn terrain_manipulation(
+    #[resource] input: &InputState,
+    #[resource] voxel_world: &Arc<VoxelWorld>,
+    transform: &Transform,
+    // collider: &AabbCollider,
+    manip: &mut TerrainManipulator,
+) {
+    // mode: single, build to me, area
+    // single - no modifiers
+    // build to me - ctrl
+    // area - ctrl + shift
+
+    // button 1 - left click
+    // button 2 - middle click
+    // button 3 - right click
+    let mut cache = ChunkSnapshotCache::new(voxel_world);
+    if let Some(hit) = trace_ray(&mut cache, make_ray(transform, &-Vector3::z()), 20.0) {
+        add_debug_box(DebugBox {
+            bounds: util::block_aabb(hit.pos).inflate(0.005),
+            rgba: [0.0, 0.0, 0.0, 0.8],
+            kind: DebugBoxKind::Solid,
+        });
+
+        let mut ctx = TerrainManipulationContext {
+            world: voxel_world,
+            manip,
+            transform,
+            // collider,
+        };
+
+        if ctx.manip.start_pos.is_some() || (input.ctrl() && input.shift()) {
+            terrain_manipulation_area(input, &hit, &mut ctx);
+        } else if ctx.manip.start_pos.is_none() && input.ctrl() {
+            terrain_manipulation_build_to_me(input, &hit, &mut ctx);
+        } else if ctx.manip.start_pos.is_none() {
+            terrain_manipulation_single(input, &hit, &mut ctx);
+        }
+    }
+}
+
 #[legion::system]
 fn player_controller(
-    #[resource] voxel_world: &Arc<VoxelWorld>,
     #[resource] input: &InputState,
     #[resource] player_controller: &mut PlayerController,
     world: &mut SubWorld,
@@ -135,44 +471,6 @@ fn player_controller(
         let mut vert_acceleration = 10.5;
         let mut horiz_acceleration = 45.0;
 
-        // button 1 - left click
-        // button 2 - middle click
-        // button 3 - right click
-        let mut cache = ChunkSnapshotCache::new(voxel_world);
-        if let Some(hit) = trace_ray(
-            &mut cache,
-            Ray3 {
-                direction: transform
-                    .rotation
-                    .to_quaternion()
-                    .transform_vector(&-Vector3::z()),
-                origin: Point3::from(
-                    transform.translation.vector + nalgebra::vector![0.0, 0.5, 0.0],
-                ),
-            },
-            20.0,
-        ) {
-            add_debug_box(DebugBox {
-                bounds: util::block_aabb(hit.pos).inflate(0.005),
-                rgba: [0.0, 0.0, 0.0, 0.8],
-                kind: DebugBoxKind::Solid,
-            });
-            if input.key(DigitalInput::Button(1)).is_rising() {
-                voxel_world.set_block(hit.pos, AIR);
-            }
-            if input.key(DigitalInput::Button(3)).is_rising() {
-                let id = voxel_world.registry.get_id("sand");
-                if let Some(side) = hit.side {
-                    let norm = side.normal::<i32>();
-                    let offset = BlockPos {
-                        x: hit.pos.x + norm.x,
-                        y: hit.pos.y + norm.y,
-                        z: hit.pos.z + norm.z,
-                    };
-                    voxel_world.set_block(offset, id);
-                }
-            }
-        }
         // let mut speed = 5.0 * dt.as_secs_f32();
 
         if input.key(VirtualKeyCode::LControl).is_pressed() {
@@ -258,7 +556,14 @@ fn setup_world(cmd: &mut CommandBuffer) {
             unload_radius: 8,
         },
     ));
-    let camera = cmd.push((Camera::default(), Transform::default()));
+    let camera = cmd.push((
+        Camera::default(),
+        Transform::default(),
+        TerrainManipulator {
+            start_pos: None,
+            start_button: None,
+        },
+    ));
 
     cmd.exec_mut(move |_, res| {
         res.insert(ActiveCamera(Some(camera)));
@@ -400,6 +705,8 @@ fn main() {
         // this point.
         .add_system(camera_controller_system())
         .add_system(load_chunks_system(ChunkLoaderContext::new(&mut world)))
+        .flush()
+        .add_system(terrain_manipulation_system())
         .build();
 
     let mut main_ctx = MainContext {
@@ -412,6 +719,8 @@ fn main() {
         renderer,
     };
 
+    let mut quit_start_instant = None;
+
     event_loop.run(move |event, _target, cf| match event {
         Event::WindowEvent { event, .. } => match event {
             // TODO: move close handling code somewhere else mayhaps
@@ -423,12 +732,18 @@ fn main() {
                 input:
                     KeyboardInput {
                         virtual_keycode: Some(VirtualKeyCode::Escape),
+                        state,
                         ..
                     },
                 ..
-            } => {
-                *cf = ControlFlow::Exit;
-            }
+            } => match state {
+                ElementState::Pressed => {
+                    if quit_start_instant.is_none() {
+                        quit_start_instant = Some(Instant::now());
+                    }
+                }
+                ElementState::Released => quit_start_instant = None,
+            },
 
             _ => (),
         },
@@ -440,6 +755,9 @@ fn main() {
         Event::MainEventsCleared => display.gl_window().window().request_redraw(),
         Event::RedrawRequested(id) if id == display.gl_window().window().id() => {
             run_frame(&mut main_ctx);
+            if quit_start_instant.map_or(false, |inst| inst.elapsed() >= Duration::from_secs(1)) {
+                *cf = ControlFlow::Exit;
+            }
         }
         _ => {}
     });

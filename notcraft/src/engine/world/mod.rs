@@ -6,6 +6,7 @@ use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
+    ops::{Index, IndexMut},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -34,6 +35,28 @@ pub struct BlockPos {
     pub x: i32,
     pub y: i32,
     pub z: i32,
+}
+
+impl Index<Axis> for BlockPos {
+    type Output = i32;
+
+    fn index(&self, index: Axis) -> &Self::Output {
+        match index {
+            Axis::X => &self.x,
+            Axis::Y => &self.y,
+            Axis::Z => &self.z,
+        }
+    }
+}
+
+impl IndexMut<Axis> for BlockPos {
+    fn index_mut(&mut self, index: Axis) -> &mut Self::Output {
+        match index {
+            Axis::X => &mut self.x,
+            Axis::Y => &mut self.y,
+            Axis::Z => &mut self.z,
+        }
+    }
 }
 
 impl From<BlockPos> for Point3<i32> {
