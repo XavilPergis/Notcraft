@@ -6,6 +6,43 @@ extern crate serde_derive;
 pub mod engine;
 pub mod util;
 
+use crate::engine::{
+    input::{keys, DigitalInput, InputState},
+    prelude::*,
+    render::{
+        camera::{ActiveCamera, Camera},
+        renderer::{add_debug_box, DebugBox, DebugBoxKind},
+    },
+    world::{registry::AIR, BlockPos, Ray3, VoxelWorld},
+};
+use app::{AppExit, Events};
+use bevy_core::CorePlugin;
+use engine::{
+    input::{InputPlugin, RawInputEvent},
+    physics::{AabbCollider, CollisionPlugin, PhysicsPlugin, RigidBody},
+    render::{
+        mesher::ChunkMesherPlugin,
+        renderer::{Aabb, RenderPlugin},
+    },
+    transform::Transform,
+    world::{
+        chunk::ChunkSnapshotCache, registry::BlockId, trace_ray, DynamicChunkLoader, RaycastHit,
+        WorldPlugin,
+    },
+    Axis, Side,
+};
+use glium::{
+    glutin::{
+        event::{ButtonId, Event, ModifiersState, VirtualKeyCode, WindowEvent},
+        event_loop::{ControlFlow, EventLoop},
+        window::WindowBuilder,
+        ContextBuilder,
+    },
+    Display,
+};
+use nalgebra::{point, Point3, UnitQuaternion, Vector2, Vector3};
+use std::{rc::Rc, sync::Arc};
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PlayerController {
     player: Entity,
@@ -23,79 +60,32 @@ pub struct CameraController {
     mode: CameraControllerMode,
 }
 
-use crate::engine::{
-    input::{keys, DigitalInput, InputState},
-    render::{
-        camera::{ActiveCamera, Camera},
-        renderer::{add_debug_box, DebugBox, DebugBoxKind, Renderer},
-    },
-    world::{registry::AIR, BlockPos, Ray3, VoxelWorld},
-};
-use engine::{
-    audio::{intermittent_music_system, MusicState},
-    input::input_compiler_system,
-    physics::{
-        apply_gravity_system, apply_rigidbody_motion_system, terrain_collision_system,
-        update_previous_colliders_system, AabbCollider, RigidBody,
-    },
-    render::{
-        mesher::{chunk_mesher_system, MesherContext},
-        renderer::Aabb,
-    },
-    transform::Transform,
-    world::{
-        chunk::ChunkSnapshotCache,
-        load_chunks_system,
-        registry::{BlockId, BlockRegistry},
-        trace_ray, update_world_system, ChunkLoaderContext, DynamicChunkLoader, RaycastHit,
-    },
-    Axis, Dt, Side, StopGameLoop,
-};
-use glium::{
-    glutin::{
-        event::{
-            ButtonId, ElementState, Event, KeyboardInput, ModifiersState, VirtualKeyCode,
-            WindowEvent,
-        },
-        event_loop::{ControlFlow, EventLoop},
-        window::WindowBuilder,
-        ContextBuilder,
-    },
-    Display,
-};
-use legion::{systems::CommandBuffer, world::SubWorld, *};
-use nalgebra::{point, vector, Point3, UnitQuaternion, Vector2, Vector3};
-use std::{
-    rc::Rc,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
-#[legion::system]
 fn camera_controller(
-    #[resource] input: &InputState,
-    #[resource] camera_controller: &mut CameraController,
-    #[resource] player_controller: &mut PlayerController,
-    world: &mut SubWorld,
-    transform_query: &mut Query<&mut Transform>,
+    input: Res<InputState>,
+    mut camera_controller: ResMut<CameraController>,
+    player_controller: ResMut<PlayerController>,
+    // world: &mut SubWorld,
+    mut transform_query: Query<&mut Transform>,
 ) {
     let mut update_camera_transform =
         |camera_controller: &mut CameraController, entity| match transform_query
-            .get_mut(world, entity)
+            .get_mut(entity)
             .ok()
+            .as_deref()
             .copied()
         {
             None => camera_controller.mode = CameraControllerMode::Static,
             Some(player_transform) => {
-                let camera_transform = transform_query
-                    .get_mut(world, camera_controller.camera)
-                    .unwrap();
+                let mut camera_transform =
+                    transform_query.get_mut(camera_controller.camera).unwrap();
                 *camera_transform = player_transform.translated(&nalgebra::vector![0.0, 0.5, 0.0]);
             }
         };
 
     match camera_controller.mode {
-        CameraControllerMode::Follow(entity) => update_camera_transform(camera_controller, entity),
+        CameraControllerMode::Follow(entity) => {
+            update_camera_transform(&mut camera_controller, entity)
+        }
         CameraControllerMode::Static => {}
     }
 
@@ -104,7 +94,7 @@ fn camera_controller(
         .require_modifiers(ModifiersState::CTRL | ModifiersState::SHIFT)
         .is_rising()
     {
-        update_camera_transform(camera_controller, player_controller.player);
+        update_camera_transform(&mut camera_controller, player_controller.player);
         camera_controller.mode = CameraControllerMode::Static;
     }
 
@@ -172,8 +162,8 @@ fn terrain_manipulation_area(
         if start_button == 1 {
             add_debug_box(DebugBox {
                 bounds: box_enclosing(start_pos, hit.pos),
-                rgba: [1.0, 0.7, 0.2, 0.8],
-                kind: DebugBoxKind::Dotted,
+                rgba: [1.0, 0.2, 0.2, 0.8],
+                kind: DebugBoxKind::Solid,
             });
             if input.key(DigitalInput::Button(1)).is_falling() {
                 iter_blocks_in(start_pos, hit.pos, |pos| {
@@ -197,7 +187,7 @@ fn terrain_manipulation_area(
             add_debug_box(DebugBox {
                 bounds: box_enclosing(start_pos, end_pos),
                 rgba: [0.2, 0.2, 1.0, 0.8],
-                kind: DebugBoxKind::Dotted,
+                kind: DebugBoxKind::Solid,
             });
             if input.key(DigitalInput::Button(3)).is_falling() {
                 let id = ctx.world.registry.get_id("stone");
@@ -209,6 +199,24 @@ fn terrain_manipulation_area(
             }
         }
     } else {
+        add_debug_box(DebugBox {
+            bounds: util::block_aabb(hit.pos),
+            rgba: [1.0, 0.2, 0.2, 0.8],
+            kind: DebugBoxKind::Solid,
+        });
+        if let Some(side) = hit.side {
+            let norm = side.normal::<i32>();
+            let offset = BlockPos {
+                x: hit.pos.x + norm.x,
+                y: hit.pos.y + norm.y,
+                z: hit.pos.z + norm.z,
+            };
+            add_debug_box(DebugBox {
+                bounds: util::block_aabb(offset),
+                rgba: [0.2, 0.2, 1.0, 0.8],
+                kind: DebugBoxKind::Solid,
+            });
+        }
         if input.key(DigitalInput::Button(1)).is_rising() {
             ctx.manip.start_pos = Some(hit.pos);
             ctx.manip.start_button = Some(1);
@@ -262,7 +270,7 @@ fn build_to_me_positive(
     add_debug_box(DebugBox {
         bounds: box_enclosing(from, replace_axis(from, axis, max_n)),
         rgba: [0.2, 0.2, 1.0, 0.8],
-        kind: DebugBoxKind::Dotted,
+        kind: DebugBoxKind::Solid,
     });
 
     if input.key(DigitalInput::Button(3)).is_rising() {
@@ -301,7 +309,7 @@ fn build_to_me_negative(
     add_debug_box(DebugBox {
         bounds: box_enclosing(from, replace_axis(from, axis, min_n)),
         rgba: [0.2, 0.2, 1.0, 0.8],
-        kind: DebugBoxKind::Dotted,
+        kind: DebugBoxKind::Solid,
     });
 
     if input.key(DigitalInput::Button(3)).is_rising() {
@@ -349,8 +357,6 @@ fn terrain_manipulation_build_to_me(
             Side::Back => {
                 build_to_me_negative(ctx, input, Axis::Z, start_pos, player_pos, id);
             }
-
-            _ => {}
         }
     }
 }
@@ -362,8 +368,8 @@ fn terrain_manipulation_single(
 ) {
     add_debug_box(DebugBox {
         bounds: util::block_aabb(hit.pos),
-        rgba: [1.0, 0.7, 0.2, 0.8],
-        kind: DebugBoxKind::Dotted,
+        rgba: [1.0, 0.2, 0.2, 0.8],
+        kind: DebugBoxKind::Solid,
     });
     if input.key(DigitalInput::Button(1)).is_rising() {
         ctx.set_block(hit.pos, AIR);
@@ -379,7 +385,7 @@ fn terrain_manipulation_single(
         add_debug_box(DebugBox {
             bounds: util::block_aabb(offset),
             rgba: [0.2, 0.2, 1.0, 0.8],
-            kind: DebugBoxKind::Dotted,
+            kind: DebugBoxKind::Solid,
         });
         if input.key(DigitalInput::Button(3)).is_rising() {
             let id = ctx.world.registry.get_id("stone");
@@ -408,14 +414,19 @@ impl<'a> TerrainManipulationContext<'a> {
     }
 }
 
-#[legion::system(for_each)]
 fn terrain_manipulation(
-    #[resource] input: &InputState,
-    #[resource] voxel_world: &Arc<VoxelWorld>,
-    transform: &Transform,
-    // collider: &AabbCollider,
-    manip: &mut TerrainManipulator,
+    input: Res<InputState>,
+    voxel_world: Res<Arc<VoxelWorld>>,
+    query: Query<(
+        &Transform,
+        // &AabbCollider,
+        &mut TerrainManipulator,
+    )>,
 ) {
+    // transform: &Transform,
+    // // collider: &AabbCollider,
+    // manip: &mut TerrainManipulator,
+
     // mode: single, build to me, area
     // single - no modifiers
     // build to me - ctrl
@@ -424,107 +435,85 @@ fn terrain_manipulation(
     // button 1 - left click
     // button 2 - middle click
     // button 3 - right click
-    let mut cache = ChunkSnapshotCache::new(voxel_world);
-    if let Some(hit) = trace_ray(&mut cache, make_ray(transform, &-Vector3::z()), 20.0) {
-        add_debug_box(DebugBox {
-            bounds: util::block_aabb(hit.pos).inflate(0.005),
-            rgba: [0.0, 0.0, 0.0, 0.8],
-            kind: DebugBoxKind::Solid,
-        });
+    query.for_each_mut(|(transform, mut manip)| {
+        let mut cache = ChunkSnapshotCache::new(&voxel_world);
+        if let Some(hit) = trace_ray(&mut cache, make_ray(transform, &-Vector3::z()), 20.0) {
+            let mut ctx = TerrainManipulationContext {
+                world: &voxel_world,
+                manip: &mut manip,
+                transform,
+                // collider,
+            };
 
-        let mut ctx = TerrainManipulationContext {
-            world: voxel_world,
-            manip,
-            transform,
-            // collider,
-        };
-
-        if ctx.manip.start_pos.is_some() || (input.ctrl() && input.shift()) {
-            terrain_manipulation_area(input, &hit, &mut ctx);
-        } else if ctx.manip.start_pos.is_none() && input.ctrl() {
-            terrain_manipulation_build_to_me(input, &hit, &mut ctx);
-        } else if ctx.manip.start_pos.is_none() {
-            terrain_manipulation_single(input, &hit, &mut ctx);
+            if ctx.manip.start_pos.is_some() || (input.ctrl() && input.shift()) {
+                terrain_manipulation_area(&input, &hit, &mut ctx);
+            } else if ctx.manip.start_pos.is_none() && input.ctrl() {
+                terrain_manipulation_build_to_me(&input, &hit, &mut ctx);
+            } else if ctx.manip.start_pos.is_none() {
+                terrain_manipulation_single(&input, &hit, &mut ctx);
+            }
         }
-    }
+    });
 }
 
-#[legion::system]
 fn player_controller(
-    #[resource] input: &InputState,
-    #[resource] player_controller: &mut PlayerController,
-    world: &mut SubWorld,
-    player_query: &mut Query<(&mut Transform, &mut RigidBody, &AabbCollider)>,
+    time: Res<Time>,
+    input: Res<InputState>,
+    player_controller: ResMut<PlayerController>,
+    mut player_query: Query<(&mut Transform, &mut RigidBody, &AabbCollider)>,
 ) {
     use std::f32::consts::PI;
 
     let pitch_delta = input.cursor_delta().y * (PI / 180.0);
     let yaw_delta = input.cursor_delta().x * (PI / 180.0);
 
-    if let Some((transform, rigidbody, collider)) =
-        player_query.get_mut(world, player_controller.player).ok()
+    if let Some((mut transform, mut rigidbody, collider)) =
+        player_query.get_mut(player_controller.player).ok()
     {
         transform.rotation.yaw -= yaw_delta;
         transform.rotation.pitch -= pitch_delta;
         transform.rotation.pitch = util::clamp(transform.rotation.pitch, -PI / 2.0, PI / 2.0);
 
-        let mut vert_acceleration = 10.5;
-        let mut horiz_acceleration = 45.0;
+        let mut vert_acceleration = 9.0;
+        let mut horiz_acceleration = 70.0;
 
-        // let mut speed = 5.0 * dt.as_secs_f32();
+        if collider.on_ground {
+            horiz_acceleration *= 0.85;
+        }
 
         if input.key(VirtualKeyCode::LControl).is_pressed() {
-            // speed *= 10.0;
             horiz_acceleration *= 4.0;
             vert_acceleration *= 5.0;
         }
 
         if input.key(keys::FORWARD).is_pressed() {
             rigidbody.acceleration +=
-                transform_project_xz(transform, nalgebra::vector![0.0, -horiz_acceleration]);
-            // transform.translation.vector +=
-            //     transform_project_xz(transform, nalgebra::vector![0.0,
-            // -speed]);
+                transform_project_xz(&mut transform, nalgebra::vector![0.0, -horiz_acceleration]);
         }
         if input.key(keys::BACKWARD).is_pressed() {
             rigidbody.acceleration +=
-                transform_project_xz(transform, nalgebra::vector![0.0, horiz_acceleration]);
-            // transform.translation.vector +=
-            //     transform_project_xz(transform, nalgebra::vector![0.0,
-            // speed]);
+                transform_project_xz(&mut transform, nalgebra::vector![0.0, horiz_acceleration]);
         }
         if input.key(keys::RIGHT).is_pressed() {
             rigidbody.acceleration +=
-                transform_project_xz(transform, nalgebra::vector![horiz_acceleration, 0.0]);
-            // transform.translation.vector +=
-            //     transform_project_xz(transform, nalgebra::vector![speed,
-            // 0.0]);
+                transform_project_xz(&mut transform, nalgebra::vector![horiz_acceleration, 0.0]);
         }
         if input.key(keys::LEFT).is_pressed() {
             rigidbody.acceleration +=
-                transform_project_xz(transform, nalgebra::vector![-horiz_acceleration, 0.0]);
-            // transform.translation.vector +=
-            //     transform_project_xz(transform, nalgebra::vector![-speed,
-            // 0.0]);
+                transform_project_xz(&mut transform, nalgebra::vector![-horiz_acceleration, 0.0]);
         }
         if input.key(keys::UP).is_pressed() {
             if collider.on_ground {
                 rigidbody.velocity.y = vert_acceleration;
             }
-            // transform.translation.vector.y += speed;
-        }
-        if input.key(keys::DOWN).is_pressed() {
-            // rigidbody.acceleration += nalgebra::vector![0.0, -acceleration,
-            // 0.0];
-            // transform.translation.vector.y -= speed;
         }
 
         // 0.96 with horiz_acceleration=30.0 is good for flight or slippery surfaces or
         // such rigidbody.velocity.x *= 0.96;
         // rigidbody.velocity.z *= 0.96;
 
-        rigidbody.velocity.x *= 0.88;
-        rigidbody.velocity.z *= 0.88;
+        rigidbody.velocity.x *= 0.9 * f32::max(0.0, 1.0 - time.delta_seconds());
+        rigidbody.velocity.z *= 0.9 * f32::max(0.0, 1.0 - time.delta_seconds());
 
         if input
             .key(VirtualKeyCode::C)
@@ -546,219 +535,133 @@ fn transform_project_xz(transform: &Transform, translation: Vector2<f32>) -> Vec
     lateral_rotation * local_translation
 }
 
-fn setup_world(cmd: &mut CommandBuffer) {
-    let player = cmd.push((
-        Transform::default().translated(&nalgebra::vector![0.0, 20.0, 0.0]),
-        AabbCollider::new(Aabb::with_dimensions(nalgebra::vector![0.8, 2.0, 0.8])),
-        RigidBody::default(),
-        DynamicChunkLoader {
+fn setup_player(mut cmd: Commands) {
+    let player = cmd
+        .spawn()
+        .insert(Transform::default().translated(&nalgebra::vector![0.0, 20.0, 0.0]))
+        .insert(AabbCollider::new(Aabb::with_dimensions(nalgebra::vector![
+            0.8, 2.0, 0.8
+        ])))
+        .insert(RigidBody::default())
+        .insert(DynamicChunkLoader {
             load_radius: 7,
             unload_radius: 8,
-        },
-    ));
-    let camera = cmd.push((
-        Camera::default(),
-        Transform::default(),
-        TerrainManipulator {
+        })
+        .id();
+
+    let camera = cmd
+        .spawn()
+        .insert(Camera::default())
+        .insert(Transform::default())
+        .insert(TerrainManipulator {
             start_pos: None,
             start_button: None,
-        },
-    ));
+        })
+        .id();
 
-    cmd.exec_mut(move |_, res| {
-        res.insert(ActiveCamera(Some(camera)));
-        res.insert(CameraController {
-            mode: CameraControllerMode::Follow(player),
-            camera,
-        });
-        res.insert(PlayerController { player });
+    cmd.insert_resource(ActiveCamera(Some(camera)));
+    cmd.insert_resource(CameraController {
+        mode: CameraControllerMode::Follow(player),
+        camera,
     });
+    cmd.insert_resource(PlayerController { player });
 }
 
-struct MainContext {
-    duration_samples: Option<Vec<Duration>>,
-    start_instant: Option<Instant>,
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
+pub struct DefaultPlugins;
 
-    schedule: Schedule,
-    world: World,
-    resources: Resources,
-
-    display: Rc<Display>,
-    renderer: Renderer,
-}
-
-fn start_frame(ctx: &mut MainContext) {
-    ctx.start_instant = Some(Instant::now());
-}
-
-fn end_frame_processing(ctx: &mut MainContext) {
-    assert!(ctx.start_instant.is_some(), "sample was not started!");
-
-    let elapsed = ctx.start_instant.unwrap().elapsed();
-    if let Some(samples) = ctx.duration_samples.as_mut() {
-        samples.push(elapsed);
+impl PluginGroup for DefaultPlugins {
+    fn build(&mut self, group: &mut app::PluginGroupBuilder) {
+        group.add(CorePlugin);
+        group.add(WindowingPlugin::default());
+        group.add(InputPlugin::default());
+        group.add(WorldPlugin::default());
+        group.add(RenderPlugin::default());
     }
 }
 
-fn end_frame(ctx: &mut MainContext) {
-    assert!(ctx.start_instant.is_some(), "sample was not started!");
+#[derive(Debug, Default)]
+pub struct WindowingPlugin {}
 
-    let dt = ctx.start_instant.unwrap().elapsed();
-    *ctx.resources.get_mut::<Dt>().unwrap() = Dt(dt);
+impl Plugin for WindowingPlugin {
+    fn build(&self, app: &mut AppBuilder) {
+        let event_loop = EventLoop::new();
+        let window = WindowBuilder::new().with_title("Notcraft™");
+        let graphics_context = ContextBuilder::new().with_depth_buffer(24).with_vsync(true);
+        let display = Rc::new(Display::new(window, graphics_context, &event_loop).unwrap());
+
+        app.insert_non_send_resource(event_loop);
+        app.insert_non_send_resource(display);
+    }
 }
 
-fn report_frame_samples(ctx: &mut MainContext) {
-    if let Some(samples) = ctx.duration_samples.as_mut() {
-        if samples.len() >= 1000 {
-            let len = samples.len() as u32;
-            let average_duration = samples.drain(..).sum::<Duration>() / len;
+fn glutin_runner(mut app: App) {
+    // the runner isn't `FnOnce`, or even `FnMut`, so we can't move the display and
+    // event loop into here.
+    let event_loop = app.world.remove_non_send::<EventLoop<()>>().unwrap();
+    let display = Rc::clone(app.world.get_non_send_resource::<Rc<Display>>().unwrap());
 
-            log::debug!(
-                "Frame took {} ms on average ({} fps)",
-                average_duration.as_secs_f64() * 1000.0,
-                1.0 / average_duration.as_secs_f64()
-            );
+    event_loop.run(move |event, _target, cf| match event {
+        Event::WindowEvent {
+            event: WindowEvent::CloseRequested,
+            ..
+        } => {
+            // TODO: move close handling code somewhere else mayhaps
+            *cf = ControlFlow::Exit;
         }
-    }
-}
 
-fn run_frame(ctx: &mut MainContext) {
-    start_frame(ctx);
+        // TODO: i should probably set up dedicated event channels for each of these
+        Event::DeviceEvent { device_id, event } => {
+            if let Some(mut events) = app.world.get_resource_mut::<Events<RawInputEvent>>() {
+                events.send(RawInputEvent::Device(device_id, event));
+            }
+        }
 
-    // update
-    ctx.schedule.execute(&mut ctx.world, &mut ctx.resources);
+        Event::WindowEvent { window_id, event } => {
+            if let Some(mut events) = app.world.get_resource_mut::<Events<RawInputEvent>>() {
+                if let Some(event) = event.to_static() {
+                    events.send(RawInputEvent::Window(window_id, event));
+                }
+            }
+        }
 
-    // draw
-    // TODO: might want to integrate this into ECS, might not
-    let mut frame = ctx.display.draw();
-    ctx.renderer
-        .draw(&mut frame, &mut ctx.world, &mut ctx.resources)
-        .unwrap();
+        Event::MainEventsCleared => display.gl_window().window().request_redraw(),
+        Event::RedrawRequested(id) if id == display.gl_window().window().id() => {
+            app.update();
+            let mut app_exit_events = app.world.get_resource_mut::<Events<AppExit>>().unwrap();
+            if app_exit_events.drain().last().is_some() {
+                *cf = ControlFlow::Exit;
+            }
+        }
 
-    end_frame_processing(ctx);
-
-    frame.finish().unwrap();
-
-    end_frame(ctx);
-    report_frame_samples(ctx);
+        _ => {}
+    });
 }
 
 fn main() {
     simple_logger::init_with_level(log::Level::Debug).unwrap();
 
-    let mut world = World::default();
-    let mut resources = Resources::default();
-
-    let registry = BlockRegistry::load_from_file("resources/blocks.json").unwrap();
-    let voxel_world = VoxelWorld::new(Arc::clone(&registry));
-
-    let mesher_ctx = MesherContext::new(&voxel_world);
-
-    {
-        let mut setup_buf = CommandBuffer::new(&world);
-        setup_world(&mut setup_buf);
-        setup_buf.flush(&mut world, &mut resources);
-
-        resources.insert(voxel_world);
-        resources.insert(engine::input::InputState::default());
-        resources.insert(StopGameLoop(false));
-        resources.insert(Dt(Duration::from_secs(1)));
-    }
-
-    let event_loop = EventLoop::new();
-    let (window_events_tx, window_events_rx) = crossbeam_channel::unbounded();
-
-    let window = WindowBuilder::new().with_title("Notcraft™");
-    let ctx = ContextBuilder::new().with_depth_buffer(24).with_vsync(true);
-
-    let display = Rc::new(Display::new(window, ctx, &event_loop).unwrap());
-
-    let renderer = Renderer::new(
-        Rc::clone(&display),
-        Arc::clone(&registry),
-        &mut world,
-        &mut resources,
-    )
-    .unwrap();
-
-    let schedule = Schedule::builder()
-        .add_thread_local(input_compiler_system(window_events_rx, Rc::clone(&display)))
-        .add_thread_local(intermittent_music_system(MusicState::new()))
-        .add_system(chunk_mesher_system(mesher_ctx))
-        // all modifications to entities with `Transform`s + `AabbCollider`s should be made after
-        // this system has been flushed.
-        .add_system(update_previous_colliders_system())
-        // maintain the world (primarily flush queued chunk writes). systems that read the current
-        // state of the world should happen after this sytem has been flushed.
-        .add_system(update_world_system())
-        .flush()
-        .add_system(player_controller_system())
-        .add_system(apply_gravity_system())
-        .flush()
-        .add_system(apply_rigidbody_motion_system())
-        .flush()
-        // all modifications to entities with `Transform`s + `AabbCollider`s should be flushed by
-        // this point.
-        .add_system(terrain_collision_system())
-        .flush()
-        // modifications to the entity being followed by the camera controller should be flushed by
-        // this point.
-        .add_system(camera_controller_system())
-        .add_system(load_chunks_system(ChunkLoaderContext::new(&mut world)))
-        .flush()
-        .add_system(terrain_manipulation_system())
-        .build();
-
-    let mut main_ctx = MainContext {
-        duration_samples: Some(vec![]),
-        start_instant: None,
-        schedule,
-        world,
-        resources,
-        display: Rc::clone(&display),
-        renderer,
-    };
-
-    let mut quit_start_instant = None;
-
-    event_loop.run(move |event, _target, cf| match event {
-        Event::WindowEvent { event, .. } => match event {
-            // TODO: move close handling code somewhere else mayhaps
-            WindowEvent::CloseRequested => {
-                *cf = ControlFlow::Exit;
-            }
-
-            WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        virtual_keycode: Some(VirtualKeyCode::Escape),
-                        state,
-                        ..
-                    },
-                ..
-            } => match state {
-                ElementState::Pressed => {
-                    if quit_start_instant.is_none() {
-                        quit_start_instant = Some(Instant::now());
-                    }
-                }
-                ElementState::Released => quit_start_instant = None,
-            },
-
-            _ => (),
-        },
-
-        Event::DeviceEvent { device_id, event } => {
-            window_events_tx.send((device_id, event)).unwrap()
-        }
-
-        Event::MainEventsCleared => display.gl_window().window().request_redraw(),
-        Event::RedrawRequested(id) if id == display.gl_window().window().id() => {
-            run_frame(&mut main_ctx);
-            if quit_start_instant.map_or(false, |inst| inst.elapsed() >= Duration::from_secs(1)) {
-                *cf = ControlFlow::Exit;
-            }
-        }
-        _ => {}
-    });
+    App::build()
+        .add_plugins(DefaultPlugins)
+        .add_plugin(ChunkMesherPlugin::default())
+        .add_plugin(PhysicsPlugin::default())
+        .add_plugin(CollisionPlugin::default())
+        .add_startup_system(setup_player.system())
+        // .add_system(intermittent_music.system())
+        .add_system(player_controller.system().label(PlayerControllerUpdate))
+        .add_system(
+            camera_controller
+                .system()
+                .label(CameraControllerUpdate)
+                .after(PlayerControllerUpdate),
+        )
+        .add_system(terrain_manipulation.system().after(CameraControllerUpdate))
+        .set_runner(glutin_runner)
+        .run();
 }
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+pub struct PlayerControllerUpdate;
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+pub struct CameraControllerUpdate;

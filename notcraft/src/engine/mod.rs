@@ -11,33 +11,22 @@ pub mod render;
 pub mod transform;
 pub mod world;
 
-use std::time::Duration;
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
-pub struct StopGameLoop(pub bool);
-
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
-pub struct Dt(pub Duration);
-
-impl Dt {
-    pub fn as_secs(&self) -> f32 {
-        self.0.as_secs() as f32 + self.0.subsec_nanos() as f32 * 1e-9
-    }
-}
-
 pub mod math {
     pub use nalgebra::{
         self as na, Matrix3, Matrix4, Point1, Point2, Point3, Vector2, Vector3, Vector4,
     };
 }
 
-// pub mod prelude {
-//     pub use super::world::{
-//         block::{self, BlockId},
-//         chunk, BlockPos, Chunk, ChunkPos, VoxelWorld, WorldPos,
-//     };
-//     pub use crate::util;
-// }
+pub mod prelude {
+    pub use bevy_app as app;
+    pub use bevy_ecs as ecs;
+
+    pub use crate::util;
+
+    pub use app::prelude::*;
+    pub use bevy_core::prelude::*;
+    pub use ecs::prelude::*;
+}
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]

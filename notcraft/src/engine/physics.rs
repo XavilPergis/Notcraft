@@ -1,15 +1,11 @@
-use std::{ops::RangeInclusive, sync::Arc};
-
-use legion::{systems::CommandBuffer, world::SubWorld, Entity, Query};
+use crate::engine::prelude::*;
 use nalgebra::{vector, Vector3};
-
-use crate::util;
+use std::{ops::RangeInclusive, sync::Arc};
 
 use super::{
     render::renderer::{add_debug_box, Aabb, DebugBox, DebugBoxKind},
     transform::Transform,
     world::{chunk::ChunkSnapshotCache, registry::BlockRegistry, BlockPos, VoxelWorld},
-    Dt,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
@@ -310,23 +306,37 @@ pub struct PreviousCollider {
     aabb_world: Aabb,
 }
 
+pub fn fix_previous_colliders(
+    mut cmd: Commands,
+    query: Query<(Entity, &AabbCollider, &Transform), Without<PreviousCollider>>,
+) {
+    query.for_each_mut(|(entity, collider, transform)| {
+        cmd.entity(entity).insert(PreviousCollider {
+            aabb_world: collider.aabb.transformed(transform),
+        });
+    });
+}
+
+pub fn update_previous_colliders(query: Query<(&AabbCollider, &Transform, &mut PreviousCollider)>) {
+    query.for_each_mut(|(collider, transform, mut previous)| {
+        previous.aabb_world = collider.aabb.transformed(transform);
+    });
+}
+
 // should happen after most code that deals with transforms happens.
-#[legion::system]
 pub fn terrain_collision(
-    #[resource] voxel_world: &Arc<VoxelWorld>,
-    world: &mut SubWorld,
-    query: &mut Query<(
+    voxel_world: Res<Arc<VoxelWorld>>,
+    query: Query<(
         &mut AabbCollider,
         &PreviousCollider,
         &mut RigidBody,
         &mut Transform,
     )>,
 ) {
-    let mut cache = ChunkSnapshotCache::new(voxel_world);
+    let mut cache = ChunkSnapshotCache::new(&voxel_world);
     query.for_each_mut(
-        world,
-        |(collider, previous_collider, rigidbody, transform)| {
-            let prev_aabb = collider.aabb.transformed(transform);
+        |(mut collider, previous_collider, mut rigidbody, mut transform)| {
+            let prev_aabb = collider.aabb.transformed(&transform);
             let mut ctx = CollisionContext::new(
                 &mut cache,
                 &voxel_world.registry,
@@ -334,7 +344,12 @@ pub fn terrain_collision(
                 previous_collider.aabb_world,
             );
 
-            resolve_terrain_collisions_main(&mut ctx, collider, rigidbody, transform);
+            resolve_terrain_collisions_main(
+                &mut ctx,
+                &mut collider,
+                &mut rigidbody,
+                &mut transform,
+            );
             // let post_aabb = collider.aabb.transformed(transform);
 
             // add_debug_box(DebugBox {
@@ -351,38 +366,59 @@ pub fn terrain_collision(
     );
 }
 
-#[legion::system(for_each)]
-pub fn apply_gravity(rigidbody: &mut RigidBody) {
-    rigidbody.acceleration.y -= 36.0;
-}
-
-#[legion::system(for_each)]
-pub fn apply_rigidbody_motion(
-    #[resource] Dt(dt): &Dt,
-    rigidbody: &mut RigidBody,
-    transform: &mut Transform,
-) {
-    let dt = dt.as_secs_f32();
-
-    let a = rigidbody.acceleration;
-    rigidbody.acceleration = vector![0.0, 0.0, 0.0];
-
-    let dv = a * dt;
-    rigidbody.velocity += dv;
-
-    let dp = rigidbody.velocity * dt;
-    transform.translation.vector += dp;
-}
-
-#[legion::system]
-pub fn update_previous_colliders(
-    cmd: &mut CommandBuffer,
-    world: &mut SubWorld,
-    query: &mut Query<(Entity, &AabbCollider, &Transform)>,
-) {
-    query.for_each_mut(world, |(&entity, collider, transform)| {
-        cmd.add_component(entity, PreviousCollider {
-            aabb_world: collider.aabb.transformed(transform),
-        });
+pub fn apply_gravity(query: Query<&mut RigidBody>) {
+    query.for_each_mut(|mut rigidbody| {
+        rigidbody.acceleration.y -= 27.0;
     });
 }
+
+pub fn apply_rigidbody_motion(time: Res<Time>, query: Query<(&mut RigidBody, &mut Transform)>) {
+    query.for_each_mut(|(mut rigidbody, mut transform)| {
+        let dt = time.delta_seconds();
+
+        let a = rigidbody.acceleration;
+        rigidbody.acceleration = vector![0.0, 0.0, 0.0];
+
+        let dv = a * dt;
+        rigidbody.velocity += dv;
+
+        let dp = rigidbody.velocity * dt;
+        transform.translation.vector += dp;
+    });
+}
+
+#[derive(Debug, Default)]
+pub struct PhysicsPlugin {}
+
+impl Plugin for PhysicsPlugin {
+    fn build(&self, app: &mut AppBuilder) {
+        app.add_system(apply_gravity.system());
+        app.add_system_to_stage(
+            CoreStage::PostUpdate,
+            apply_rigidbody_motion.system().label(MotionApplication),
+        );
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct CollisionPlugin {}
+
+impl Plugin for CollisionPlugin {
+    fn build(&self, app: &mut AppBuilder) {
+        app.add_system_to_stage(
+            CoreStage::PostUpdate,
+            terrain_collision
+                .system()
+                .label(CollisionResolution)
+                .after(MotionApplication),
+        );
+        app.add_system_to_stage(CoreStage::PreUpdate, fix_previous_colliders.system());
+        app.add_system_to_stage(CoreStage::PreUpdate, update_previous_colliders.system());
+    }
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+pub struct MotionApplication;
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+pub struct CollisionResolution;

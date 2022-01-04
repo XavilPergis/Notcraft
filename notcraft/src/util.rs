@@ -1,6 +1,8 @@
 use crate::engine::{render::renderer::Aabb, world::BlockPos};
+use bevy_app::{AppExit, EventWriter};
+use bevy_ecs::prelude::In;
 use nalgebra::{point, vector, Point3, Vector3};
-use std::cmp::Ordering;
+use std::{cmp::Ordering, fmt::Display};
 
 #[inline(always)]
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -129,3 +131,26 @@ pub fn block_aabb(block: BlockPos) -> Aabb {
         max: pos + vector![1.0, 1.0, 1.0],
     }
 }
+
+pub fn handle_error_internal<T, E>(In(res): In<Result<T, E>>, mut exit: EventWriter<AppExit>)
+where
+    E: Display,
+{
+    match res {
+        Ok(_) => {}
+        Err(err) => {
+            log::error!("{}", err);
+            exit.send(AppExit);
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! try_system {
+    ($sys:expr) => {
+        $sys.system()
+            .chain($crate::util::handle_error_internal.system())
+    };
+}
+
+pub use try_system;

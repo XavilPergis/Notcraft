@@ -1,12 +1,12 @@
-use crate::engine::world::chunk::CHUNK_LENGTH;
+use crate::engine::{prelude::*, world::chunk::CHUNK_LENGTH};
 use crossbeam_channel::{Receiver, Sender};
-use legion::{world::SubWorld, Entity, IntoQuery, World};
 use nalgebra::{Point3, Scalar, Vector3};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
     ops::{Index, IndexMut},
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -193,10 +193,10 @@ impl From<ChunkPos> for ChunkHeightmapPos {
 
 pub struct VoxelWorld {
     pub registry: Arc<BlockRegistry>,
-    pub chunk_event_notifier: Receiver<ChunkEvent>,
+    chunk_event_tx: Sender<ChunkEvent>,
+    chunk_event_rx: Receiver<ChunkEvent>,
 
     chunks: Arc<flurry::HashMap<ChunkPos, Arc<Chunk>>>,
-    chunk_event_sender: Sender<ChunkEvent>,
     dirty_chunks_rx: Receiver<ChunkPos>,
     dirty_chunks_tx: Sender<ChunkPos>,
 
@@ -232,8 +232,8 @@ impl VoxelWorld {
             chunk_generator,
             surface_cache: Default::default(),
 
-            chunk_event_sender: chunk_event_tx,
-            chunk_event_notifier: chunk_event_rx,
+            chunk_event_tx,
+            chunk_event_rx,
             dirty_chunks_tx,
             dirty_chunks_rx,
         })
@@ -265,10 +265,7 @@ impl VoxelWorld {
                     world.chunks.insert(pos, Arc::clone(&chunk), &guard);
 
                     if !is_cancelled.load(Ordering::SeqCst) {
-                        world
-                            .chunk_event_sender
-                            .send(ChunkEvent::Added(chunk))
-                            .unwrap();
+                        world.chunk_event_tx.send(ChunkEvent::Added(chunk)).unwrap();
                         world.chunks_in_progress.pin().remove(&pos);
                         add_transient_debug_box(Duration::from_secs(1), DebugBox {
                             bounds: chunk_aabb(pos),
@@ -292,7 +289,7 @@ impl VoxelWorld {
                 rgba: [1.0, 0.0, 0.0, 1.0],
                 kind: DebugBoxKind::Solid,
             });
-            self.chunk_event_sender
+            self.chunk_event_tx
                 .send(ChunkEvent::Removed(Arc::clone(chunk)))
                 .unwrap();
         }
@@ -302,7 +299,7 @@ impl VoxelWorld {
         self.chunks.pin().get(&pos).map(Arc::clone)
     }
 
-    fn update(&self) {
+    fn update(&self, mut chunk_events: EventWriter<ChunkEvent>) {
         self.surface_cache.evict_after(Duration::from_secs(10));
         let guard = self.chunks.guard();
         for chunk in self.dirty_chunks_rx.try_iter() {
@@ -311,12 +308,16 @@ impl VoxelWorld {
                 chunk::flush_chunk_writes(chunk, &mut rebuild_set);
                 for &pos in rebuild_set.iter() {
                     if let Some(chunk) = self.chunk(pos) {
-                        self.chunk_event_sender
+                        self.chunk_event_tx
                             .send(ChunkEvent::Modified(chunk))
                             .unwrap();
                     }
                 }
             }
+        }
+
+        for event in self.chunk_event_rx.try_iter() {
+            chunk_events.send(event);
         }
     }
 
@@ -327,9 +328,39 @@ impl VoxelWorld {
     }
 }
 
-#[legion::system]
-pub fn update_world(#[resource] world: &Arc<VoxelWorld>) {
-    world.update();
+#[derive(Debug, Default)]
+pub struct WorldPlugin {
+    registry_path: Option<PathBuf>,
+}
+
+impl WorldPlugin {
+    pub fn with_registry_path<P: AsRef<Path>>(mut self, path: &P) -> Self {
+        self.registry_path = Some(path.as_ref().into());
+        self
+    }
+}
+
+impl Plugin for WorldPlugin {
+    fn build(&self, app: &mut AppBuilder) {
+        let registry = BlockRegistry::load_from_file(
+            self.registry_path
+                .clone()
+                .unwrap_or_else(|| "resources/blocks.json".into()),
+        )
+        .unwrap();
+
+        app.insert_resource(VoxelWorld::new(Arc::clone(&registry)));
+        app.insert_resource(registry);
+
+        app.add_event::<ChunkEvent>();
+
+        app.add_system_to_stage(CoreStage::PostUpdate, update_world.system());
+        app.add_system_to_stage(CoreStage::PostUpdate, load_chunks.system());
+    }
+}
+
+pub fn update_world(world: Res<Arc<VoxelWorld>>, chunk_events: EventWriter<ChunkEvent>) {
+    world.update(chunk_events);
 }
 
 pub fn chunk_aabb(pos: ChunkPos) -> Aabb {
@@ -347,25 +378,10 @@ pub struct DynamicChunkLoader {
     pub unload_radius: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ChunkLoaderContext {
-    loader_events: Receiver<legion::world::Event>,
-
     loaders: HashMap<Entity, (DynamicChunkLoader, ChunkPos)>,
     loaded_set: HashSet<ChunkPos>,
-}
-
-impl ChunkLoaderContext {
-    pub fn new(world: &mut World) -> Self {
-        let (sender, loader_events) = crossbeam_channel::unbounded();
-        world.subscribe(sender, legion::component::<DynamicChunkLoader>());
-
-        Self {
-            loader_events,
-            loaders: Default::default(),
-            loaded_set: Default::default(),
-        }
-    }
 }
 
 fn neighborhood(center: ChunkPos, radius: usize, mut func: impl FnMut(ChunkPos)) {
@@ -446,33 +462,20 @@ fn update_loader(
     }
 }
 
-#[legion::system]
-#[read_component(DynamicChunkLoader)]
-#[read_component(Transform)]
 pub fn load_chunks(
-    #[state] ctx: &mut ChunkLoaderContext,
-    #[resource] voxel_world: &Arc<VoxelWorld>,
-
-    world: &mut SubWorld,
+    mut ctx: Local<ChunkLoaderContext>,
+    voxel_world: Res<Arc<VoxelWorld>>,
+    query: Query<(Entity, &DynamicChunkLoader, &Transform), Changed<Transform>>,
+    removed: RemovedComponents<DynamicChunkLoader>,
 ) {
-    let mut removed = HashSet::new();
-    for event in ctx.loader_events.try_iter() {
-        match event {
-            legion::world::Event::EntityRemoved(entity, _) => drop(removed.insert(entity)),
-            _ => {}
-        }
-    }
-
     removed
-        .into_iter()
-        .for_each(|entity| remove_loader(ctx, voxel_world, entity));
+        .iter()
+        .for_each(|entity| remove_loader(&mut ctx, &voxel_world, entity));
 
-    <(Entity, &DynamicChunkLoader, &Transform)>::query()
-        .filter(legion::maybe_changed::<Transform>())
-        .for_each(world, |(&entity, loader, transform)| {
-            let pos = WorldPos::new(transform.translation.vector).into();
-            update_loader(ctx, voxel_world, entity, loader, pos);
-        });
+    query.for_each(|(entity, loader, transform)| {
+        let pos = WorldPos::new(transform.translation.vector).into();
+        update_loader(&mut *ctx, &voxel_world, entity, loader, pos);
+    });
 }
 
 fn block_distance_sq(a: BlockPos, b: BlockPos) -> f32 {

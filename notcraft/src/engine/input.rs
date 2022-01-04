@@ -1,11 +1,11 @@
-use crossbeam_channel::Receiver;
+use crate::engine::prelude::*;
 use glium::{
     glutin::{
         event::{
             ButtonId, DeviceEvent, DeviceId, ElementState, KeyboardInput, ModifiersState,
-            MouseScrollDelta, VirtualKeyCode,
+            MouseScrollDelta, VirtualKeyCode, WindowEvent,
         },
-        window::Window,
+        window::{Window, WindowId},
     },
     Display,
 };
@@ -284,27 +284,48 @@ fn notify_mouse_click(state: &mut InputState, button: ButtonId, elem_state: Elem
     }
 }
 
-#[legion::system]
 pub fn input_compiler(
-    #[resource] state: &mut InputState,
-    #[state] events: &mut Receiver<(DeviceId, DeviceEvent)>,
-    #[state] display: &mut Rc<Display>,
+    mut ctx: ResMut<InputState>,
+    mut device_events: EventReader<RawInputEvent>,
+    display: NonSendMut<Rc<Display>>,
 ) {
-    maintain_input_state(state, display.gl_window().window());
+    maintain_input_state(&mut ctx, display.gl_window().window());
 
-    for (_device_id, event) in events.try_iter() {
+    for event in device_events.iter() {
         match event {
-            DeviceEvent::MouseMotion { delta } => notify_mouse_motion(state, delta.0, delta.1),
-            DeviceEvent::MouseWheel { delta } => notify_mouse_scroll(state, delta),
-            DeviceEvent::Key(input) => notify_keyboard_input(state, input),
-            DeviceEvent::Button {
-                button,
-                state: elem_state,
-            } => notify_mouse_click(state, button, elem_state),
+            &RawInputEvent::Device(_, DeviceEvent::MouseMotion { delta }) => {
+                notify_mouse_motion(&mut ctx, delta.0, delta.1)
+            }
+            &RawInputEvent::Device(_, DeviceEvent::MouseWheel { delta }) => {
+                notify_mouse_scroll(&mut ctx, delta)
+            }
+            &RawInputEvent::Device(_, DeviceEvent::Key(input)) => {
+                notify_keyboard_input(&mut ctx, input)
+            }
+            &RawInputEvent::Device(_, DeviceEvent::Button { button, state }) => {
+                notify_mouse_click(&mut ctx, button, state)
+            }
 
-            // DeviceEvent::Motion { axis, value } => todo!(),
-            // DeviceEvent::Text { codepoint } => todo!(),
+            // &RawInputEvent::Device(_, DeviceEvent::Motion { axis, value }) => todo!(),
+            // &RawInputEvent::Device(_, DeviceEvent::Text { codepoint }) => todo!(),
             _ => {}
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum RawInputEvent {
+    Window(WindowId, WindowEvent<'static>),
+    Device(DeviceId, DeviceEvent),
+}
+
+#[derive(Debug, Default)]
+pub struct InputPlugin {}
+
+impl Plugin for InputPlugin {
+    fn build(&self, app: &mut AppBuilder) {
+        app.init_resource::<InputState>();
+        app.add_event::<RawInputEvent>();
+        app.add_system_to_stage(CoreStage::PreUpdate, input_compiler.system());
     }
 }

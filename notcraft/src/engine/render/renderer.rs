@@ -1,39 +1,34 @@
-use super::Tex;
+use super::{camera::CurrentCamera, Tex};
 use crate::{
     engine::{
-        loader,
-        math::*,
-        render::{
-            camera::{ActiveCamera, Camera},
-            mesher::TerrainMesh,
-        },
-        transform::Transform,
+        loader, math::*, prelude::*, render::mesher::TerrainMesh, transform::Transform,
         world::registry::BlockRegistry,
     },
-    util,
+    util::{self},
 };
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
+use ecs::system::SystemParam;
 use glium::{
     backend::Facade,
-    framebuffer::{SimpleFrameBuffer, ValidationError},
-    index::IndexBuffer,
-    texture::{
-        DepthTexture2d, DepthTexture2dMultisample, MipmapsOption, RawImage2d, SrgbTexture2dArray,
-        Texture2d, Texture2dMultisample, UncompressedFloatFormat,
+    framebuffer::{
+        ColorAttachment, DepthAttachment, DepthStencilAttachment, SimpleFrameBuffer,
+        StencilAttachment, ToColorAttachment, ToDepthAttachment, ToDepthStencilAttachment,
+        ToStencilAttachment,
     },
+    index::IndexBuffer,
+    texture::*,
     uniform,
-    uniforms::MagnifySamplerFilter,
+    uniforms::{AsUniformValue, MagnifySamplerFilter, Sampler, UniformValue},
     vertex::VertexBuffer,
-    Blend, BlitTarget, Display, DrawParameters, Program, Rect, Surface,
+    Blend, Display, DrawParameters, Frame, Program, Surface,
 };
-use legion::{world::Event, Entity, IntoQuery, Read, Resources, World};
 use na::vector;
-use nalgebra::{self as na, Perspective3};
 use parking_lot::RwLock;
 use std::{
     collections::{HashMap, HashSet},
     marker::PhantomData,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -42,14 +37,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-struct CommonState {
-    display: Rc<Display>,
+struct RendererMisc {
     fullscreen_quad: VertexBuffer<Tex>,
+    // FIXME: this shouldn't be here! make a more general static texture loader thingy when this
+    // becomes a problem
+    block_textures: SrgbTexture2dArray,
 }
 
-impl CommonState {
-    pub fn new(display: Rc<Display>) -> Result<Rc<Self>> {
-        let fullscreen_quad = VertexBuffer::immutable(&*display, &[
+impl RendererMisc {
+    pub fn new(display: &Rc<Display>, registry: &Arc<BlockRegistry>) -> Result<Self> {
+        let fullscreen_quad = VertexBuffer::immutable(&**display, &[
             Tex { uv: [-1.0, 1.0] },
             Tex { uv: [1.0, 1.0] },
             Tex { uv: [-1.0, -1.0] },
@@ -58,272 +55,622 @@ impl CommonState {
             Tex { uv: [1.0, -1.0] },
         ])?;
 
-        Ok(Rc::new(Self {
-            display,
+        let textures =
+            loader::load_block_textures("resources/textures/blocks", registry.texture_paths())?;
+
+        let textures = registry
+            .texture_paths()
+            .map(|name| {
+                let map = &textures.block_textures[name];
+                RawImage2d::from_raw_rgba_reversed(map, map.dimensions())
+            })
+            .collect();
+
+        let block_textures =
+            SrgbTexture2dArray::with_mipmaps(&**display, textures, MipmapsOption::NoMipmap)?;
+
+        Ok(Self {
             fullscreen_quad,
-        }))
-    }
-
-    pub fn display(&self) -> &Display {
-        &*self.display
-    }
-}
-
-pub struct Renderer {
-    _shared: Rc<CommonState>,
-
-    terrain_renderer: TerrainRenderer,
-    post_renderer: PostProcessRenderer,
-    sky_renderer: SkyRenderer,
-    debug_renderer: DebugLinesRenderer,
-}
-
-fn render_all<S: Surface>(
-    ctx: &mut Renderer,
-    target: &mut S,
-    world: &mut World,
-    resources: &mut Resources,
-) -> anyhow::Result<()> {
-    render_sky(
-        &mut ctx.sky_renderer,
-        &mut ctx.post_renderer.render_target()?,
-        world,
-        resources,
-    )?;
-
-    render_terrain(
-        &mut ctx.terrain_renderer,
-        &mut ctx.post_renderer.render_target()?,
-        world,
-        resources,
-    )?;
-
-    render_debug(
-        &mut ctx.debug_renderer,
-        &mut ctx.post_renderer.render_target()?,
-        world,
-        resources,
-    )?;
-
-    render_post(&mut ctx.post_renderer, target, world, resources)?;
-
-    Ok(())
-}
-
-impl Renderer {
-    pub fn new(
-        display: Rc<Display>,
-        registry: Arc<BlockRegistry>,
-        world: &mut World,
-        resources: &mut Resources,
-    ) -> Result<Self> {
-        let shared = CommonState::new(display)?;
-
-        let terrain_renderer =
-            TerrainRenderer::new(Rc::clone(&shared), registry, world, resources)?;
-        let post_renderer = PostProcessRenderer::new(Rc::clone(&shared))?;
-        let sky_renderer = SkyRenderer::new(Rc::clone(&shared))?;
-        let debug_renderer = DebugLinesRenderer::new(Rc::clone(&shared))?;
-
-        Ok(Renderer {
-            _shared: shared,
-            terrain_renderer,
-            post_renderer,
-            sky_renderer,
-            debug_renderer,
+            block_textures,
         })
     }
-
-    pub fn draw<S: Surface>(
-        &mut self,
-        target: &mut S,
-        world: &mut World,
-        resources: &mut Resources,
-    ) -> Result<()> {
-        render_all(self, target, world, resources)
-    }
 }
 
-pub const MSAA_SAMPLES: u32 = 4;
-
-struct PostProcessRenderer {
-    shared: Rc<CommonState>,
-    post_program: Program,
-    post_process_color_target: Texture2dMultisample,
-    post_process_depth_target: DepthTexture2dMultisample,
-    post_process_color_resolved: Texture2d,
-    post_process_depth_resolved: DepthTexture2d,
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, StageLabel)]
+pub enum RenderStage {
+    BeginRender,
+    PreRender,
+    Render,
+    PostRender,
+    EndRender,
 }
 
-impl PostProcessRenderer {
-    pub fn new(shared: Rc<CommonState>) -> Result<Self> {
-        let post_program = loader::load_shader(shared.display(), "resources/shaders/post")?;
-        let (width, height) = shared.display().get_framebuffer_dimensions();
+#[derive(Debug, Default)]
+pub struct RenderPlugin {}
 
-        let post_process_color_target = Texture2dMultisample::empty_with_format(
-            shared.display(),
-            UncompressedFloatFormat::F32F32F32,
-            MipmapsOption::NoMipmap,
-            width,
-            height,
-            MSAA_SAMPLES,
-        )?;
-        let post_process_depth_target =
-            DepthTexture2dMultisample::empty(shared.display(), width, height, MSAA_SAMPLES)?;
+impl Plugin for RenderPlugin {
+    // my god this is awful
+    fn build(&self, app: &mut AppBuilder) {
+        // very unfortunate limitation of `Plugin`s, they require a `Send + Sync +
+        // 'static` bound
+        let display = app
+            .world()
+            .get_non_send_resource::<Rc<Display>>()
+            .cloned()
+            .expect(
+                "`RenderPlugin` added before `WindowingPlugin`! (no `Rc<Display>` resource exists)",
+            );
 
-        let post_process_color_resolved = Texture2d::empty_with_format(
-            shared.display(),
-            UncompressedFloatFormat::F32F32F32,
-            MipmapsOption::NoMipmap,
-            width,
-            height,
-        )?;
-        let post_process_depth_resolved = DepthTexture2d::empty(shared.display(), width, height)?;
+        // FIXME: i dont like this
+        let registry = app
+            .world()
+            .get_non_send_resource::<Arc<BlockRegistry>>()
+            .cloned()
+            .expect(
+                "`RenderPlugin` added before `WorldPlugin`! (no `BlockRegistry` resource exists)",
+            );
 
-        Ok(Self {
-            shared,
-            post_program,
-            post_process_color_target,
-            post_process_depth_target,
-            post_process_color_resolved,
-            post_process_depth_resolved,
-        })
-    }
+        app.add_startup_system(util::try_system!(declare_targets));
 
-    fn render_target(&self) -> Result<SimpleFrameBuffer, ValidationError> {
-        SimpleFrameBuffer::with_depth_buffer(
-            self.shared.display(),
-            &self.post_process_color_target,
-            &self.post_process_depth_target,
+        app.insert_non_send_resource(RenderTargets::new(&display));
+        app.insert_non_send_resource(Shaders::new(&display));
+        app.insert_non_send_resource(DebugLines::new());
+        app.insert_non_send_resource(RendererMisc::new(&display, &registry).unwrap());
+
+        // mesh context
+        let local = LocalMeshContext::<TerrainMesh>::new();
+        app.insert_resource(Arc::clone(&local.shared));
+        app.insert_non_send_resource(local);
+
+        app.add_stage_after(
+            CoreStage::PostUpdate,
+            RenderStage::Render,
+            SystemStage::single_threaded(),
         )
-    }
-
-    fn resolve_target(&self) -> Result<SimpleFrameBuffer, ValidationError> {
-        SimpleFrameBuffer::with_depth_buffer(
-            self.shared.display(),
-            &self.post_process_color_resolved,
-            &self.post_process_depth_resolved,
+        .add_stage_before(
+            RenderStage::Render,
+            RenderStage::PreRender,
+            SystemStage::single_threaded(),
         )
+        .add_stage_before(
+            RenderStage::PreRender,
+            RenderStage::BeginRender,
+            SystemStage::single_threaded(),
+        )
+        .add_stage_after(
+            RenderStage::Render,
+            RenderStage::PostRender,
+            SystemStage::single_threaded(),
+        )
+        .add_stage_after(
+            RenderStage::PostRender,
+            RenderStage::EndRender,
+            SystemStage::single_threaded(),
+        );
+
+        app.add_system_to_stage(
+            RenderStage::Render,
+            util::try_system!(render_sky).label("sky").label("world"),
+        )
+        .add_system_to_stage(
+            RenderStage::Render,
+            util::try_system!(render_post).label("post").after("world"),
+        )
+        .add_system_to_stage(
+            RenderStage::Render,
+            util::try_system!(render_terrain)
+                .label("world")
+                .label("terrain")
+                .after("sky"),
+        )
+        .add_system_to_stage(
+            RenderStage::Render,
+            util::try_system!(render_debug)
+                .label("world")
+                .after("terrain"),
+        );
+        app.add_system_to_stage(RenderStage::BeginRender, util::try_system!(begin_render));
+        app.add_system_to_stage(RenderStage::EndRender, util::try_system!(end_render));
     }
 }
 
-fn recreate_post_textures(ctx: &mut PostProcessRenderer, width: u32, height: u32) -> Result<()> {
-    ctx.post_process_color_target = Texture2dMultisample::empty_with_format(
-        ctx.shared.display(),
-        UncompressedFloatFormat::F32F32F32,
-        MipmapsOption::NoMipmap,
-        width,
-        height,
-        MSAA_SAMPLES,
-    )?;
-    ctx.post_process_depth_target =
-        DepthTexture2dMultisample::empty(ctx.shared.display(), width, height, MSAA_SAMPLES)?;
-
-    ctx.post_process_color_resolved = Texture2d::empty_with_format(
-        ctx.shared.display(),
-        UncompressedFloatFormat::F32F32F32,
-        MipmapsOption::NoMipmap,
-        width,
-        height,
-    )?;
-    ctx.post_process_depth_resolved = DepthTexture2d::empty(ctx.shared.display(), width, height)?;
-
-    Ok(())
+pub struct Shaders {
+    display: Rc<Display>,
+    programs: HashMap<PathBuf, Rc<Program>>,
 }
 
-fn render_post<S: Surface>(
-    ctx: &mut PostProcessRenderer,
-    target: &mut S,
-    world: &mut World,
-    resources: &mut Resources,
-) -> anyhow::Result<()> {
-    let (width, height) = target.get_dimensions();
-    let (buf_width, buf_height) = ctx.post_process_depth_resolved.dimensions();
-    if buf_width != width || buf_height != height {
-        recreate_post_textures(ctx, width, height)?;
+pub struct RenderTargets {
+    display: Rc<Display>,
+    descriptors: HashMap<String, RenderTargetDesc>,
+    targets: HashMap<String, ((u32, u32), RenderTarget)>,
+    previous_size: (u32, u32),
+    frame: Option<Frame>,
+}
+
+pub enum RenderTarget {
+    Color {
+        color: RenderTargetTexture,
+    },
+    Depth {
+        depth: RenderTargetTexture,
+    },
+    ColorDepth {
+        color: RenderTargetTexture,
+        depth: RenderTargetTexture,
+    },
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct RenderTargetDesc {
+    pub size: RenderTargetSize,
+    pub kind: RenderTargetKind,
+    pub samples: Option<u32>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum RenderTargetSize {
+    WindowExact,
+    WindowScaledDown(u32),
+    WindowScaledUp(u32),
+    Exact(u32, u32),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum RenderTargetKind {
+    ColorOnly {
+        color: ColorTextureFormat,
+        clear_color: Option<[f32; 4]>,
+    },
+    DepthOnly {
+        depth: DepthStencilTextureFormat,
+        clear_depth: Option<f32>,
+    },
+    ColorDepth {
+        color: ColorTextureFormat,
+        depth: DepthStencilTextureFormat,
+        clear_color: Option<[f32; 4]>,
+        clear_depth: Option<f32>,
+    },
+}
+
+#[derive(Debug)]
+pub enum RenderTargetTexture {
+    Float(Texture2d),
+    Integral(IntegralTexture2d),
+    Unsigned(UnsignedTexture2d),
+    Srgb(SrgbTexture2d),
+    Depth(DepthTexture2d),
+    Stencil(StencilTexture2d),
+    DepthStencil(DepthStencilTexture2d),
+    FloatMulti(Texture2dMultisample),
+    IntegralMulti(IntegralTexture2dMultisample),
+    UnsignedMulti(UnsignedTexture2dMultisample),
+    SrgbMulti(SrgbTexture2dMultisample),
+    DepthMulti(DepthTexture2dMultisample),
+    StencilMulti(StencilTexture2dMultisample),
+    DepthStencilMulti(DepthStencilTexture2dMultisample),
+}
+
+pub enum RenderTargetTextureUniform<'a> {
+    Float(Sampler<'a, Texture2d>),
+    Integral(Sampler<'a, IntegralTexture2d>),
+    Unsigned(Sampler<'a, UnsignedTexture2d>),
+    Srgb(Sampler<'a, SrgbTexture2d>),
+    Depth(Sampler<'a, DepthTexture2d>),
+    FloatMulti(Sampler<'a, Texture2dMultisample>),
+    IntegralMulti(Sampler<'a, IntegralTexture2dMultisample>),
+    UnsignedMulti(Sampler<'a, UnsignedTexture2dMultisample>),
+    SrgbMulti(Sampler<'a, SrgbTexture2dMultisample>),
+    DepthMulti(Sampler<'a, DepthTexture2dMultisample>),
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum ColorTextureFormat {
+    UncompressedFloat(UncompressedFloatFormat),
+    UncompressedIntegral(UncompressedIntFormat),
+    UncompressedUnsigned(UncompressedUintFormat),
+    Srgb(SrgbFormat),
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum DepthStencilTextureFormat {
+    DepthFormat(DepthFormat),
+    StencilFormat(StencilFormat),
+    DepthStencilFormat(DepthStencilFormat),
+}
+
+impl Shaders {
+    pub fn new(display: &Rc<Display>) -> Self {
+        Self {
+            display: Rc::clone(display),
+            programs: Default::default(),
+        }
     }
 
-    let cam_transform = get_camera(world, resources);
-    let (view, proj) = get_view_projection(width, height, cam_transform);
-    let cam_pos = get_cam_pos(cam_transform);
-
-    ctx.resolve_target()?.blit_from_simple_framebuffer(
-        &ctx.render_target()?,
-        &Rect {
-            left: 0,
-            bottom: 0,
-            width,
-            height,
-        },
-        &BlitTarget {
-            left: 0,
-            bottom: 0,
-            width: width as i32,
-            height: height as i32,
-        },
-        MagnifySamplerFilter::Linear,
-    );
-
-    // post
-    target.clear_color(0.0, 0.0, 0.0, 0.0);
-    target.draw(
-        &ctx.shared.fullscreen_quad,
-        glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
-        &ctx.post_program,
-        &uniform! {
-            b_color: ctx.post_process_color_resolved.sampled(),
-            b_depth: ctx.post_process_depth_resolved.sampled(),
-
-            camera_pos: array3(&cam_pos),
-            projection_matrix: array4x4(&proj.to_homogeneous()),
-            view_matrix: array4x4(&view),
-        },
-        &Default::default(),
-    )?;
-
-    Ok(())
+    pub fn get<P: AsRef<Path>>(&mut self, path: P) -> Result<Rc<Program>> {
+        let path = path.as_ref();
+        match self.programs.get(path) {
+            Some(program) => Ok(Rc::clone(program)),
+            None => {
+                let program = Rc::new(loader::load_shader(&*self.display, path)?);
+                self.programs.insert(path.into(), Rc::clone(&program));
+                Ok(program)
+            }
+        }
+    }
 }
 
-struct SkyRenderer {
-    shared: Rc<CommonState>,
-    sky_program: Program,
+impl RenderTargetSize {
+    pub fn apply(&self, (width, height): (u32, u32)) -> (u32, u32) {
+        match self {
+            &RenderTargetSize::WindowExact => (width, height),
+            &RenderTargetSize::WindowScaledDown(factor) => (width / factor, height / factor),
+            &RenderTargetSize::WindowScaledUp(factor) => (width * factor, height * factor),
+            &RenderTargetSize::Exact(width, height) => (width, height),
+        }
+    }
 }
 
-impl SkyRenderer {
-    fn new(shared: Rc<CommonState>) -> Result<Self> {
-        let sky_program = loader::load_shader(shared.display(), "resources/shaders/sky")?;
+impl RenderTargetKind {
+    pub fn clear_color(&self) -> Option<[f32; 4]> {
+        match self {
+            &RenderTargetKind::ColorOnly { clear_color, .. } => clear_color,
+            &RenderTargetKind::DepthOnly { .. } => None,
+            &RenderTargetKind::ColorDepth { clear_color, .. } => clear_color,
+        }
+    }
 
-        Ok(Self {
-            shared,
-            sky_program,
+    pub fn clear_depth(&self) -> Option<f32> {
+        match self {
+            &RenderTargetKind::ColorOnly { .. } => None,
+            &RenderTargetKind::DepthOnly { clear_depth, .. } => clear_depth,
+            &RenderTargetKind::ColorDepth { clear_depth, .. } => clear_depth,
+        }
+    }
+}
+
+impl<'a> AsUniformValue for RenderTargetTextureUniform<'a> {
+    fn as_uniform_value(&self) -> UniformValue<'_> {
+        match self {
+            RenderTargetTextureUniform::Float(texture) => texture.as_uniform_value(),
+            RenderTargetTextureUniform::Integral(texture) => texture.as_uniform_value(),
+            RenderTargetTextureUniform::Unsigned(texture) => texture.as_uniform_value(),
+            RenderTargetTextureUniform::Srgb(texture) => texture.as_uniform_value(),
+            RenderTargetTextureUniform::Depth(texture) => texture.as_uniform_value(),
+            RenderTargetTextureUniform::FloatMulti(texture) => texture.as_uniform_value(),
+            RenderTargetTextureUniform::IntegralMulti(texture) => texture.as_uniform_value(),
+            RenderTargetTextureUniform::UnsignedMulti(texture) => texture.as_uniform_value(),
+            RenderTargetTextureUniform::SrgbMulti(texture) => texture.as_uniform_value(),
+            RenderTargetTextureUniform::DepthMulti(texture) => texture.as_uniform_value(),
+        }
+    }
+}
+
+impl RenderTargetTexture {
+    pub fn uniform(&self) -> Result<RenderTargetTextureUniform<'_>> {
+        Ok(match self {
+            RenderTargetTexture::Float(texture) => {
+                RenderTargetTextureUniform::Float(texture.sampled())
+            }
+            RenderTargetTexture::Integral(texture) => {
+                RenderTargetTextureUniform::Integral(texture.sampled())
+            }
+            RenderTargetTexture::Unsigned(texture) => {
+                RenderTargetTextureUniform::Unsigned(texture.sampled())
+            }
+            RenderTargetTexture::Srgb(texture) => {
+                RenderTargetTextureUniform::Srgb(texture.sampled())
+            }
+            RenderTargetTexture::Depth(texture) => {
+                RenderTargetTextureUniform::Depth(texture.sampled())
+            }
+            RenderTargetTexture::FloatMulti(texture) => {
+                RenderTargetTextureUniform::FloatMulti(texture.sampled())
+            }
+            RenderTargetTexture::IntegralMulti(texture) => {
+                RenderTargetTextureUniform::IntegralMulti(texture.sampled())
+            }
+            RenderTargetTexture::UnsignedMulti(texture) => {
+                RenderTargetTextureUniform::UnsignedMulti(texture.sampled())
+            }
+            RenderTargetTexture::SrgbMulti(texture) => {
+                RenderTargetTextureUniform::SrgbMulti(texture.sampled())
+            }
+            RenderTargetTexture::DepthMulti(texture) => {
+                RenderTargetTextureUniform::DepthMulti(texture.sampled())
+            }
+            _ => anyhow::bail!("invalid uniform value: {:?}", self),
         })
     }
 }
 
-fn render_sky<S: Surface>(
-    ctx: &mut SkyRenderer,
-    target: &mut S,
-    world: &mut World,
-    resources: &mut Resources,
-) -> anyhow::Result<()> {
-    target.clear_color_and_depth((0.9, 0.95, 1.0, 1.0), 1.0);
+impl AsRef<TextureAny> for RenderTargetTexture {
+    fn as_ref(&self) -> &TextureAny {
+        match self {
+            RenderTargetTexture::Float(texture) => &**texture,
+            RenderTargetTexture::Integral(texture) => &**texture,
+            RenderTargetTexture::Unsigned(texture) => &**texture,
+            RenderTargetTexture::Srgb(texture) => &**texture,
+            RenderTargetTexture::Depth(texture) => &**texture,
+            RenderTargetTexture::Stencil(texture) => &**texture,
+            RenderTargetTexture::DepthStencil(texture) => &**texture,
+            RenderTargetTexture::FloatMulti(texture) => &**texture,
+            RenderTargetTexture::IntegralMulti(texture) => &**texture,
+            RenderTargetTexture::UnsignedMulti(texture) => &**texture,
+            RenderTargetTexture::SrgbMulti(texture) => &**texture,
+            RenderTargetTexture::DepthMulti(texture) => &**texture,
+            RenderTargetTexture::StencilMulti(texture) => &**texture,
+            RenderTargetTexture::DepthStencilMulti(texture) => &**texture,
+        }
+    }
+}
 
-    let cam_transform = get_camera(world, resources);
-    let (width, height) = ctx.shared.display().get_framebuffer_dimensions();
-    let (view, proj) = get_view_projection(width, height, cam_transform);
-    let cam_pos = get_cam_pos(cam_transform);
+impl RenderTargetTexture {
+    pub fn as_color_attachment<'a>(&'a self) -> Result<ColorAttachment<'a>> {
+        Ok(match self {
+            RenderTargetTexture::Float(texture) => texture.to_color_attachment(),
+            RenderTargetTexture::Integral(texture) => texture.to_color_attachment(),
+            RenderTargetTexture::Unsigned(texture) => texture.to_color_attachment(),
+            RenderTargetTexture::Srgb(texture) => texture.to_color_attachment(),
+            RenderTargetTexture::FloatMulti(texture) => texture.to_color_attachment(),
+            RenderTargetTexture::IntegralMulti(texture) => texture.to_color_attachment(),
+            RenderTargetTexture::UnsignedMulti(texture) => texture.to_color_attachment(),
+            RenderTargetTexture::SrgbMulti(texture) => texture.to_color_attachment(),
+            _ => anyhow::bail!("invalid color attachment: {:?}", self),
+        })
+    }
 
-    target.draw(
-        &ctx.shared.fullscreen_quad,
-        glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
-        &ctx.sky_program,
-        &uniform! {
-            camera_pos: array3(&cam_pos),
-            projection_matrix: array4x4(&proj.to_homogeneous()),
-            view_matrix: array4x4(&view),
+    pub fn as_depth_attachment<'a>(&'a self) -> Result<DepthAttachment<'a>> {
+        Ok(match self {
+            RenderTargetTexture::Depth(texture) => texture.to_depth_attachment(),
+            RenderTargetTexture::DepthMulti(texture) => texture.to_depth_attachment(),
+            _ => anyhow::bail!("invalid depth attachment: {:?}", self),
+        })
+    }
+
+    pub fn as_stencil_attachment<'a>(&'a self) -> Result<StencilAttachment<'a>> {
+        Ok(match self {
+            RenderTargetTexture::Stencil(texture) => texture.to_stencil_attachment(),
+            RenderTargetTexture::StencilMulti(texture) => texture.to_stencil_attachment(),
+            _ => anyhow::bail!("invalid stencil_attachment: {:?}", self),
+        })
+    }
+
+    pub fn as_depth_stencil_attachment<'a>(&'a self) -> Result<DepthStencilAttachment<'a>> {
+        Ok(match self {
+            RenderTargetTexture::DepthStencil(texture) => texture.to_depth_stencil_attachment(),
+            RenderTargetTexture::DepthStencilMulti(texture) => {
+                texture.to_depth_stencil_attachment()
+            }
+            _ => anyhow::bail!("invalid depth-stencil attachment: {:?}", self),
+        })
+    }
+}
+
+impl RenderTarget {
+    fn framebuffer<'t>(&'t self, display: &Display) -> Result<SimpleFrameBuffer<'t>> {
+        match self {
+            RenderTarget::Color { color } => {
+                let color = color.as_color_attachment()?;
+                Ok(SimpleFrameBuffer::new(display, color)?)
+            }
+            RenderTarget::Depth { depth } => {
+                let depth = depth.as_depth_attachment()?;
+                Ok(SimpleFrameBuffer::depth_only(display, depth)?)
+            }
+            RenderTarget::ColorDepth { color, depth } => {
+                let color = color.as_color_attachment()?;
+                let depth = depth.as_depth_attachment()?;
+                Ok(SimpleFrameBuffer::with_depth_buffer(display, color, depth)?)
+            }
+        }
+    }
+
+    pub fn depth(&self) -> Option<&RenderTargetTexture> {
+        match self {
+            RenderTarget::Depth { depth } => Some(depth),
+            RenderTarget::ColorDepth { depth, .. } => Some(depth),
+            _ => None,
+        }
+    }
+
+    pub fn color(&self) -> Option<&RenderTargetTexture> {
+        match self {
+            RenderTarget::Color { color } => Some(color),
+            RenderTarget::ColorDepth { color, .. } => Some(color),
+            _ => None,
+        }
+    }
+}
+
+fn make_texture_from_desc(ctx: &Display, desc: RenderTargetDesc) -> anyhow::Result<RenderTarget> {
+    let (width, height) = desc.size.apply(ctx.get_framebuffer_dimensions());
+    let (color, depth) = match desc.kind {
+        RenderTargetKind::ColorOnly { color, .. } => (Some(color), None),
+        RenderTargetKind::DepthOnly { depth, .. } => (None, Some(depth)),
+        RenderTargetKind::ColorDepth { color, depth, .. } => (Some(color), Some(depth)),
+    };
+
+    macro_rules! make_texture {
+        ($kind:ident($tex:ident), $kind_multi:ident($tex_multi:ident), $format:expr) => {{
+            use RenderTargetTexture::*;
+            Some(match desc.samples {
+                Some(samples) => $kind_multi($tex_multi::empty_with_format(
+                    ctx,
+                    $format,
+                    MipmapsOption::NoMipmap,
+                    width,
+                    height,
+                    samples,
+                )?),
+                None => $kind($tex::empty_with_format(
+                    ctx,
+                    $format,
+                    MipmapsOption::NoMipmap,
+                    width,
+                    height,
+                )?),
+            })
+        }};
+    }
+
+    use ColorTextureFormat::*;
+    let color = match color {
+        Some(UncompressedFloat(format)) => {
+            make_texture!(Float(Texture2d), FloatMulti(Texture2dMultisample), format)
+        }
+        Some(UncompressedIntegral(format)) => {
+            make_texture!(
+                Integral(IntegralTexture2d),
+                IntegralMulti(IntegralTexture2dMultisample),
+                format
+            )
+        }
+        Some(UncompressedUnsigned(format)) => {
+            make_texture!(
+                Unsigned(UnsignedTexture2d),
+                UnsignedMulti(UnsignedTexture2dMultisample),
+                format
+            )
+        }
+        Some(Srgb(format)) => {
+            make_texture!(
+                Srgb(SrgbTexture2d),
+                SrgbMulti(SrgbTexture2dMultisample),
+                format
+            )
+        }
+        None => None,
+    };
+
+    let depth = match depth {
+        Some(DepthStencilTextureFormat::DepthFormat(format)) => {
+            make_texture!(
+                Depth(DepthTexture2d),
+                DepthMulti(DepthTexture2dMultisample),
+                format
+            )
+        }
+        Some(DepthStencilTextureFormat::StencilFormat(format)) => {
+            make_texture!(
+                Stencil(StencilTexture2d),
+                StencilMulti(StencilTexture2dMultisample),
+                format
+            )
+        }
+        Some(DepthStencilTextureFormat::DepthStencilFormat(format)) => {
+            make_texture!(
+                DepthStencil(DepthStencilTexture2d),
+                DepthStencilMulti(DepthStencilTexture2dMultisample),
+                format
+            )
+        }
+        None => None,
+    };
+
+    Ok(match desc.kind {
+        RenderTargetKind::ColorOnly { .. } => RenderTarget::Color {
+            color: color.unwrap(),
         },
-        &Default::default(),
-    )?;
+        RenderTargetKind::DepthOnly { .. } => RenderTarget::Depth {
+            depth: depth.unwrap(),
+        },
+        RenderTargetKind::ColorDepth { .. } => RenderTarget::ColorDepth {
+            color: color.unwrap(),
+            depth: depth.unwrap(),
+        },
+    })
+}
+
+impl RenderTargets {
+    fn new(display: &Rc<Display>) -> Self {
+        Self {
+            display: Rc::clone(display),
+            descriptors: Default::default(),
+            targets: Default::default(),
+            previous_size: display.get_framebuffer_dimensions(),
+            frame: None,
+        }
+    }
+
+    pub fn declare_target(&mut self, name: &str, desc: RenderTargetDesc) -> anyhow::Result<()> {
+        let dimensions = desc.size.apply(self.display.get_framebuffer_dimensions());
+        self.descriptors.insert(name.into(), desc);
+        self.targets.insert(
+            name.into(),
+            (dimensions, make_texture_from_desc(&self.display, desc)?),
+        );
+        Ok(())
+    }
+
+    pub fn declare_resolve_target(&mut self, name: &str, source: &str) -> anyhow::Result<()> {
+        let desc = RenderTargetDesc {
+            samples: None,
+            ..*self.descriptors.get(source).unwrap()
+        };
+        self.declare_target(name, desc)
+    }
+
+    pub fn get(&self, name: &str) -> Result<&RenderTarget> {
+        self.targets
+            .get(name)
+            .map(|(_, x)| x)
+            .ok_or_else(|| anyhow::anyhow!("render target '{}' was not registered", name))
+    }
+
+    pub fn resize(&mut self, dimensions: (u32, u32)) -> anyhow::Result<()> {
+        for (name, &desc) in self.descriptors.iter() {
+            let (old_dims, buffer) = self.targets.get_mut(name).unwrap();
+            let new_dims = desc.size.apply(dimensions);
+            if *old_dims != new_dims {
+                *buffer = make_texture_from_desc(&self.display, desc)?;
+                *old_dims = new_dims;
+            }
+        }
+        Ok(())
+    }
+
+    // clear all textures that have specified clear values.
+    pub fn reset(&mut self) -> Result<()> {
+        let new_dims = self.display.get_framebuffer_dimensions();
+        if self.previous_size != new_dims {
+            self.resize(new_dims)?;
+        }
+        for (name, &desc) in self.descriptors.iter() {
+            let (_, buffer) = self.targets.get_mut(name).unwrap();
+            if let Some([r, g, b, a]) = desc.kind.clear_color() {
+                buffer.framebuffer(&self.display)?.clear_color(r, g, b, a);
+            }
+            if let Some(depth) = desc.kind.clear_depth() {
+                buffer.framebuffer(&self.display)?.clear_depth(depth);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn declare_targets(mut targets: NonSendMut<RenderTargets>) -> Result<()> {
+    targets.declare_target("world", RenderTargetDesc {
+        size: RenderTargetSize::WindowExact,
+        kind: RenderTargetKind::ColorDepth {
+            color: ColorTextureFormat::UncompressedFloat(UncompressedFloatFormat::F16F16F16),
+            depth: DepthStencilTextureFormat::DepthFormat(DepthFormat::F32),
+            clear_color: None, // completely filled in with sky pass
+            clear_depth: Some(1.0),
+        },
+        samples: Some(4),
+    })?;
+    targets.declare_resolve_target("world.resolved", "world")?;
+
+    targets.declare_target("final", RenderTargetDesc {
+        size: RenderTargetSize::WindowExact,
+        kind: RenderTargetKind::ColorOnly {
+            color: ColorTextureFormat::UncompressedFloat(UncompressedFloatFormat::U8U8U8),
+            clear_color: None, // completely filled in with post pass
+        },
+        samples: None,
+    })?;
 
     Ok(())
 }
@@ -334,37 +681,6 @@ pub struct MeshBuffers<V: Copy> {
     pub indices: IndexBuffer<u32>,
     // mesh bounds, in model space
     pub aabb: Aabb,
-}
-
-fn get_camera<'a>(
-    world: &'a mut World,
-    resources: &mut Resources,
-) -> Option<(&'a Camera, &'a Transform)> {
-    let active = resources.get::<ActiveCamera>().and_then(|id| id.0)?;
-
-    let camera = Read::<Camera>::query().get(world, active).ok()?;
-    let global = Read::<Transform>::query().get(world, active).ok()?;
-
-    Some((camera, global))
-}
-
-fn get_view_projection(
-    width: u32,
-    height: u32,
-    cam_transform: Option<(&Camera, &Transform)>,
-) -> (Matrix4<f32>, Perspective3<f32>) {
-    let (view, mut proj) = cam_transform
-        .map(|(cam, transform)| (transform.to_matrix().try_inverse().unwrap(), cam.projection))
-        .unwrap_or_else(|| (na::Matrix4::identity(), Camera::default().projection));
-    proj.set_aspect(width as f32 / height as f32);
-    (view, proj)
-}
-
-fn get_cam_pos(cam_transform: Option<(&Camera, &Transform)>) -> Vector3<f32> {
-    match cam_transform {
-        Some((_, transform)) => transform.translation.vector,
-        None => na::vector!(0.0, 0.0, 0.0),
-    }
 }
 
 #[derive(Debug)]
@@ -409,36 +725,17 @@ pub trait UploadableMesh {
 struct LocalMeshContext<M: UploadableMesh> {
     shared: Arc<SharedMeshContext<M>>,
     meshes: HashMap<usize, MeshBuffers<M::Vertex>>,
-    render_component_events_receiver: Receiver<Event>,
-    render_component_entities: HashSet<Entity>,
 }
 
 impl<M: UploadableMesh + Send + Sync + 'static> LocalMeshContext<M> {
-    pub fn new(world: &mut World) -> Self {
-        let (sender, render_component_events_receiver) = crossbeam_channel::unbounded();
-        world.subscribe(sender, legion::component::<RenderMeshComponent<M>>());
+    pub fn new() -> Self {
         Self {
             shared: SharedMeshContext::new(),
             meshes: Default::default(),
-            render_component_events_receiver,
-            render_component_entities: Default::default(),
         }
     }
 
     fn update<F: Facade>(&mut self, ctx: &F) -> Result<()> {
-        for event in self.render_component_events_receiver.try_iter() {
-            match event {
-                Event::EntityInserted(entity, _) => {
-                    self.render_component_entities.insert(entity);
-                }
-                Event::EntityRemoved(entity, _) => {
-                    self.render_component_entities.remove(&entity);
-                }
-
-                _ => {}
-            }
-        }
-
         for (id, data) in self.shared.mesh_receiver.try_iter() {
             self.meshes.insert(id, data.upload(ctx)?);
         }
@@ -485,49 +782,6 @@ impl<M> SharedMeshContext<M> {
     }
 }
 
-struct TerrainRenderer {
-    shared: Rc<CommonState>,
-
-    terrain_meshes: LocalMeshContext<TerrainMesh>,
-
-    block_textures: SrgbTexture2dArray,
-    terrain_program: Program,
-}
-
-impl TerrainRenderer {
-    fn new(
-        shared: Rc<CommonState>,
-        registry: Arc<BlockRegistry>,
-        world: &mut World,
-        resources: &mut Resources,
-    ) -> Result<Self> {
-        let terrain_program = loader::load_shader(shared.display(), "resources/shaders/simple")?;
-        let textures =
-            loader::load_block_textures("resources/textures/blocks", registry.texture_paths())?;
-
-        let textures = registry
-            .texture_paths()
-            .map(|name| {
-                let map = &textures.block_textures[name];
-                RawImage2d::from_raw_rgba_reversed(map, map.dimensions())
-            })
-            .collect();
-
-        let block_textures =
-            SrgbTexture2dArray::with_mipmaps(shared.display(), textures, MipmapsOption::NoMipmap)?;
-
-        let terrain_meshes = LocalMeshContext::new(world);
-        resources.insert(Arc::clone(&terrain_meshes.shared));
-
-        Ok(TerrainRenderer {
-            terrain_program,
-            block_textures,
-            terrain_meshes,
-            shared,
-        })
-    }
-}
-
 #[derive(Debug)]
 pub struct RenderMeshComponent<M>(MeshHandle<M>);
 
@@ -537,60 +791,18 @@ impl<M> RenderMeshComponent<M> {
     }
 }
 
-fn render_terrain<S: Surface>(
-    ctx: &mut TerrainRenderer,
-    target: &mut S,
-    world: &mut World,
-    resources: &mut Resources,
-) -> anyhow::Result<()> {
-    ctx.terrain_meshes.update(ctx.shared.display())?;
+#[derive(SystemParam)]
+pub struct RenderParams<'a> {
+    display: NonSend<'a, Rc<Display>>,
+    pub targets: NonSendMut<'a, RenderTargets>,
+    pub shaders: NonSendMut<'a, Shaders>,
+}
 
-    let camera = get_camera(world, resources);
-
-    // If we don't have any cameras anywhere, then just put it at the origin.
-    let (width, height) = target.get_dimensions();
-    let (view, proj) = get_view_projection(width, height, camera);
-    let viewproj = proj.as_matrix() * view;
-
-    let mut query = <(&Transform, &RenderMeshComponent<TerrainMesh>)>::query();
-    for &entity in ctx.terrain_meshes.render_component_entities.iter() {
-        if let Ok((transform, RenderMeshComponent(handle))) = query.get(world, entity) {
-            let buffers =
-                ctx.terrain_meshes.meshes.get(&handle.0.id).expect(
-                    "RenderMeshComponent existed for entity that was not in terrain_entities",
-                );
-
-            let model = transform.to_matrix();
-            let mvp = viewproj * model;
-
-            if !should_draw_aabb(&mvp, &buffers.aabb) {
-                continue;
-            }
-
-            target.draw(
-                &buffers.vertices,
-                &buffers.indices,
-                &ctx.terrain_program,
-                &uniform! {
-                    model: array4x4(&model),
-                    view: array4x4(&view),
-                    projection: array4x4(&proj.to_homogeneous()),
-                    albedo_maps: ctx.block_textures.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
-                },
-                &glium::DrawParameters {
-                    depth: glium::Depth {
-                        test: glium::DepthTest::IfLess,
-                        write: true,
-                        ..Default::default()
-                    },
-                    backface_culling: glium::BackfaceCullingMode::CullCounterClockwise,
-                    ..Default::default()
-                },
-            )?;
-        }
+impl<'a> RenderParams<'a> {
+    /// Get a reference to the render params's display.
+    pub fn display(&self) -> &Display {
+        &**self.display
     }
-
-    Ok(())
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -759,9 +971,7 @@ impl DebugBox {
     }
 }
 
-struct DebugLinesRenderer {
-    shared: Rc<CommonState>,
-    debug_program: Program,
+struct DebugLines {
     debug_box_channel: util::ChannelPair<DebugBox>,
     transient_debug_box_channel: util::ChannelPair<(Duration, DebugBox)>,
     next_transient_id: usize,
@@ -770,25 +980,22 @@ struct DebugLinesRenderer {
     line_buf: Vec<DebugVertex>,
 }
 
-impl DebugLinesRenderer {
-    fn new(shared: Rc<CommonState>) -> Result<Self> {
-        let debug_program = loader::load_shader(shared.display(), "resources/shaders/debug")?;
+impl DebugLines {
+    fn new() -> Self {
         let debug_box_channel = util::ChannelPair::new();
         let transient_debug_box_channel = util::ChannelPair::new();
 
         *DEBUG_BOX_SENDER.write() = Some(debug_box_channel.sender());
         *TRANSIENT_DEBUG_BOX_SENDER.write() = Some(transient_debug_box_channel.sender());
 
-        Ok(Self {
-            shared,
-            debug_program,
+        Self {
             debug_box_channel,
             transient_debug_box_channel,
             next_transient_id: 0,
             transient_debug_boxes: Default::default(),
             dead_transient_debug_boxes: Default::default(),
             line_buf: Default::default(),
-        })
+        }
     }
 }
 
@@ -840,49 +1047,67 @@ fn write_debug_box(buf: &mut Vec<DebugVertex>, debug_box: &DebugBox) {
     line(&pnn, &ppn);
 }
 
-fn render_debug<S: Surface>(
-    ctx: &mut DebugLinesRenderer,
-    target: &mut S,
-    world: &mut World,
-    resources: &mut Resources,
+fn begin_render(mut ctx: RenderParams) -> anyhow::Result<()> {
+    ctx.targets.reset()?;
+    ctx.targets.frame = Some(ctx.display().draw());
+    Ok(())
+}
+
+fn end_render(mut ctx: RenderParams) -> anyhow::Result<()> {
+    let frame = ctx.targets.frame.take().unwrap();
+    let result_buf = ctx.targets.get("final")?.framebuffer(ctx.display())?;
+    result_buf.fill(&frame, MagnifySamplerFilter::Linear);
+    frame.finish()?;
+    Ok(())
+}
+
+fn render_debug(
+    mut ctx: RenderParams,
+    camera: CurrentCamera,
+    mut debug: NonSendMut<DebugLines>,
 ) -> anyhow::Result<()> {
-    ctx.line_buf.clear();
-    for debug_box in ctx.debug_box_channel.rx.try_iter() {
-        write_debug_box(&mut ctx.line_buf, &debug_box);
+    let debug = &mut *debug;
+    debug.line_buf.clear();
+    for debug_box in debug.debug_box_channel.rx.try_iter() {
+        write_debug_box(&mut debug.line_buf, &debug_box);
     }
-    for (duration, debug_box) in ctx.transient_debug_box_channel.rx.try_iter() {
-        ctx.transient_debug_boxes
-            .insert(ctx.next_transient_id, (Instant::now(), duration, debug_box));
-        ctx.next_transient_id += 1;
-        write_debug_box(&mut ctx.line_buf, &debug_box);
+    for (duration, debug_box) in debug.transient_debug_box_channel.rx.try_iter() {
+        debug.transient_debug_boxes.insert(
+            debug.next_transient_id,
+            (Instant::now(), duration, debug_box),
+        );
+        debug.next_transient_id += 1;
+        write_debug_box(&mut debug.line_buf, &debug_box);
     }
 
-    for (&i, (start, duration, debug_box)) in ctx.transient_debug_boxes.iter_mut() {
+    for (&i, (start, duration, debug_box)) in debug.transient_debug_boxes.iter_mut() {
         let elapsed = start.elapsed();
         if elapsed > *duration {
-            ctx.dead_transient_debug_boxes.insert(i);
+            debug.dead_transient_debug_boxes.insert(i);
         } else {
             let percent_completed = elapsed.as_secs_f32() / duration.as_secs_f32();
             let mut rgba = debug_box.rgba;
             rgba[3] *= 1.0 - percent_completed;
-            write_debug_box(&mut ctx.line_buf, &DebugBox { rgba, ..*debug_box });
+            write_debug_box(&mut debug.line_buf, &DebugBox { rgba, ..*debug_box });
         }
     }
 
-    for i in ctx.dead_transient_debug_boxes.drain() {
-        ctx.transient_debug_boxes.remove(&i);
+    for i in debug.dead_transient_debug_boxes.drain() {
+        debug.transient_debug_boxes.remove(&i);
     }
 
-    let vertices = VertexBuffer::immutable(ctx.shared.display(), &ctx.line_buf)?;
+    let vertices = VertexBuffer::immutable(ctx.display(), &debug.line_buf)?;
 
-    let cam_transform = get_camera(world, resources);
-    let (width, height) = ctx.shared.display().get_framebuffer_dimensions();
-    let (view, proj) = get_view_projection(width, height, cam_transform);
+    let view = camera.view();
+    let proj = camera.projection(ctx.display.get_framebuffer_dimensions());
+
+    let mut target = ctx.targets.get("world")?.framebuffer(ctx.display())?;
+    let program = ctx.shaders.get("resources/shaders/debug")?;
 
     target.draw(
         &vertices,
         glium::index::NoIndices(glium::index::PrimitiveType::LinesList),
-        &ctx.debug_program,
+        &program,
         &uniform! {
             view: array4x4(&view),
             projection: array4x4(&proj.to_homogeneous()),
@@ -898,6 +1123,134 @@ fn render_debug<S: Surface>(
             ..Default::default()
         },
     )?;
+
+    Ok(())
+}
+
+fn render_post(
+    mut ctx: RenderParams,
+    camera: CurrentCamera,
+    misc: NonSend<RendererMisc>,
+) -> anyhow::Result<()> {
+    let program = ctx.shaders.get("resources/shaders/post")?;
+
+    let world_buffer = ctx.targets.get("world")?.framebuffer(ctx.display())?;
+    let resolve_buffer = ctx
+        .targets
+        .get("world.resolved")?
+        .framebuffer(ctx.display())?;
+    world_buffer.fill(&resolve_buffer, MagnifySamplerFilter::Linear);
+
+    let mut final_buffer = ctx.targets.get("final")?.framebuffer(ctx.display())?;
+
+    let proj = camera.projection(ctx.display.get_framebuffer_dimensions());
+
+    let color = ctx
+        .targets
+        .get("world.resolved")?
+        .color()
+        .unwrap()
+        .uniform()?;
+    let depth = ctx
+        .targets
+        .get("world.resolved")?
+        .depth()
+        .unwrap()
+        .uniform()?;
+
+    final_buffer.clear_color(0.0, 0.0, 0.0, 0.0);
+    final_buffer.draw(
+        &misc.fullscreen_quad,
+        glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
+        &program,
+        &uniform! {
+            b_color: color,
+            b_depth: depth,
+
+            camera_pos: array3(&camera.pos()),
+            projection_matrix: array4x4(&proj.to_homogeneous()),
+            view_matrix: array4x4(&camera.view()),
+        },
+        &Default::default(),
+    )?;
+
+    Ok(())
+}
+
+fn render_sky(
+    mut ctx: RenderParams,
+    camera: CurrentCamera,
+    misc: NonSend<RendererMisc>,
+) -> anyhow::Result<()> {
+    let program = ctx.shaders.get("resources/shaders/sky")?;
+    let mut target = ctx.targets.get("world")?.framebuffer(ctx.display())?;
+
+    let proj = camera.projection(ctx.display().get_framebuffer_dimensions());
+    target.draw(
+        &misc.fullscreen_quad,
+        glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
+        &program,
+        &uniform! {
+            camera_pos: array3(&camera.pos()),
+            projection_matrix: array4x4(&proj.to_homogeneous()),
+            view_matrix: array4x4(&camera.view()),
+        },
+        &Default::default(),
+    )?;
+
+    Ok(())
+}
+
+fn render_terrain(
+    mut ctx: RenderParams,
+    camera: CurrentCamera,
+    mesh_query: Query<(&Transform, &RenderMeshComponent<TerrainMesh>)>,
+    mut terrain_meshes: NonSendMut<LocalMeshContext<TerrainMesh>>,
+    misc: NonSend<RendererMisc>,
+) -> anyhow::Result<()> {
+    terrain_meshes.update(ctx.display())?;
+
+    let mut target = ctx.targets.get("world")?.framebuffer(ctx.display())?;
+    let program = ctx.shaders.get("resources/shaders/simple")?;
+
+    let view = camera.view();
+    let proj = camera.projection(ctx.display.get_framebuffer_dimensions());
+    let viewproj = proj.as_matrix() * view;
+
+    for (transform, RenderMeshComponent(handle)) in mesh_query.iter() {
+        let buffers = terrain_meshes
+            .meshes
+            .get(&handle.0.id)
+            .expect("RenderMeshComponent existed for entity that was not in terrain_meshes");
+
+        let model = transform.to_matrix();
+        let mvp = viewproj * model;
+
+        if !should_draw_aabb(&mvp, &buffers.aabb) {
+            continue;
+        }
+
+        target.draw(
+            &buffers.vertices,
+            &buffers.indices,
+            &program,
+            &uniform! {
+                model: array4x4(&model),
+                view: array4x4(&view),
+                projection: array4x4(&proj.to_homogeneous()),
+                albedo_maps: misc.block_textures.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
+            },
+            &glium::DrawParameters {
+                depth: glium::Depth {
+                    test: glium::DepthTest::IfLess,
+                    write: true,
+                    ..Default::default()
+                },
+                backface_culling: glium::BackfaceCullingMode::CullCounterClockwise,
+                ..Default::default()
+            },
+        )?;
+    }
 
     Ok(())
 }

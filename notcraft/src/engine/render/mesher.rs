@@ -1,5 +1,6 @@
 use crate::engine::{
     math::*,
+    prelude::*,
     transform::Transform,
     world::{
         chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
@@ -12,7 +13,6 @@ use crate::engine::{
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use glium::{backend::Facade, index::PrimitiveType, IndexBuffer, VertexBuffer};
-use legion::{systems::CommandBuffer, Entity};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     collections::{HashMap, HashSet},
@@ -161,26 +161,33 @@ pub struct MesherContext {
     terrain_entities: HashMap<ChunkPos, Entity>,
     tracker: MeshTracker,
     completed_meshes: HashSet<ChunkPos>,
-    chunk_event_rx: Receiver<ChunkEvent>,
 
     mesher_pool: ThreadPool,
     mesh_tx: Sender<CompletedMesh>,
     mesh_rx: Receiver<CompletedMesh>,
 }
 
-impl MesherContext {
-    pub fn new(voxel_world: &VoxelWorld) -> Self {
+impl Default for MesherContext {
+    fn default() -> Self {
         let mesher_pool = ThreadPoolBuilder::new().build().unwrap();
         let (mesh_tx, mesh_rx) = crossbeam_channel::unbounded();
         Self {
             terrain_entities: Default::default(),
             tracker: MeshTracker::new(),
             completed_meshes: Default::default(),
-            chunk_event_rx: voxel_world.chunk_event_notifier.clone(),
             mesher_pool,
             mesh_tx,
             mesh_rx,
         }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ChunkMesherPlugin {}
+
+impl Plugin for ChunkMesherPlugin {
+    fn build(&self, app: &mut AppBuilder) {
+        app.add_system(chunk_mesher.system());
     }
 }
 
@@ -200,20 +207,24 @@ where
     }
 }
 
-fn update_tracker(ctx: &mut MesherContext, cmd: &mut CommandBuffer) {
-    for event in ctx.chunk_event_rx.try_iter() {
+fn update_tracker(
+    ctx: &mut MesherContext,
+    cmd: &mut Commands,
+    mut events: EventReader<ChunkEvent>,
+) {
+    for event in events.iter() {
         match event {
             ChunkEvent::Added(chunk) => ctx.tracker.chunk_added(chunk.pos()),
             ChunkEvent::Removed(chunk) => {
                 ctx.tracker.chunk_removed(chunk.pos());
                 if let Some(entity) = ctx.terrain_entities.remove(&chunk.pos()) {
-                    cmd.remove(entity);
+                    cmd.entity(entity).despawn();
                 }
             }
             ChunkEvent::Modified(chunk) => {
                 if ctx.tracker.constrained_by.contains_key(&chunk.pos()) {
                     if let Some(entity) = ctx.terrain_entities.remove(&chunk.pos()) {
-                        cmd.remove(entity);
+                        cmd.entity(entity).despawn();
                     }
                 } else if ctx.tracker.have_data.contains(&chunk.pos()) {
                     ctx.tracker.unconstrained.insert(chunk.pos());
@@ -228,7 +239,7 @@ pub struct HasTerrainMesh;
 
 fn update_completed_meshes(
     ctx: &mut MesherContext,
-    cmd: &mut CommandBuffer,
+    cmd: &mut Commands,
     mesh_context: &Arc<SharedMeshContext<TerrainMesh>>,
 ) {
     for completed in ctx.mesh_rx.try_iter() {
@@ -238,14 +249,15 @@ fn update_completed_meshes(
                     let entity = *ctx
                         .terrain_entities
                         .entry(pos)
-                        .or_insert_with(|| cmd.push(()));
+                        .or_insert_with(|| cmd.spawn().id());
 
                     let world_pos: Point3<f32> = pos.origin().origin().into();
                     let transform = Transform::from(world_pos);
 
                     let mesh_handle = mesh_context.upload(terrain);
-                    cmd.add_component(entity, RenderMeshComponent::new(mesh_handle));
-                    cmd.add_component(entity, transform);
+                    cmd.entity(entity)
+                        .insert(RenderMeshComponent::new(mesh_handle))
+                        .insert(transform);
                 }
             }
             CompletedMesh::Failed { pos } => ctx.tracker.chunk_mesh_failed(pos),
@@ -323,16 +335,16 @@ fn queue_mesh_jobs(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) {
     }
 }
 
-#[legion::system]
 pub fn chunk_mesher(
-    cmd: &mut CommandBuffer,
-    #[state] ctx: &mut MesherContext,
-    #[resource] voxel_world: &Arc<VoxelWorld>,
-    #[resource] mesh_context: &Arc<SharedMeshContext<TerrainMesh>>,
+    mut cmd: Commands,
+    mut ctx: Local<MesherContext>,
+    voxel_world: Res<Arc<VoxelWorld>>,
+    mesh_context: Res<Arc<SharedMeshContext<TerrainMesh>>>,
+    events: EventReader<ChunkEvent>,
 ) {
-    update_tracker(ctx, cmd);
-    queue_mesh_jobs(ctx, voxel_world);
-    update_completed_meshes(ctx, cmd, mesh_context);
+    update_tracker(&mut ctx, &mut cmd, events);
+    queue_mesh_jobs(&mut ctx, &voxel_world);
+    update_completed_meshes(&mut ctx, &mut cmd, &mesh_context);
 }
 
 struct ChunkNeighbors {
