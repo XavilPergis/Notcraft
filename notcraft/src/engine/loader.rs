@@ -1,10 +1,11 @@
-use crate::engine::prelude::*;
+use crate::{engine::prelude::*, util::ChannelPair};
 use anyhow::Context;
 use glium::{
     backend::Facade, program::SourceCode, texture::TextureCreationError, Display, Program,
     ProgramCreationError,
 };
 use image::{GenericImageView, ImageError, RgbaImage};
+use notify::RecommendedWatcher;
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsStr,
@@ -14,6 +15,8 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
+
+use super::render::renderer::RenderStage;
 
 macro_rules! err_from {
     ($sup:ident => $sub:path = $variant:ident) => {
@@ -164,14 +167,17 @@ impl std::fmt::Display for ShaderLoadError {
 err_from! { ShaderLoadError => std::io::Error = Io }
 err_from! { ShaderLoadError => ProgramCreationError = Program }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 struct ShaderId(usize);
 
 pub struct ShaderLoaderState {
     display: Rc<Display>,
 
     paths: HashMap<String, Rc<PathBuf>>,
-    infos: HashMap<PathBuf, PathInfo>,
+    id_to_path: HashMap<ShaderId, PathBuf>,
+    path_to_id: HashMap<PathBuf, ShaderId>,
+
+    infos: HashMap<ShaderId, PathInfo>,
     next_id: ShaderId,
     base_path: PathBuf,
 }
@@ -182,23 +188,27 @@ struct ShaderManifest {
 }
 
 impl ShaderLoaderState {
-    pub fn new(display: &Rc<Display>, base_path: PathBuf) -> Result<Self> {
+    pub fn load(display: &Rc<Display>, base_path: PathBuf) -> Result<Self> {
         let manifest_file = File::open(base_path.join("manifest.json"))?;
         let manifest: ShaderManifest = serde_json::from_reader(manifest_file)?;
 
-        let paths = manifest
-            .paths
-            .into_iter()
-            .map(|(name, path)| (name, Rc::new(base_path.join(path))))
-            .collect();
-
-        Ok(Self {
+        let mut state = Self {
             display: Rc::clone(display),
-            paths,
+            paths: Default::default(),
+            id_to_path: Default::default(),
+            path_to_id: Default::default(),
             infos: Default::default(),
             next_id: ShaderId(0),
             base_path,
-        })
+        };
+
+        for (name, path) in manifest.paths.into_iter() {
+            let path = state.canonicalize(&path)?;
+            load_path(&mut state, path.clone())?;
+            state.paths.insert(name, Rc::new(path));
+        }
+
+        Ok(state)
     }
 
     pub fn get(&mut self, name: &str) -> Result<Rc<Program>> {
@@ -206,47 +216,82 @@ impl ShaderLoaderState {
             Some(path) => path,
             None => bail!("unknown shader '{}'", name),
         };
-        match self.info_mut(&path)?.program.as_ref() {
+        assert!(path.is_absolute());
+
+        let id = self.id(&path)?;
+        match self.infos[&id].program.as_ref() {
             Some(program) => Ok(Rc::clone(program)),
-            None => load_shader_internal(self, path.as_ref())
-                .with_context(|| anyhow!("error loading shader '{}'", path.display())),
+            None => load_shader_internal(self, id).with_context(|| {
+                anyhow!("error loading shader '{}'", self.id_to_path[&id].display())
+            }),
         }
     }
 
-    fn source(&mut self, path: &Path) -> Result<Arc<String>> {
-        Ok(self.info_mut(path)?.raw_source.clone())
+    fn source(&mut self, id: ShaderId) -> Arc<String> {
+        self.infos[&id].raw_source.clone()
     }
 
-    fn info_mut(&mut self, path: &Path) -> Result<&mut PathInfo> {
-        if !self.infos.contains_key(path) {
-            log::debug!("shader source for path '{}' was not cached", path.display());
-            let source = std::fs::read_to_string(path)?;
-            self.infos.insert(path.into(), PathInfo::new(source));
-        }
-        Ok(self.infos.get_mut(path).unwrap())
+    fn info_mut(&mut self, id: ShaderId) -> &mut PathInfo {
+        self.infos.get_mut(&id).unwrap()
     }
+
+    fn id(&mut self, path: &Path) -> Result<ShaderId> {
+        match self.path_to_id.get(path) {
+            Some(&id) => Ok(id),
+            None => {
+                log::debug!("path '{}' was not found, adding", path.display());
+                load_path(self, path.into())
+            }
+        }
+    }
+
+    fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
+        Ok(self.base_path.join(path).canonicalize()?)
+    }
+}
+
+fn load_path(state: &mut ShaderLoaderState, path: PathBuf) -> Result<ShaderId> {
+    assert!(!state.path_to_id.contains_key(&path));
+
+    // allowing arbitrary filesystem acces here would probably be a bad idea lol. we
+    // reject a path if it's in a directory higher up than `base_path`
+    if state.base_path.ancestors().any(|p| p == path) {
+        bail!(
+            "tried to load '{}', which is outside of the base shader directory of '{}'",
+            path.display(),
+            state.base_path.display()
+        );
+    }
+
+    let id = state.next_id;
+    state.next_id.0 += 1;
+
+    let info = PathInfo::new(id, std::fs::read_to_string(&path)?);
+    state.infos.insert(id, info);
+    state.id_to_path.insert(id, path.clone());
+    state.path_to_id.insert(path, id);
+
+    Ok(id)
 }
 
 #[derive(Debug)]
 struct PathInfo {
     program: Option<Rc<Program>>,
-    shader_id: Option<ShaderId>,
     raw_source: Arc<String>,
+    id: ShaderId,
 
-    // IDs of shaders that we included
-    includes: HashSet<ShaderId>,
-    // IDs of shaders that included us
-    included_by: HashSet<ShaderId>,
+    dependencies: HashSet<ShaderId>,
+    dependants: HashSet<ShaderId>,
 }
 
 impl PathInfo {
-    pub fn new(source: String) -> Self {
+    pub fn new(id: ShaderId, source: String) -> Self {
         Self {
+            id,
             raw_source: Arc::new(source),
             program: Default::default(),
-            shader_id: Default::default(),
-            includes: Default::default(),
-            included_by: Default::default(),
+            dependencies: Default::default(),
+            dependants: Default::default(),
         }
     }
 }
@@ -274,11 +319,11 @@ impl ShaderStage {
 
 #[derive(Clone, Debug)]
 pub enum ShaderParseEvent<'src> {
-    /// the beginning of the shader located at the specified path. this is
-    /// emitted before anything else. likewise, [`End`] is emitted after
-    /// everything else in the file.
-    Start(&'src Path),
-    End(&'src Path),
+    /// the beginning of the shader located at the path specified in the parser
+    /// these events came from. this is emitted before anything else.
+    /// likewise, [`End`] is emitted after everything else in the file.
+    Start,
+    End,
 
     Fragment(&'src str),
 
@@ -287,12 +332,12 @@ pub enum ShaderParseEvent<'src> {
 }
 
 #[derive(Debug)]
-struct ShaderParser<'src> {
-    path: &'src Path,
+struct ShaderParser<'src, 'path> {
+    path: &'path Path,
     source: &'src str,
     current: usize,
 
-    fragments: Vec<ShaderParseEvent<'src>>,
+    events: Vec<ShaderParseEvent<'src>>,
     last_literal_start: usize,
     last_literal_end: usize,
     // if we're at the start of a line, or only have whitespace so far this line
@@ -300,13 +345,13 @@ struct ShaderParser<'src> {
     errors: Vec<anyhow::Error>,
 }
 
-impl<'src> ShaderParser<'src> {
-    pub fn new(path: &'src Path, source: &'src str) -> Self {
+impl<'src, 'path> ShaderParser<'src, 'path> {
+    pub fn new(path: &'path Path, source: &'src str) -> Self {
         Self {
             path,
             source,
             current: 0,
-            fragments: Default::default(),
+            events: Default::default(),
             last_literal_start: 0,
             last_literal_end: 0,
             at_line_start: true,
@@ -315,7 +360,7 @@ impl<'src> ShaderParser<'src> {
     }
 }
 
-impl<'src> ShaderParser<'src> {
+impl<'src, 'path> ShaderParser<'src, 'path> {
     fn peek(&self) -> Option<char> {
         self.source[self.current..].chars().next()
     }
@@ -366,7 +411,7 @@ impl<'src> ShaderParser<'src> {
     }
 }
 
-fn parse_maybe_comment<'src>(parser: &mut ShaderParser<'src>) {
+fn parse_maybe_comment<'src>(parser: &mut ShaderParser<'src, '_>) {
     match parser.peek() {
         // line comment
         Some('/') => {
@@ -387,9 +432,9 @@ fn parse_maybe_comment<'src>(parser: &mut ShaderParser<'src>) {
     }
 }
 
-fn submit_literal_parse_event<'src>(parser: &mut ShaderParser<'src>) {
+fn submit_literal_parse_event<'src>(parser: &mut ShaderParser<'src, '_>) {
     if parser.last_literal_start != parser.current {
-        parser.fragments.push(ShaderParseEvent::Fragment(
+        parser.events.push(ShaderParseEvent::Fragment(
             &parser.source[parser.last_literal_start..parser.last_literal_end],
         ));
         parser.last_literal_start = parser.current;
@@ -397,12 +442,15 @@ fn submit_literal_parse_event<'src>(parser: &mut ShaderParser<'src>) {
     }
 }
 
-fn add_shader_parse_event<'src>(parser: &mut ShaderParser<'src>, event: ShaderParseEvent<'src>) {
+fn add_shader_parse_event<'src>(
+    parser: &mut ShaderParser<'src, '_>,
+    event: ShaderParseEvent<'src>,
+) {
     submit_literal_parse_event(parser);
-    parser.fragments.push(event);
+    parser.events.push(event);
 }
 
-fn parse_include_directive<'src>(parser: &mut ShaderParser<'src>) {
+fn parse_include_directive<'src>(parser: &mut ShaderParser<'src, '_>) {
     parser.advance_while(|ch| ch.is_ascii_whitespace());
     if parser.advance_if(|ch| ch == '"') {
         let path = parser.advance_until(|ch| ch == '"');
@@ -412,7 +460,7 @@ fn parse_include_directive<'src>(parser: &mut ShaderParser<'src>) {
     }
 }
 
-fn parse_shaderstage_directive<'src>(parser: &mut ShaderParser<'src>) -> Result<()> {
+fn parse_shaderstage_directive<'src>(parser: &mut ShaderParser<'src, '_>) -> Result<()> {
     parser.advance_while(|ch| ch.is_ascii_whitespace());
     let stage = match parser.advance_while(|ch| ch == '_' || ch.is_ascii_alphabetic()) {
         "vertex" => ShaderStage::Vertex,
@@ -428,7 +476,7 @@ fn parse_shaderstage_directive<'src>(parser: &mut ShaderParser<'src>) -> Result<
     Ok(())
 }
 
-fn parse_directive<'src>(parser: &mut ShaderParser<'src>) -> Result<()> {
+fn parse_directive<'src>(parser: &mut ShaderParser<'src, '_>) -> Result<()> {
     parser.advance_while(|ch| ch.is_ascii_whitespace());
 
     let directive = parser.advance_while(|ch| ch == '_' || ch.is_ascii_alphabetic());
@@ -448,37 +496,28 @@ fn parse_directive<'src>(parser: &mut ShaderParser<'src>) -> Result<()> {
 
 fn visit_fragments_at_path<'src, F>(
     state: &mut ShaderLoaderState,
-    path: &Path,
+    id: ShaderId,
     visitor: &mut F,
 ) -> Result<()>
 where
     F: FnMut(&ShaderParseEvent<'_>),
 {
-    let source = state.source(path)?;
-    let mut parser = ShaderParser::new(path.as_ref(), &source);
-    parse_shader(&mut parser)?;
+    let source = state.source(id);
+    let events = {
+        let path = &state.id_to_path[&id];
+        log::debug!("parsing shader '{}'", path.display());
+        let mut parser = ShaderParser::new(path.as_ref(), &source);
+        parse_shader(&mut parser)?
+    };
 
-    log::debug!("parsed shader '{}'", path.display());
-
-    for fragment in parser.fragments.iter() {
-        log::debug!("fragment {:?}", fragment);
+    for fragment in events.iter() {
         match fragment {
             &ShaderParseEvent::Include(include_path) => {
-                // the include path is relative to the file that the include occurred in, which
-                // is what the `path` parameter is.
-
-                // allowing arbitrary filesystem acces here would probably be a bad idea lol. we
-                // reject a path if it's in a directory higher up than `state`'s `base_path`
-                let canonical = state.base_path.join(include_path).canonicalize()?;
-                if state.base_path.ancestors().any(|path| path == canonical) {
-                    bail!(
-                        "tried to include '{}', which is outside of the base shader directory of '{}'",
-                        canonical.display(),
-                        state.base_path.display()
-                    );
-                }
-
-                visit_fragments_at_path(state, &canonical, visitor)?;
+                // the include path is relative to the file that the include occurred in.
+                let include_path = state.id_to_path[&id].parent().unwrap().join(include_path);
+                let include_path = state.canonicalize(&include_path)?;
+                let id = state.id(&include_path)?;
+                visit_fragments_at_path(state, id, visitor)?;
             }
             event => visitor(event),
         }
@@ -488,13 +527,13 @@ where
 
 fn emit_shader_code(
     state: &mut ShaderLoaderState,
-    path: &Path,
+    id: ShaderId,
 ) -> Result<HashMap<ShaderStage, String>> {
     let mut res: HashMap<ShaderStage, String> = HashMap::new();
     let mut stage_stack = Vec::new();
     let mut current_stage = None;
 
-    visit_fragments_at_path(state, path, &mut |event| match event {
+    visit_fragments_at_path(state, id, &mut |event| match event {
         &ShaderParseEvent::Include(_) => unreachable!(),
         &ShaderParseEvent::Fragment(src) => match current_stage {
             Some(stage) => res.entry(stage).or_default().push_str(src),
@@ -504,19 +543,19 @@ fn emit_shader_code(
                 }
             }),
         },
-        &ShaderParseEvent::Start(path) => {
+        &ShaderParseEvent::Start => {
             stage_stack.push(current_stage);
             current_stage = None;
         }
-        &ShaderParseEvent::End(_) => current_stage = stage_stack.pop().unwrap(),
+        &ShaderParseEvent::End => current_stage = stage_stack.pop().unwrap(),
         &ShaderParseEvent::ShaderStage(stage) => current_stage = Some(stage),
     })?;
 
     Ok(res)
 }
 
-fn parse_shader<'src>(parser: &mut ShaderParser<'src>) -> Result<()> {
-    add_shader_parse_event(parser, ShaderParseEvent::Start(parser.path));
+fn parse_shader<'src>(parser: &mut ShaderParser<'src, '_>) -> Result<Vec<ShaderParseEvent<'src>>> {
+    add_shader_parse_event(parser, ShaderParseEvent::Start);
 
     while let Some(ch) = parser.peek() {
         let at_line_start = parser.at_line_start;
@@ -533,7 +572,7 @@ fn parse_shader<'src>(parser: &mut ShaderParser<'src>) -> Result<()> {
         }
     }
 
-    add_shader_parse_event(parser, ShaderParseEvent::End(parser.path));
+    add_shader_parse_event(parser, ShaderParseEvent::End);
 
     if !parser.errors.is_empty() {
         for error in parser.errors.iter() {
@@ -546,21 +585,36 @@ fn parse_shader<'src>(parser: &mut ShaderParser<'src>) -> Result<()> {
         );
     }
 
-    Ok(())
+    Ok(std::mem::take(&mut parser.events))
 }
 
-fn load_shader_internal(state: &mut ShaderLoaderState, path: &Path) -> Result<Rc<Program>> {
-    let source = emit_shader_code(state, path)?;
-    for (stage, src) in source.iter() {
-        log::debug!("emitted for stage {:?}: \n\n{}\n\n", stage, src);
-    }
+fn load_shader_internal(state: &mut ShaderLoaderState, id: ShaderId) -> Result<Rc<Program>> {
+    log::info!(
+        "loading shader {} ({})",
+        id.0,
+        state.id_to_path[&id].display()
+    );
+
+    state.info_mut(id).raw_source = Arc::new(std::fs::read_to_string(&state.id_to_path[&id])?);
+    let source = emit_shader_code(state, id)?;
+
+    // for (stage, src) in source.iter() {
+    //     log::debug!("emitted for stage {:?}: \n\n{}\n\n", stage, src);
+    // }
+
     let program = Rc::new(Program::new(&*state.display, SourceCode {
-        vertex_shader: source
-            .get(&ShaderStage::Vertex)
-            .ok_or_else(|| anyhow!("shader '{}' is missing a vertex stage", path.display()))?,
-        fragment_shader: source
-            .get(&ShaderStage::Fragment)
-            .ok_or_else(|| anyhow!("shader '{}' is missing a fragment stage", path.display()))?,
+        vertex_shader: source.get(&ShaderStage::Vertex).ok_or_else(|| {
+            anyhow!(
+                "shader '{}' is missing a vertex stage",
+                state.id_to_path[&id].display()
+            )
+        })?,
+        fragment_shader: source.get(&ShaderStage::Fragment).ok_or_else(|| {
+            anyhow!(
+                "shader '{}' is missing a fragment stage",
+                state.id_to_path[&id].display()
+            )
+        })?,
         tessellation_control_shader: source.get(&ShaderStage::TesselationControl).map(|s| &**s),
         tessellation_evaluation_shader: source
             .get(&ShaderStage::TesselationEvaluation)
@@ -568,6 +622,117 @@ fn load_shader_internal(state: &mut ShaderLoaderState, path: &Path) -> Result<Rc
         geometry_shader: source.get(&ShaderStage::Geometry).map(|s| &**s),
     })?);
 
-    state.info_mut(path)?.program = Some(Rc::clone(&program));
+    state.info_mut(id).program = Some(Rc::clone(&program));
     Ok(program)
+}
+
+fn collect_dirty_shaders(
+    state: &ShaderLoaderState,
+    dirty: &mut HashSet<ShaderId>,
+    id: ShaderId,
+) -> Result<()> {
+    if let Some(info) = state.infos.get(&id) {
+        dirty.insert(info.id);
+        for &dependant in info.dependants.iter() {
+            collect_dirty_shaders(state, dirty, dependant)?;
+        }
+    }
+    Ok(())
+}
+
+fn notify_shader_modified(state: &mut ShaderLoaderState, path: &Path) -> Result<()> {
+    if !state.path_to_id.contains_key(path) {
+        return Ok(());
+    }
+
+    let id = state.id(path)?;
+    let mut dirty = HashSet::new();
+    collect_dirty_shaders(state, &mut dirty, id)?;
+    for &id in dirty.iter() {
+        state.info_mut(id).program = None;
+    }
+    for &id in dirty.iter() {
+        load_shader_internal(state, id)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "hot-reload")]
+#[derive(Debug, Default)]
+pub struct HotReloadPlugin {}
+
+#[cfg(feature = "hot-reload")]
+pub struct FileWatcher {
+    channel: ChannelPair<notify::Result<notify::Event>>,
+    watcher: RecommendedWatcher,
+}
+
+#[cfg(feature = "hot-reload")]
+impl Plugin for HotReloadPlugin {
+    fn build(&self, app: &mut AppBuilder) {
+        app.add_event::<notify::Event>();
+        app.add_startup_system(util::try_system!(file_watcher_init));
+        app.add_system(file_watcher.system());
+
+        app.add_system_to_stage(
+            RenderStage::BeginRender,
+            util::try_system!(hot_reload_shaders),
+        );
+    }
+}
+
+#[cfg(feature = "hot-reload")]
+pub fn file_watcher_init(mut cmd: Commands) -> Result<()> {
+    use notify::{RecursiveMode, Watcher};
+
+    let channel = util::ChannelPair::new();
+    let sender = channel.sender();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        if sender.send(event).is_err() {
+            return;
+        }
+    })?;
+    // FIXME: move somewhere appropriate
+    watcher.watch(Path::new("resources/shaders"), RecursiveMode::Recursive)?;
+    cmd.insert_resource(FileWatcher { channel, watcher });
+    Ok(())
+}
+
+#[cfg(feature = "hot-reload")]
+pub fn file_watcher(watcher: Res<FileWatcher>, mut watcher_events: EventWriter<notify::Event>) {
+    for event in watcher.channel.rx.try_iter() {
+        match event {
+            Ok(event) => watcher_events.send(event),
+            Err(err) => log::warn!("file watcher error: {}", err),
+        }
+    }
+}
+
+#[cfg(feature = "hot-reload")]
+pub fn hot_reload_shaders(
+    mut shaders: NonSendMut<ShaderLoaderState>,
+    mut watcher_events: EventReader<notify::Event>,
+) -> Result<()> {
+    use notify::{event::ModifyKind, EventKind};
+
+    for event in watcher_events.iter() {
+        match &event.kind {
+            EventKind::Create(_) => {}
+            EventKind::Modify(kind) => match kind {
+                // don't worry about renames for now
+                ModifyKind::Name(_) => {}
+                _ => {
+                    for path in event.paths.iter() {
+                        let path = shaders.canonicalize(path)?;
+                        if let Err(err) = notify_shader_modified(&mut shaders, &path) {
+                            log::error!("shader hot-reload failed: {}", err);
+                        }
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+    Ok(())
 }

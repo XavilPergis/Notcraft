@@ -119,7 +119,7 @@ impl Plugin for RenderPlugin {
         app.insert_non_send_resource(RenderTargets::new(&display));
         app.insert_non_send_resource(
             // FIXME: * e r r o r   h a n d l i n g *
-            ShaderLoaderState::new(&display, PathBuf::from("resources/shaders")).unwrap(),
+            ShaderLoaderState::load(&display, PathBuf::from("resources/shaders")).unwrap(),
         );
         app.insert_non_send_resource(DebugLines::new());
         app.insert_non_send_resource(RendererMisc::new(&display, &registry).unwrap());

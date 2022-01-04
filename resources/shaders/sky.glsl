@@ -29,4 +29,5 @@ void main() {
     vec3 color = mix(SKY_COLOR_BASE, SKY_COLOR_BRIGHT, max(0.0, down_closeness));
 
     b_color = vec4(color, 1.0);
+    // b_color = vec4(0.0, 0.0, 0.0, 1.0);
 }

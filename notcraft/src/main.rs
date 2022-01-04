@@ -577,6 +577,9 @@ impl PluginGroup for DefaultPlugins {
         group.add(InputPlugin::default());
         group.add(WorldPlugin::default());
         group.add(RenderPlugin::default());
+
+        #[cfg(feature = "hot-reload")]
+        group.add(engine::loader::HotReloadPlugin::default());
     }
 }
 
