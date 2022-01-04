@@ -26,6 +26,9 @@ pub mod prelude {
     pub use app::prelude::*;
     pub use bevy_core::prelude::*;
     pub use ecs::prelude::*;
+
+    pub type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
+    pub use anyhow::{anyhow, bail};
 }
 
 #[repr(u8)]

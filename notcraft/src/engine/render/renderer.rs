@@ -1,7 +1,11 @@
 use super::{camera::CurrentCamera, Tex};
 use crate::{
     engine::{
-        loader, math::*, prelude::*, render::mesher::TerrainMesh, transform::Transform,
+        loader::{self, ShaderLoaderState},
+        math::*,
+        prelude::*,
+        render::mesher::TerrainMesh,
+        transform::Transform,
         world::registry::BlockRegistry,
     },
     util::{self},
@@ -113,7 +117,10 @@ impl Plugin for RenderPlugin {
         app.add_startup_system(util::try_system!(declare_targets));
 
         app.insert_non_send_resource(RenderTargets::new(&display));
-        app.insert_non_send_resource(Shaders::new(&display));
+        app.insert_non_send_resource(
+            // FIXME: * e r r o r   h a n d l i n g *
+            ShaderLoaderState::new(&display, PathBuf::from("resources/shaders")).unwrap(),
+        );
         app.insert_non_send_resource(DebugLines::new());
         app.insert_non_send_resource(RendererMisc::new(&display, &registry).unwrap());
 
@@ -172,11 +179,6 @@ impl Plugin for RenderPlugin {
         app.add_system_to_stage(RenderStage::BeginRender, util::try_system!(begin_render));
         app.add_system_to_stage(RenderStage::EndRender, util::try_system!(end_render));
     }
-}
-
-pub struct Shaders {
-    display: Rc<Display>,
-    programs: HashMap<PathBuf, Rc<Program>>,
 }
 
 pub struct RenderTargets {
@@ -277,27 +279,6 @@ pub enum DepthStencilTextureFormat {
     DepthFormat(DepthFormat),
     StencilFormat(StencilFormat),
     DepthStencilFormat(DepthStencilFormat),
-}
-
-impl Shaders {
-    pub fn new(display: &Rc<Display>) -> Self {
-        Self {
-            display: Rc::clone(display),
-            programs: Default::default(),
-        }
-    }
-
-    pub fn get<P: AsRef<Path>>(&mut self, path: P) -> Result<Rc<Program>> {
-        let path = path.as_ref();
-        match self.programs.get(path) {
-            Some(program) => Ok(Rc::clone(program)),
-            None => {
-                let program = Rc::new(loader::load_shader(&*self.display, path)?);
-                self.programs.insert(path.into(), Rc::clone(&program));
-                Ok(program)
-            }
-        }
-    }
 }
 
 impl RenderTargetSize {
@@ -795,7 +776,7 @@ impl<M> RenderMeshComponent<M> {
 pub struct RenderParams<'a> {
     display: NonSend<'a, Rc<Display>>,
     pub targets: NonSendMut<'a, RenderTargets>,
-    pub shaders: NonSendMut<'a, Shaders>,
+    pub shaders: NonSendMut<'a, ShaderLoaderState>,
 }
 
 impl<'a> RenderParams<'a> {
@@ -1102,7 +1083,7 @@ fn render_debug(
     let proj = camera.projection(ctx.display.get_framebuffer_dimensions());
 
     let mut target = ctx.targets.get("world")?.framebuffer(ctx.display())?;
-    let program = ctx.shaders.get("resources/shaders/debug")?;
+    let program = ctx.shaders.get("debug")?;
 
     target.draw(
         &vertices,
@@ -1132,7 +1113,7 @@ fn render_post(
     camera: CurrentCamera,
     misc: NonSend<RendererMisc>,
 ) -> anyhow::Result<()> {
-    let program = ctx.shaders.get("resources/shaders/post")?;
+    let program = ctx.shaders.get("post")?;
 
     let world_buffer = ctx.targets.get("world")?.framebuffer(ctx.display())?;
     let resolve_buffer = ctx
@@ -1182,7 +1163,7 @@ fn render_sky(
     camera: CurrentCamera,
     misc: NonSend<RendererMisc>,
 ) -> anyhow::Result<()> {
-    let program = ctx.shaders.get("resources/shaders/sky")?;
+    let program = ctx.shaders.get("sky")?;
     let mut target = ctx.targets.get("world")?.framebuffer(ctx.display())?;
 
     let proj = camera.projection(ctx.display().get_framebuffer_dimensions());
@@ -1211,7 +1192,7 @@ fn render_terrain(
     terrain_meshes.update(ctx.display())?;
 
     let mut target = ctx.targets.get("world")?.framebuffer(ctx.display())?;
-    let program = ctx.shaders.get("resources/shaders/simple")?;
+    let program = ctx.shaders.get("terrain")?;
 
     let view = camera.view();
     let proj = camera.projection(ctx.display.get_framebuffer_dimensions());
