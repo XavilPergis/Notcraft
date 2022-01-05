@@ -1219,7 +1219,9 @@ fn render_terrain(
                 model: array4x4(&model),
                 view: array4x4(&view),
                 projection: array4x4(&proj.to_homogeneous()),
-                albedo_maps: misc.block_textures.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
+                albedo_maps: misc.block_textures.sampled()
+                    .wrap_function(glium::uniforms::SamplerWrapFunction::Repeat)
+                    .magnify_filter(MagnifySamplerFilter::Nearest),
             },
             &glium::DrawParameters {
                 depth: glium::Depth {

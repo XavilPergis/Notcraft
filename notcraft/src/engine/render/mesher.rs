@@ -5,7 +5,7 @@ use crate::engine::{
     world::{
         chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
         chunk_aabb,
-        registry::{BlockId, BlockRegistry},
+        registry::{BlockId, BlockMeshType, BlockRegistry},
         ChunkEvent, VoxelWorld,
     },
     Side,
@@ -13,6 +13,8 @@ use crate::engine::{
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use glium::{backend::Facade, index::PrimitiveType, IndexBuffer, VertexBuffer};
+use na::OPoint;
+use rand::{prelude::SliceRandom, rngs::SmallRng, FromEntropy, SeedableRng};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     collections::{HashMap, HashSet},
@@ -435,6 +437,8 @@ impl MeshCreationContext {
         let mesh_constructor = MeshConstructor {
             registry: Arc::clone(&world.registry),
             terrain_mesh: Default::default(),
+            transparency_mesh: Default::default(),
+            rng: SmallRng::from_entropy(),
         };
 
         MeshCreationContext {
@@ -455,7 +459,12 @@ impl MeshCreationContext {
         }
 
         let pos = pos.cast::<ChunkAxisOffset>();
-        let is_opaque = |pos| self.registry.opaque(self.chunks.lookup(pos));
+        let is_opaque = |pos| {
+            matches!(
+                self.registry.mesh_type(self.chunks.lookup(pos)),
+                BlockMeshType::FullCube
+            )
+        };
 
         let neg_neg = is_opaque(pos + side.uvl_to_xyz(-1, -1, 1));
         let neg_cen = is_opaque(pos + side.uvl_to_xyz(-1, 0, 1));
@@ -483,13 +492,19 @@ impl MeshCreationContext {
         let pos = pos.cast::<ChunkAxisOffset>();
         let offset = pos + offset.cast();
 
-        let cur_solid = self.registry.opaque(self.chunks.lookup(pos));
-        let other_solid = self.registry.opaque(self.chunks.lookup(offset));
+        let cur_id = self.chunks.lookup(pos);
+        let neighbor_id = self.chunks.lookup(offset);
 
-        let cur_liquid = self.registry.liquid(self.chunks.lookup(pos));
-        let other_liquid = self.registry.liquid(self.chunks.lookup(offset));
+        let cur_solid = matches!(self.registry.mesh_type(cur_id), BlockMeshType::FullCube);
+        let other_solid = matches!(
+            self.registry.mesh_type(neighbor_id),
+            BlockMeshType::FullCube
+        );
 
-        if self.registry.liquid(self.chunks.lookup(pos)) {
+        let cur_liquid = self.registry.liquid(cur_id);
+        let other_liquid = self.registry.liquid(neighbor_id);
+
+        if self.registry.liquid(cur_id) {
             // if the current block is liquid, we need a face when the other block is
             // non-solid or non-liquid
             cur_liquid && !other_solid && !other_liquid
@@ -498,7 +513,7 @@ impl MeshCreationContext {
             // if the current block is not opaque, then it would never need any faces
             // if the current block is solid, and the other is either non-opaque or a
             // liquid, then we need a face
-            cur_solid && (!other_solid || self.registry.liquid(self.chunks.lookup(offset)))
+            cur_solid && (!other_solid || self.registry.liquid(neighbor_id))
         }
     }
 
@@ -534,7 +549,10 @@ impl MeshCreationContext {
                 let is_liquid = self.registry.liquid(cur.id);
 
                 // if the face has been expanded onto already, skip it.
-                if cur.visited || !(self.registry.opaque(cur.id) || is_liquid) {
+                if cur.visited
+                    || !(matches!(self.registry.mesh_type(cur.id), BlockMeshType::FullCube)
+                        || is_liquid)
+                {
                     continue;
                 }
                 let mut quad = VoxelQuad::from(cur);
@@ -568,8 +586,12 @@ impl MeshCreationContext {
                     self.mesh_constructor
                         .add_liquid(quad, side, point_constructor(u, v));
                 } else {
-                    self.mesh_constructor
-                        .add_terrain(quad, side, point_constructor(u, v));
+                    mesh_full_cube(
+                        &mut self.mesh_constructor,
+                        quad,
+                        side,
+                        point_constructor(u, v),
+                    );
                 }
             }
         }
@@ -585,9 +607,10 @@ impl MeshCreationContext {
                 for v in 0..(CHUNK_LENGTH as ChunkAxis) {
                     let pos = make_coordinate(layer, u, v);
                     self.slice[idx(u, v)] = if self.is_not_occluded(pos, side.normal()) {
+                        let id = self.chunks.lookup(pos.cast());
                         VoxelFace {
                             ao: self.face_ao(pos, side),
-                            id: self.chunks.lookup(pos.cast()),
+                            id,
                             visited: false,
                         }
                     } else {
@@ -605,6 +628,17 @@ impl MeshCreationContext {
     }
 
     pub fn mesh(mut self, sender: Sender<CompletedMesh>) {
+        for x in 0..(CHUNK_LENGTH as ChunkAxis) {
+            for z in 0..(CHUNK_LENGTH as ChunkAxis) {
+                for y in 0..(CHUNK_LENGTH as ChunkAxis) {
+                    let pos = na::point![x, y, z];
+                    let id = self.chunks.lookup(pos.cast());
+                    if matches!(self.registry.mesh_type(id), BlockMeshType::Cross) {
+                        mesh_cross(&mut self.mesh_constructor, id, pos)
+                    }
+                }
+            }
+        }
         self.mesh_slice(Side::Right, |layer, u, v| na::point!(layer, u, v));
         self.mesh_slice(Side::Left, |layer, u, v| na::point!(layer, u, v));
 
@@ -651,10 +685,11 @@ const NORMAL_QUAD_CCW: &'static [u32] = &[0, 2, 3, 3, 1, 0];
 #[repr(C)]
 pub struct TerrainVertex {
     // - 10 bits for each position
-    // 5 bits of precisions gets 1-block resolution, an additonal 5 bits gets 32 subdivisions of a
+    // 5 bits of precisions gets 1-block resolution, an additonal 5 bits gets 16 subdivisions of a
     // block.
     // - 2 bits for AO
     // AO only has 3 possible values, [0,3]
+    // lower AO values mean darker shadows
     pub pos_ao: u32,
 
     // (13 bit residual)
@@ -707,6 +742,33 @@ impl TerrainVertex {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct TerrainTransparencyMesh {
+    vertices: Vec<TerrainVertex>,
+    // TODO: use u16s when possible
+    indices: Vec<u32>,
+}
+
+impl UploadableMesh for TerrainTransparencyMesh {
+    type Vertex = TerrainVertex;
+
+    fn upload<F: Facade>(&self, ctx: &F) -> Result<MeshBuffers<Self::Vertex>> {
+        Ok(MeshBuffers {
+            vertices: VertexBuffer::immutable(ctx, &self.vertices)?,
+            indices: IndexBuffer::immutable(ctx, PrimitiveType::TrianglesList, &self.indices)?,
+
+            aabb: Aabb {
+                min: na::point![0.0, 0.0, 0.0],
+                max: na::point![
+                    CHUNK_LENGTH as f32,
+                    CHUNK_LENGTH as f32,
+                    CHUNK_LENGTH as f32
+                ],
+            },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct TerrainMesh {
     vertices: Vec<TerrainVertex>,
     // TODO: use u16s when possible
@@ -737,82 +799,191 @@ impl UploadableMesh for TerrainMesh {
 struct MeshConstructor {
     // liquid_mesh: LiquidMesh,
     terrain_mesh: TerrainMesh,
+    transparency_mesh: TerrainTransparencyMesh,
     registry: Arc<BlockRegistry>,
+    rng: SmallRng,
 }
 
 impl MeshConstructor {
-    fn add_liquid(&mut self, _quad: VoxelQuad, _side: Side, _pos: Point3<ChunkAxis>) {
-        // TODO: liquid meshing
+    fn add_liquid(&mut self, quad: VoxelQuad, side: Side, pos: Point3<ChunkAxis>) {
+        // let ao_pp = quad.ao.corner_ao(FaceAo::AO_POS_POS);
+        // let ao_pn = quad.ao.corner_ao(FaceAo::AO_POS_NEG);
+        // let ao_nn = quad.ao.corner_ao(FaceAo::AO_NEG_NEG);
+        // let ao_np = quad.ao.corner_ao(FaceAo::AO_NEG_POS);
+        // let flipped = ao_pp + ao_nn > ao_pn + ao_np;
+
+        // let clockwise = match side {
+        //     Side::Top => false,
+        //     Side::Bottom => true,
+        //     Side::Front => true,
+        //     Side::Back => false,
+        //     Side::Right => false,
+        //     Side::Left => true,
+        // };
+
+        // let indices = match (flipped, clockwise) {
+        //     (true, true) => FLIPPED_QUAD_CW,
+        //     (true, false) => FLIPPED_QUAD_CCW,
+        //     (false, true) => NORMAL_QUAD_CW,
+        //     (false, false) => NORMAL_QUAD_CCW,
+        // };
+
+        // let idx_start = self.transparency_mesh.vertices.len() as u32;
+        // self.transparency_mesh
+        //     .indices
+        //     .extend(indices.iter().copied().map(|idx| idx_start + idx));
+
+        // let face = self.registry.block_texture(quad.id, side);
+        // if face.is_none() {
+        //     log::error!("???: id={:?}, side={:?}", quad.id, side);
+        // }
+        // let face = face.unwrap();
+        // let tex_id = *face.texture.select() as u16;
+
+        // let mut vert = |offset: Vector3<_>, ao| {
+        //     let pos = pos + offset;
+        //     self.transparency_mesh
+        //         .vertices
+        //         .push(TerrainVertex::pack(pos.into(), side, tex_id, ao));
+        // };
+
+        // let h = if side.facing_positive() { 1 } else { 0 };
+        // let qw = quad.width;
+        // let qh = quad.height;
+
+        // match side {
+        //     Side::Left | Side::Right => {
+        //         vert(na::vector!(h, qw, 0), ao_pn);
+        //         vert(na::vector!(h, qw, qh), ao_pp);
+        //         vert(na::vector!(h, 0, 0), ao_nn);
+        //         vert(na::vector!(h, 0, qh), ao_np);
+        //     }
+
+        //     Side::Top | Side::Bottom => {
+        //         vert(na::vector!(0, h, qh), ao_pn);
+        //         vert(na::vector!(qw, h, qh), ao_pp);
+        //         vert(na::vector!(0, h, 0), ao_nn);
+        //         vert(na::vector!(qw, h, 0), ao_np);
+        //     }
+
+        //     Side::Front | Side::Back => {
+        //         vert(na::vector!(0, qh, h), ao_np);
+        //         vert(na::vector!(qw, qh, h), ao_pp);
+        //         vert(na::vector!(0, 0, h), ao_nn);
+        //         vert(na::vector!(qw, 0, h), ao_pn);
+        //     }
+        // }
+    }
+}
+
+fn mesh_cross(ctx: &mut MeshConstructor, id: BlockId, pos: Point3<ChunkAxis>) {
+    let tex_id = {
+        let faces = ctx.registry.block_textures(id).unwrap();
+        let faces = faces.choose(&mut ctx.rng).unwrap();
+        // FIXME: not this!
+        faces[Side::Top] as u16
+    };
+
+    {
+        #[rustfmt::skip]
+        const CROSS_INDICES: &'static [u32] = &[
+            0,1,2, 0,2,3, 0,2,1, 0,3,2,
+            4,5,6, 4,6,7, 4,6,5, 4,7,6,
+        ];
+
+        let idx_start = ctx.terrain_mesh.vertices.len() as u32;
+        ctx.terrain_mesh
+            .indices
+            .extend(CROSS_INDICES.iter().copied().map(|idx| idx_start + idx));
     }
 
-    fn add_terrain(&mut self, quad: VoxelQuad, side: Side, pos: Point3<ChunkAxis>) {
-        let ao_pp = quad.ao.corner_ao(FaceAo::AO_POS_POS);
-        let ao_pn = quad.ao.corner_ao(FaceAo::AO_POS_NEG);
-        let ao_nn = quad.ao.corner_ao(FaceAo::AO_NEG_NEG);
-        let ao_np = quad.ao.corner_ao(FaceAo::AO_NEG_POS);
-        let flipped = ao_pp + ao_nn > ao_pn + ao_np;
+    let mut vert = |offset: Vector3<_>| {
+        let pos = (16 * pos) + offset;
+        ctx.terrain_mesh
+            .vertices
+            .push(TerrainVertex::pack(pos.into(), Side::Right, tex_id, 3));
+    };
 
-        let clockwise = match side {
-            Side::Top => false,
-            Side::Bottom => true,
-            Side::Front => true,
-            Side::Back => false,
-            Side::Right => false,
-            Side::Left => true,
-        };
+    // we dont just use 1 here because of some weird wrapping behavior in the
+    // terrain shader. we end up getting artifacts at the top of crosses if we do.
+    let l = 1;
+    let h = 15;
 
-        let indices = match (flipped, clockwise) {
-            (true, true) => FLIPPED_QUAD_CW,
-            (true, false) => FLIPPED_QUAD_CCW,
-            (false, true) => NORMAL_QUAD_CW,
-            (false, false) => NORMAL_QUAD_CCW,
-        };
+    vert(na::vector![l, 0, l]);
+    vert(na::vector![l, h, l]);
+    vert(na::vector![h, h, h]);
+    vert(na::vector![h, 0, h]);
 
-        let idx_start = self.terrain_mesh.vertices.len() as u32;
-        self.terrain_mesh
-            .indices
-            .extend(indices.iter().copied().map(|idx| idx_start + idx));
+    vert(na::vector![l, 0, h]);
+    vert(na::vector![l, h, h]);
+    vert(na::vector![h, h, l]);
+    vert(na::vector![h, 0, l]);
+}
 
-        let face = self.registry.block_texture(quad.id, side);
-        if face.is_none() {
-            log::error!("???: id={:?}, side={:?}", quad.id, side);
+fn mesh_full_cube(ctx: &mut MeshConstructor, quad: VoxelQuad, side: Side, pos: Point3<ChunkAxis>) {
+    let ao_pp = quad.ao.corner_ao(FaceAo::AO_POS_POS);
+    let ao_pn = quad.ao.corner_ao(FaceAo::AO_POS_NEG);
+    let ao_nn = quad.ao.corner_ao(FaceAo::AO_NEG_NEG);
+    let ao_np = quad.ao.corner_ao(FaceAo::AO_NEG_POS);
+    let flipped = ao_pp + ao_nn > ao_pn + ao_np;
+
+    let clockwise = match side {
+        Side::Top => false,
+        Side::Bottom => true,
+        Side::Front => true,
+        Side::Back => false,
+        Side::Right => false,
+        Side::Left => true,
+    };
+
+    let indices = match (flipped, clockwise) {
+        (true, true) => FLIPPED_QUAD_CW,
+        (true, false) => FLIPPED_QUAD_CCW,
+        (false, true) => NORMAL_QUAD_CW,
+        (false, false) => NORMAL_QUAD_CCW,
+    };
+
+    let idx_start = ctx.terrain_mesh.vertices.len() as u32;
+    ctx.terrain_mesh
+        .indices
+        .extend(indices.iter().copied().map(|idx| idx_start + idx));
+
+    let faces = ctx.registry.block_textures(quad.id).unwrap();
+    let faces = faces.choose(&mut ctx.rng).unwrap();
+    let tex_id = faces[side] as u16;
+
+    let mut vert = |offset: Vector3<_>, ao| {
+        let pos: Point3<u16> = (16 * pos) + (16 * offset);
+        ctx.terrain_mesh
+            .vertices
+            .push(TerrainVertex::pack(pos.into(), side, tex_id, ao));
+    };
+
+    let h = if side.facing_positive() { 1 } else { 0 };
+    let qw = quad.width;
+    let qh = quad.height;
+
+    match side {
+        Side::Left | Side::Right => {
+            vert(na::vector!(h, qw, 0), ao_pn);
+            vert(na::vector!(h, qw, qh), ao_pp);
+            vert(na::vector!(h, 0, 0), ao_nn);
+            vert(na::vector!(h, 0, qh), ao_np);
         }
-        let face = face.unwrap();
-        let tex_id = *face.texture.select() as u16;
 
-        let mut vert = |offset: Vector3<_>, ao| {
-            let pos = pos + offset;
-            self.terrain_mesh
-                .vertices
-                .push(TerrainVertex::pack(pos.into(), side, tex_id, ao));
-        };
+        Side::Top | Side::Bottom => {
+            vert(na::vector!(0, h, qh), ao_pn);
+            vert(na::vector!(qw, h, qh), ao_pp);
+            vert(na::vector!(0, h, 0), ao_nn);
+            vert(na::vector!(qw, h, 0), ao_np);
+        }
 
-        let h = if side.facing_positive() { 1 } else { 0 };
-        let qw = quad.width;
-        let qh = quad.height;
-
-        match side {
-            Side::Left | Side::Right => {
-                vert(na::vector!(h, qw, 0), ao_pn);
-                vert(na::vector!(h, qw, qh), ao_pp);
-                vert(na::vector!(h, 0, 0), ao_nn);
-                vert(na::vector!(h, 0, qh), ao_np);
-            }
-
-            Side::Top | Side::Bottom => {
-                vert(na::vector!(0, h, qh), ao_pn);
-                vert(na::vector!(qw, h, qh), ao_pp);
-                vert(na::vector!(0, h, 0), ao_nn);
-                vert(na::vector!(qw, h, 0), ao_np);
-            }
-
-            Side::Front | Side::Back => {
-                vert(na::vector!(0, qh, h), ao_np);
-                vert(na::vector!(qw, qh, h), ao_pp);
-                vert(na::vector!(0, 0, h), ao_nn);
-                vert(na::vector!(qw, 0, h), ao_pn);
-            }
-        };
+        Side::Front | Side::Back => {
+            vert(na::vector!(0, qh, h), ao_np);
+            vert(na::vector!(qw, qh, h), ao_pp);
+            vert(na::vector!(0, 0, h), ao_nn);
+            vert(na::vector!(qw, 0, h), ao_pn);
+        }
     }
 }
 

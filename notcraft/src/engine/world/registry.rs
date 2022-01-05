@@ -1,10 +1,10 @@
-use crate::engine::Side;
-use rand::prelude::*;
-use std::{collections::HashMap, error::Error, path::Path, sync::Arc};
+use crate::engine::{prelude::*, Side};
+use std::{collections::HashMap, fs::File, path::Path, sync::Arc};
 
 pub const AIR: BlockId = BlockId(0);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct Faces<T> {
     pub top: T,
     pub bottom: T,
@@ -30,234 +30,137 @@ impl<T> Faces<T> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-#[serde(untagged)]
-pub enum FaceTexture<T> {
-    Always(T),
-    Weighted(Vec<(f32, T)>),
-}
+impl<T> std::ops::Index<Side> for Faces<T> {
+    type Output = T;
 
-fn weighted_select<T>(items: &Vec<(f32, T)>) -> &T {
-    assert!(items.len() > 0);
-
-    let sum: f32 = items.iter().map(|(weight, _)| weight).sum();
-    let mut num = SmallRng::from_entropy().gen_range(1.0, sum);
-
-    for item in items {
-        num -= item.0;
-        if num <= 0.0 {
-            return &item.1;
-        }
-    }
-
-    unreachable!()
-}
-
-impl<T> FaceTexture<T> {
-    fn map<U, F>(self, mut func: F) -> FaceTexture<U>
-    where
-        F: FnMut(T) -> U,
-    {
-        match self {
-            FaceTexture::Always(val) => FaceTexture::Always(func(val)),
-            FaceTexture::Weighted(vec) => FaceTexture::Weighted(
-                vec.into_iter()
-                    .map(|(weight, item)| (weight, func(item)))
-                    .collect(),
-            ),
-        }
-    }
-
-    pub fn select(&self) -> &T {
-        match self {
-            FaceTexture::Always(item) => item,
-            FaceTexture::Weighted(vec) => weighted_select(vec),
+    fn index(&self, index: Side) -> &Self::Output {
+        match index {
+            Side::Top => &self.top,
+            Side::Bottom => &self.bottom,
+            Side::Right => &self.right,
+            Side::Left => &self.left,
+            Side::Front => &self.front,
+            Side::Back => &self.back,
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct BlockFace<T> {
-    pub random_orientation: bool,
-    pub texture: FaceTexture<T>,
+#[derive(Clone, Debug, PartialEq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[serde(default)]
+pub struct BlockTextures {
+    default: Option<String>,
+    #[serde(flatten)]
+    faces: Faces<Option<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
-pub enum BlockTextures {
-    /// The textures for all the faces are all the same
-    #[serde(rename = "same")]
-    AllSame(BlockFace<String>),
-
-    /// The textures for the sides are all the same, but the top and the bottom
-    /// are different, like a grass block
-    #[serde(rename = "top_bottom")]
-    TopBottom {
-        top: BlockFace<String>,
-        bottom: BlockFace<String>,
-        side: BlockFace<String>,
-    },
-
-    /// The texture for each face is different
-    #[serde(rename = "different")]
-    AllDifferent {
-        top: BlockFace<String>,
-        bottom: BlockFace<String>,
-        left: BlockFace<String>,
-        right: BlockFace<String>,
-        front: BlockFace<String>,
-        back: BlockFace<String>,
-    },
-}
-
-impl BlockTextures {
-    fn expand(self) -> Faces<BlockFace<String>> {
-        match self {
-            BlockTextures::AllSame(val) => Faces {
-                top: val.clone(),
-                bottom: val.clone(),
-                left: val.clone(),
-                right: val.clone(),
-                front: val.clone(),
-                back: val,
-            },
-            BlockTextures::TopBottom { top, bottom, side } => Faces {
-                top,
-                bottom,
-                left: side.clone(),
-                right: side.clone(),
-                front: side.clone(),
-                back: side,
-            },
-            BlockTextures::AllDifferent {
-                top,
-                bottom,
-                left,
-                right,
-                front,
-                back,
-            } => Faces {
-                top,
-                bottom,
-                left,
-                right,
-                front,
-                back,
-            },
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct BlockRegistryEntry {
-    name: String,
+#[serde(rename_all = "kebab-case")]
+pub struct BlockProperties {
     collidable: bool,
-    opaque: bool,
+    #[serde(default)]
     liquid: bool,
-    textures: Option<BlockTextures>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BlockMeshType {
+    None,
+    FullCube,
+    Cross,
+}
+
+impl Default for BlockMeshType {
+    fn default() -> Self {
+        Self::FullCube
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct BlockDescription {
+    name: String,
+    properties: BlockProperties,
+    #[serde(default)]
+    mesh_type: BlockMeshType,
+    #[serde(default)]
+    textures: Option<Vec<BlockTextures>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockRegistryEntry {
+    properties: BlockProperties,
+    mesh_type: BlockMeshType,
+    textures: Option<Vec<Faces<usize>>>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct BlockId(pub(crate) usize);
 
-#[derive(Clone, Debug, PartialEq, Default)]
-pub struct BlockRegistryBuilder {
-    // per-block
-    names: Vec<String>,
-    opaque: Vec<bool>,
-    collidable: Vec<bool>,
-    liquid: Vec<bool>,
-    texture_indices: Vec<Option<Faces<BlockFace<usize>>>>,
+fn register_texture(reg: &mut BlockRegistry, path: String) -> usize {
+    if let Some(&idx) = reg.texture_indices.get(&path) {
+        return idx;
+    }
 
-    // other
-    textures: Vec<String>,
+    let id = reg.texture_paths.len();
+    reg.texture_indices.insert(path.clone(), id);
+    reg.texture_paths.push(path);
+
+    id
 }
 
-impl BlockRegistryBuilder {
-    pub fn register(&mut self, entry: BlockRegistryEntry) {
-        self.names.push(entry.name);
-        self.opaque.push(entry.opaque);
-        self.collidable.push(entry.collidable);
-        self.liquid.push(entry.liquid);
-
-        if let Some(textures) = entry.textures {
-            // expand the face textures into a `Faces`, where all sides are reified
-            // into fields for each face, try to add the face items into the
-            // textures array
-            let faces_ref = textures.expand().map(|face| {
-                let texture = face.texture.map(|name| {
-                    // if the texture was already added to the list, return its index. We pass the
-                    // list of names to the terrain renderer later so it can load the files
-                    // associated with the names. We don't want to load the same thing twice and
-                    // then store the extraneous texture in the texture array.
-                    // TODO: greater than linear time :(
-                    if let Some(idx) = self.get_texture_index(&name) {
-                        idx
-                    } else {
-                        // if the item was not found, push it onto the vec and return its index,
-                        // which will the the index of the last item on the list
-                        self.textures.push(name);
-                        self.textures.len() - 1
-                    }
-                });
-                BlockFace {
-                    texture,
-                    random_orientation: face.random_orientation,
-                }
-            });
-
-            self.texture_indices.push(Some(faces_ref));
-        } else {
-            self.texture_indices.push(None);
+fn make_entry(reg: &mut BlockRegistry, desc: BlockDescription) -> Result<BlockRegistryEntry> {
+    let textures = match desc.textures {
+        Some(choices) => {
+            let mut res = Vec::with_capacity(choices.len());
+            for choice in choices {
+                let default = choice
+                    .default
+                    .map(|path| register_texture(reg, path))
+                    .unwrap_or_else(|| reg.texture_indices["unknown"]);
+                res.push(choice.faces.map(|path| {
+                    path.map(|path| register_texture(reg, path))
+                        .unwrap_or(default)
+                }));
+            }
+            Some(res)
         }
-    }
+        None => None,
+    };
 
-    fn get_texture_index(&self, name: &str) -> Option<usize> {
-        self.textures.iter().position(|item| item == name)
-    }
-
-    pub fn build(self) -> BlockRegistry {
-        let mut registry = BlockRegistry::default();
-
-        registry.name_map = self
-            .names
-            .into_iter()
-            .enumerate()
-            .map(|(a, b)| (b, BlockId(a)))
-            .collect();
-
-        registry.opaque = self.opaque;
-        registry.collidable = self.collidable;
-        registry.texture_indices = self.texture_indices;
-        registry.liquid = self.liquid;
-        registry.texture_paths = self.textures;
-
-        registry
-    }
+    Ok(BlockRegistryEntry {
+        properties: desc.properties,
+        mesh_type: desc.mesh_type,
+        textures,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct BlockRegistry {
     name_map: HashMap<String, BlockId>,
-    opaque: Vec<bool>,
-    collidable: Vec<bool>,
-    liquid: Vec<bool>,
-    texture_indices: Vec<Option<Faces<BlockFace<usize>>>>,
+    entries: Vec<BlockRegistryEntry>,
+
     texture_paths: Vec<String>,
+    texture_indices: HashMap<String, usize>,
+}
+
+pub fn load_registry<P: AsRef<Path>>(path: P) -> Result<Arc<BlockRegistry>> {
+    let blocks: Vec<BlockDescription> = serde_json::from_reader(File::open(path)?)?;
+
+    let mut registry = BlockRegistry::default();
+    register_texture(&mut registry, String::from("unknown.png"));
+
+    for block in blocks {
+        let id = registry.entries.len();
+        registry.name_map.insert(block.name.clone(), BlockId(id));
+        let entry = make_entry(&mut registry, block)?;
+        registry.entries.push(entry);
+    }
+
+    Ok(Arc::new(registry))
 }
 
 impl BlockRegistry {
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Arc<Self>, Box<dyn Error>> {
-        let entries: Vec<BlockRegistryEntry> =
-            serde_json::from_reader(::std::fs::File::open(path)?)?;
-        let mut builder = BlockRegistryBuilder::default();
-
-        for entry in entries {
-            builder.register(entry);
-        }
-
-        Ok(Arc::new(builder.build()))
-    }
-
     pub fn get_id(&self, name: &str) -> BlockId {
         self.name_map[name]
     }
@@ -267,70 +170,22 @@ impl BlockRegistry {
     }
 
     #[inline(always)]
-    pub fn opaque(&self, id: BlockId) -> bool {
-        self.opaque[id.0]
-    }
-
-    #[inline(always)]
     pub fn collidable(&self, id: BlockId) -> bool {
-        self.collidable[id.0]
+        self.entries[id.0].properties.collidable
     }
 
     #[inline(always)]
     pub fn liquid(&self, id: BlockId) -> bool {
-        self.liquid[id.0]
+        self.entries[id.0].properties.liquid
     }
 
     #[inline(always)]
-    pub fn block_textures(&self, id: BlockId) -> &Option<Faces<BlockFace<usize>>> {
-        &self.texture_indices[id.0]
-    }
-
-    pub fn block_texture(&self, id: BlockId, side: Side) -> Option<&BlockFace<usize>> {
-        self.texture_indices[id.0].as_ref().map(|faces| match side {
-            Side::Top => &faces.top,
-            Side::Right => &faces.right,
-            Side::Front => &faces.front,
-            Side::Left => &faces.left,
-            Side::Bottom => &faces.bottom,
-            Side::Back => &faces.back,
-        })
+    pub fn mesh_type(&self, id: BlockId) -> BlockMeshType {
+        self.entries[id.0].mesh_type
     }
 
     #[inline(always)]
-    pub fn get_ref(&self, id: BlockId) -> RegistryRef {
-        RegistryRef { registry: self, id }
-    }
-}
-
-pub struct RegistryRef<'r> {
-    registry: &'r BlockRegistry,
-    id: BlockId,
-}
-
-impl<'r> RegistryRef<'r> {
-    #[inline(always)]
-    pub fn opaque(&self) -> bool {
-        self.registry.opaque(self.id)
-    }
-
-    #[inline(always)]
-    pub fn collidable(&self) -> bool {
-        self.registry.collidable(self.id)
-    }
-
-    #[inline(always)]
-    pub fn liquid(&self) -> bool {
-        self.registry.liquid(self.id)
-    }
-
-    #[inline(always)]
-    pub fn block_textures(&self) -> &Option<Faces<BlockFace<usize>>> {
-        self.registry.block_textures(self.id)
-    }
-
-    #[inline(always)]
-    pub fn block_texture(&self, side: Side) -> Option<&BlockFace<usize>> {
-        self.registry.block_texture(self.id, side)
+    pub fn block_textures(&self, id: BlockId) -> Option<&Vec<Faces<usize>>> {
+        self.entries[id.0].textures.as_ref()
     }
 }

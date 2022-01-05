@@ -38,7 +38,7 @@ void main()
     uint bz = (pos_ao >> 2) & uint(1023);
     uint by = (pos_ao >> 12) & uint(1023);
     uint bx = (pos_ao >> 22) & uint(1023);
-    vec3 pos = vec3(float(bx), float(by), float(bz));
+    vec3 pos = vec3(float(bx) / 16.0, float(by) / 16.0, float(bz) / 16.0);
 
     uint bid = side_id & uint(65535);
     int id = int(bid);
@@ -88,7 +88,11 @@ out vec3 b_color;
 
 void main()
 {
-    vec3 tex_pos = vec3(fract(v_texture_uv), v_id);
-    vec3 albedo = v_color_filter * texture(albedo_maps, tex_pos).rgb;
+    vec3 tex_pos = vec3(v_texture_uv, v_id);
+    vec4 tex = texture(albedo_maps, tex_pos);
+    vec3 albedo = v_color_filter * tex.rgb;
+    if (tex.a < 0.5) {
+        discard;
+    }
     b_color = albedo;
 }

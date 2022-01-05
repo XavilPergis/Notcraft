@@ -5,6 +5,7 @@ use super::{
 };
 use crate::engine::world::chunk::{CHUNK_LENGTH, CHUNK_VOLUME};
 use noise::{Fbm, NoiseFn, Perlin};
+use rand::{rngs::SmallRng, FromEntropy, Rng};
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -154,6 +155,9 @@ pub struct ChunkGenerator {
     stone_id: BlockId,
     dirt_id: BlockId,
     grass_id: BlockId,
+    water_id: BlockId,
+    sand_id: BlockId,
+    detail_grass_id: BlockId,
 }
 
 impl ChunkGenerator {
@@ -162,16 +166,32 @@ impl ChunkGenerator {
             stone_id: registry.get_id("stone"),
             dirt_id: registry.get_id("dirt"),
             grass_id: registry.get_id("grass"),
+            water_id: registry.get_id("water"),
+            sand_id: registry.get_id("sand"),
+            detail_grass_id: registry.get_id("detail_grass"),
         }
     }
 
-    fn block_from_surface_dist(&self, distance: f32) -> BlockId {
+    fn pick_block(&self, rng: &mut SmallRng, y: f32, surface: f32) -> BlockId {
+        let distance = y - surface;
         if distance < -4.0 {
             self.stone_id
         } else if distance < -1.0 {
             self.dirt_id
         } else if distance < 0.0 {
-            self.grass_id
+            if y < CHUNK_LENGTH as f32 + 3.0 {
+                self.sand_id
+            } else {
+                self.grass_id
+            }
+        } else if y < CHUNK_LENGTH as f32 {
+            self.water_id
+        } else if distance < 1.0 {
+            if rng.gen_bool(1.0 / 3.0) {
+                self.detail_grass_id
+            } else {
+                AIR
+            }
         } else {
             AIR
         }
@@ -180,8 +200,14 @@ impl ChunkGenerator {
     pub fn make_chunk(&self, pos: ChunkPos, heights: SurfaceHeightmap) -> ChunkData {
         let base_y = pos.origin().y as f32;
 
+        let mut rng = SmallRng::from_entropy();
+
         if base_y > heights.max {
-            return ChunkData::Homogeneous(AIR);
+            if pos.y < 1 {
+                return ChunkData::Homogeneous(self.water_id);
+            } else {
+                return ChunkData::Homogeneous(AIR);
+            }
         } else if (base_y + CHUNK_LENGTH as f32) < heights.min {
             return ChunkData::Homogeneous(self.stone_id);
         }
@@ -191,7 +217,7 @@ impl ChunkGenerator {
             let surface_height = heights.data[xz];
             chunk_data.extend(
                 (0..CHUNK_LENGTH)
-                    .map(|y| self.block_from_surface_dist(base_y + y as f32 - surface_height)),
+                    .map(|y| self.pick_block(&mut rng, base_y + y as f32, surface_height)),
             );
         }
 

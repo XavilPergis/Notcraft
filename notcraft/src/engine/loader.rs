@@ -81,7 +81,7 @@ impl<'env> BlockTextureLoadContext<'env> {
     }
 
     fn load(&mut self, path: &str) -> Result<Option<RgbaImage>, TextureLoadError> {
-        let texture_path = self.base_path.join(format!("{}.png", path));
+        let texture_path = self.base_path.join(path);
         log::trace!("loading block texture from {}", texture_path.display());
         let image = match image::open(&texture_path) {
             Ok(image) => image,
@@ -120,7 +120,7 @@ where
 
     let names = names.into_iter();
 
-    let unknown_texture = Arc::new(ctx.load("unknown")?.unwrap());
+    let unknown_texture = Arc::new(ctx.load("unknown.png")?.unwrap());
 
     let mut block_textures = HashMap::new();
     for entry in names {
@@ -505,7 +505,7 @@ where
     let source = state.source(id);
     let events = {
         let path = &state.id_to_path[&id];
-        log::debug!("parsing shader '{}'", path.display());
+        log::trace!("parsing shader '{}'", path.display());
         let mut parser = ShaderParser::new(path.as_ref(), &source);
         parse_shader(&mut parser)?
     };
@@ -589,7 +589,7 @@ fn parse_shader<'src>(parser: &mut ShaderParser<'src, '_>) -> Result<Vec<ShaderP
 }
 
 fn load_shader_internal(state: &mut ShaderLoaderState, id: ShaderId) -> Result<Rc<Program>> {
-    log::info!(
+    log::trace!(
         "loading shader {} ({})",
         id.0,
         state.id_to_path[&id].display()
@@ -602,7 +602,7 @@ fn load_shader_internal(state: &mut ShaderLoaderState, id: ShaderId) -> Result<R
     //     log::debug!("emitted for stage {:?}: \n\n{}\n\n", stage, src);
     // }
 
-    let program = Rc::new(Program::new(&*state.display, SourceCode {
+    let program = Program::new(&*state.display, SourceCode {
         vertex_shader: source.get(&ShaderStage::Vertex).ok_or_else(|| {
             anyhow!(
                 "shader '{}' is missing a vertex stage",
@@ -620,7 +620,19 @@ fn load_shader_internal(state: &mut ShaderLoaderState, id: ShaderId) -> Result<R
             .get(&ShaderStage::TesselationEvaluation)
             .map(|s| &**s),
         geometry_shader: source.get(&ShaderStage::Geometry).map(|s| &**s),
-    })?);
+    });
+
+    let program = Rc::new(match program {
+        Ok(program) => program,
+        Err(err) => {
+            if let Some(previous) = state.info_mut(id).program.as_ref() {
+                log::error!("shader reload failed: \n\n{}\n\n", err);
+                return Ok(Rc::clone(previous));
+            } else {
+                return Err(anyhow!(err));
+            }
+        }
+    });
 
     state.info_mut(id).program = Some(Rc::clone(&program));
     Ok(program)
@@ -648,9 +660,6 @@ fn notify_shader_modified(state: &mut ShaderLoaderState, path: &Path) -> Result<
     let id = state.id(path)?;
     let mut dirty = HashSet::new();
     collect_dirty_shaders(state, &mut dirty, id)?;
-    for &id in dirty.iter() {
-        state.info_mut(id).program = None;
-    }
     for &id in dirty.iter() {
         load_shader_internal(state, id)?;
     }

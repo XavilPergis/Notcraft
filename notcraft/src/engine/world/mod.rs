@@ -17,7 +17,7 @@ use std::{
 pub use self::chunk::ArrayChunk;
 use self::{
     chunk::{Chunk, ChunkPos, ChunkSnapshotCache},
-    registry::{BlockId, BlockRegistry},
+    registry::{load_registry, BlockId, BlockRegistry},
 };
 
 use super::{
@@ -342,7 +342,7 @@ impl WorldPlugin {
 
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        let registry = BlockRegistry::load_from_file(
+        let registry = load_registry(
             self.registry_path
                 .clone()
                 .unwrap_or_else(|| "resources/blocks.json".into()),

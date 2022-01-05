@@ -1,74 +1,93 @@
 [
     {
         "name": "air",
-        "collidable": false,
-        "opaque": false,
-        "liquid": false,
-        "textures": null
+        "mesh-type": "none",
+        "properties": {
+            "collidable": false,
+            "liquid": false
+        }
     },
     {
         "name": "stone",
-        "collidable": true,
-        "opaque": true,
-        "liquid": false,
-        "textures": {
-            "same": {
-                "random_orientation": false,
-                "texture": "stone"
+        "mesh-type": "full-cube",
+        "properties": {
+            "collidable": true,
+            "liquid": false
+        },
+        "textures": [
+            {
+                "default": "stone.png"
             }
-        }
+        ]
     },
     {
         "name": "dirt",
-        "collidable": true,
-        "opaque": true,
-        "liquid": false,
-        "textures": {
-            "same": {
-                "random_orientation": false,
-                "texture": "dirt"
+        "mesh-type": "full-cube",
+        "properties": {
+            "collidable": true,
+            "liquid": false
+        },
+        "textures": [
+            {
+                "default": "dirt.png"
             }
-        }
+        ]
     },
     {
         "name": "grass",
-        "collidable": true,
-        "opaque": true,
-        "liquid": false,
-        "textures": {
-            "top_bottom": {
-                "top": {
-                    "random_orientation": false,
-                    "texture": "grass"
-                },
-                "bottom": {
-                    "random_orientation": false,
-                    "texture": "dirt"
-                },
-                "side": {
-                    "random_orientation": false,
-                    "texture": "grass_side"
-                }
+        "mesh-type": "full-cube",
+        "properties": {
+            "collidable": true,
+            "liquid": false
+        },
+        "textures": [
+            {
+                "default": "grass_side.png",
+                "top": "grass.png",
+                "bottom": "dirt.png"
             }
-        }
+        ]
     },
     {
         "name": "sand",
-        "collidable": true,
-        "opaque": true,
-        "liquid": false,
-        "textures": {
-            "same": {
-                "random_orientation": false,
-                "texture": "sand"
+        "mesh-type": "full-cube",
+        "properties": {
+            "collidable": true,
+            "liquid": false
+        },
+        "textures": [
+            {
+                "default": "sand.png"
             }
-        }
+        ]
     },
     {
         "name": "water",
-        "collidable": false,
-        "opaque": false,
-        "liquid": false,
-        "textures": null
+        "mesh-type": "full-cube",
+        "properties": {
+            "collidable": false,
+            "liquid": false
+        },
+        "textures": [
+            {
+                "default": "water.png"
+            }
+        ]
+    },
+    {
+        "name": "detail_grass",
+        "mesh-type": "cross",
+        "properties": {
+            "collidable": false,
+            "liquid": false
+        },
+        "textures": [
+            {
+                "default": "detail_short_grass.png"
+            },
+            {
+                "default": "detail_medium_grass.png"
+            }
+        ]
     }
 ]
