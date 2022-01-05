@@ -5,7 +5,7 @@ use crate::engine::{
     world::{
         chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
         chunk_aabb,
-        registry::{BlockId, BlockMeshType, BlockRegistry},
+        registry::{BlockId, BlockMeshType, BlockRegistry, Faces},
         ChunkEvent, VoxelWorld,
     },
     Side,
@@ -282,6 +282,39 @@ fn next_mesh_chunk(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) -> Option<C
     }
 }
 
+fn homogenous_should_mesh(
+    world: &Arc<VoxelWorld>,
+    id: BlockId,
+    pos: ChunkPos,
+) -> Option<Faces<bool>> {
+    Some(Faces {
+        top: match world.chunk(pos.offset([0, 1, 0]))?.snapshot().data() {
+            &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
+            _ => true,
+        },
+        bottom: match world.chunk(pos.offset([0, -1, 0]))?.snapshot().data() {
+            &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
+            _ => true,
+        },
+        right: match world.chunk(pos.offset([1, 0, 0]))?.snapshot().data() {
+            &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
+            _ => true,
+        },
+        left: match world.chunk(pos.offset([-1, 0, 0]))?.snapshot().data() {
+            &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
+            _ => true,
+        },
+        front: match world.chunk(pos.offset([0, 0, 1]))?.snapshot().data() {
+            &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
+            _ => true,
+        },
+        back: match world.chunk(pos.offset([0, 0, -1]))?.snapshot().data() {
+            &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
+            _ => true,
+        },
+    })
+}
+
 fn queue_mesh_jobs(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) {
     let mut remaining_this_frame = 4;
 
@@ -292,15 +325,54 @@ fn queue_mesh_jobs(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) {
 
         let pos = chunk.pos();
         match chunk.data() {
-            ChunkData::Homogeneous(_id) => {
-                // FIXME: causes holes when a solid homogeneous chunk touches
-                // air
-                ctx.tracker.unconstrained.remove(&pos);
-                add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                    bounds: chunk_aabb(chunk.pos()),
-                    rgba: [1.0, 0.0, 1.0, 0.3],
-                    kind: DebugBoxKind::Dashed,
-                });
+            &ChunkData::Homogeneous(id) => {
+                match homogenous_should_mesh(world, id, pos).map(|faces| {
+                    faces.top
+                        || faces.bottom
+                        || faces.right
+                        || faces.left
+                        || faces.front
+                        || faces.back
+                }) {
+                    Some(true) => {
+                        let world = Arc::clone(world);
+                        let sender = ctx.mesh_tx.clone();
+
+                        // note that we explicittly dont move the locked chunk to the new thread,
+                        // because otherwise we would keep the chunk locked while no progress on
+                        // meshing the chunk would be made.
+                        ctx.mesher_pool.spawn(move || {
+                            if let Some(neighbors) = ChunkNeighbors::lock(&world, pos) {
+                                MeshCreationContext::new(pos, neighbors, &world).mesh(sender);
+                                add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                                    bounds: chunk_aabb(chunk.pos()),
+                                    rgba: [1.0, 1.0, 0.0, 1.0],
+                                    kind: DebugBoxKind::Dashed,
+                                });
+                            } else {
+                                sender.send(CompletedMesh::Failed { pos }).unwrap();
+                                add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                                    bounds: chunk_aabb(chunk.pos()),
+                                    rgba: [1.0, 0.0, 0.0, 1.0],
+                                    kind: DebugBoxKind::Dashed,
+                                });
+                            }
+                        });
+
+                        ctx.completed_meshes.insert(pos);
+                        ctx.tracker.unconstrained.remove(&pos);
+
+                        remaining_this_frame -= 1;
+                    }
+                    Some(false) | None => {
+                        ctx.tracker.unconstrained.remove(&pos);
+                        add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                            bounds: chunk_aabb(chunk.pos()),
+                            rgba: [1.0, 0.0, 1.0, 0.3],
+                            kind: DebugBoxKind::Dashed,
+                        });
+                    }
+                }
             }
 
             ChunkData::Array(_) => {
@@ -419,6 +491,23 @@ struct VoxelFace {
     visited: bool,
 }
 
+impl VoxelFace {
+    fn new(ao: FaceAo, id: BlockId) -> Self {
+        Self {
+            ao,
+            id,
+            visited: false,
+        }
+    }
+
+    fn visited() -> Self {
+        Self {
+            visited: true,
+            ..Default::default()
+        }
+    }
+}
+
 struct MeshCreationContext {
     registry: Arc<BlockRegistry>,
     chunks: ChunkNeighbors,
@@ -430,6 +519,27 @@ struct MeshCreationContext {
 // index into the flat voxel face slice using a 2D coordinate
 const fn idx(u: ChunkAxis, v: ChunkAxis) -> usize {
     CHUNK_LENGTH * u as usize + v as usize
+}
+
+fn should_add_face(registry: &BlockRegistry, current: BlockId, neighbor: BlockId) -> bool {
+    let cur_solid = matches!(registry.mesh_type(current), BlockMeshType::FullCube);
+    let other_solid = matches!(registry.mesh_type(neighbor), BlockMeshType::FullCube);
+
+    let cur_liquid = registry.liquid(current);
+    let other_liquid = registry.liquid(neighbor);
+
+    // note that cross-type blocks are not handled here; they're added in a
+    // completely separate pass that doesn't depend on this function at all.
+    if cur_liquid {
+        // liquids only need a face when that face touches a non-full-cube type block.
+        !other_solid && !other_liquid
+    } else if cur_solid {
+        // solids need a face when touching a non-full-cube type block *or* if they
+        // touch a liquid.
+        !other_solid || other_liquid
+    } else {
+        false
+    }
 }
 
 impl MeshCreationContext {
@@ -451,29 +561,21 @@ impl MeshCreationContext {
     }
 
     fn face_ao(&self, pos: Point3<ChunkAxis>, side: Side) -> FaceAo {
-        if self
-            .registry
-            .liquid(self.chunks.lookup(pos.cast::<ChunkAxisOffset>()))
-        {
-            return FaceAo::default();
-        }
-
         let pos = pos.cast::<ChunkAxisOffset>();
-        let is_opaque = |pos| {
-            matches!(
-                self.registry.mesh_type(self.chunks.lookup(pos)),
-                BlockMeshType::FullCube
-            )
+        let contributes_ao = |pos| {
+            let id = self.chunks.lookup(pos);
+            matches!(self.registry.mesh_type(id), BlockMeshType::FullCube)
+                && !self.registry.liquid(id)
         };
 
-        let neg_neg = is_opaque(pos + side.uvl_to_xyz(-1, -1, 1));
-        let neg_cen = is_opaque(pos + side.uvl_to_xyz(-1, 0, 1));
-        let neg_pos = is_opaque(pos + side.uvl_to_xyz(-1, 1, 1));
-        let pos_neg = is_opaque(pos + side.uvl_to_xyz(1, -1, 1));
-        let pos_cen = is_opaque(pos + side.uvl_to_xyz(1, 0, 1));
-        let pos_pos = is_opaque(pos + side.uvl_to_xyz(1, 1, 1));
-        let cen_neg = is_opaque(pos + side.uvl_to_xyz(0, -1, 1));
-        let cen_pos = is_opaque(pos + side.uvl_to_xyz(0, 1, 1));
+        let neg_neg = contributes_ao(pos + side.uvl_to_xyz(-1, -1, 1));
+        let neg_cen = contributes_ao(pos + side.uvl_to_xyz(-1, 0, 1));
+        let neg_pos = contributes_ao(pos + side.uvl_to_xyz(-1, 1, 1));
+        let pos_neg = contributes_ao(pos + side.uvl_to_xyz(1, -1, 1));
+        let pos_cen = contributes_ao(pos + side.uvl_to_xyz(1, 0, 1));
+        let pos_pos = contributes_ao(pos + side.uvl_to_xyz(1, 1, 1));
+        let cen_neg = contributes_ao(pos + side.uvl_to_xyz(0, -1, 1));
+        let cen_pos = contributes_ao(pos + side.uvl_to_xyz(0, 1, 1));
 
         let face_pos_pos = ao_value(cen_pos, pos_pos, pos_cen); // c+ ++ +c
         let face_pos_neg = ao_value(pos_cen, pos_neg, cen_neg); // +c +- c-
@@ -486,35 +588,6 @@ impl MeshCreationContext {
                 | face_neg_neg << FaceAo::AO_NEG_NEG
                 | face_neg_pos << FaceAo::AO_NEG_POS,
         )
-    }
-
-    fn is_not_occluded(&self, pos: Point3<ChunkAxis>, offset: Vector3<ChunkAxisOffset>) -> bool {
-        let pos = pos.cast::<ChunkAxisOffset>();
-        let offset = pos + offset.cast();
-
-        let cur_id = self.chunks.lookup(pos);
-        let neighbor_id = self.chunks.lookup(offset);
-
-        let cur_solid = matches!(self.registry.mesh_type(cur_id), BlockMeshType::FullCube);
-        let other_solid = matches!(
-            self.registry.mesh_type(neighbor_id),
-            BlockMeshType::FullCube
-        );
-
-        let cur_liquid = self.registry.liquid(cur_id);
-        let other_liquid = self.registry.liquid(neighbor_id);
-
-        if self.registry.liquid(cur_id) {
-            // if the current block is liquid, we need a face when the other block is
-            // non-solid or non-liquid
-            cur_liquid && !other_solid && !other_liquid
-        } else {
-            // if the current block is not liquid...
-            // if the current block is not opaque, then it would never need any faces
-            // if the current block is solid, and the other is either non-opaque or a
-            // liquid, then we need a face
-            cur_solid && (!other_solid || self.registry.liquid(neighbor_id))
-        }
     }
 
     /*
@@ -582,17 +655,17 @@ impl MeshCreationContext {
                     }
                 }
 
-                if is_liquid {
-                    self.mesh_constructor
-                        .add_liquid(quad, side, point_constructor(u, v));
-                } else {
-                    mesh_full_cube(
-                        &mut self.mesh_constructor,
-                        quad,
-                        side,
-                        point_constructor(u, v),
-                    );
-                }
+                // if is_liquid {
+                //     self.mesh_constructor
+                //         .add_liquid(quad, side, point_constructor(u, v));
+                // } else {
+                // }
+                mesh_full_cube(
+                    &mut self.mesh_constructor,
+                    quad,
+                    side,
+                    point_constructor(u, v),
+                );
             }
         }
     }
@@ -602,24 +675,18 @@ impl MeshCreationContext {
         side: Side,
         make_coordinate: impl Fn(ChunkAxis, ChunkAxis, ChunkAxis) -> Point3<ChunkAxis>,
     ) {
+        let normal = side.normal::<ChunkAxisOffset>();
         for layer in 0..(CHUNK_LENGTH as ChunkAxis) {
             for u in 0..(CHUNK_LENGTH as ChunkAxis) {
                 for v in 0..(CHUNK_LENGTH as ChunkAxis) {
                     let pos = make_coordinate(layer, u, v);
-                    self.slice[idx(u, v)] = if self.is_not_occluded(pos, side.normal()) {
-                        let id = self.chunks.lookup(pos.cast());
-                        VoxelFace {
-                            ao: self.face_ao(pos, side),
-                            id,
-                            visited: false,
-                        }
-                    } else {
-                        VoxelFace {
-                            ao: FaceAo::default(),
-                            id: BlockId::default(),
-                            visited: true,
-                        }
-                    };
+                    let cur_id = self.chunks.lookup(pos.cast());
+                    let neighbor_id = self.chunks.lookup(pos.cast() + normal);
+
+                    let face = should_add_face(&self.registry, cur_id, neighbor_id)
+                        .then(|| VoxelFace::new(self.face_ao(pos, side), cur_id))
+                        .unwrap_or(VoxelFace::visited());
+                    self.slice[idx(u, v)] = face;
                 }
             }
 
