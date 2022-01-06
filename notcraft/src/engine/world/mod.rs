@@ -17,7 +17,7 @@ use std::{
 pub use self::chunk::ArrayChunk;
 use self::{
     chunk::{Chunk, ChunkPos, ChunkSnapshotCache},
-    registry::{load_registry, BlockId, BlockRegistry},
+    registry::{load_registry, BlockId, BlockRegistry, CollisionType},
 };
 
 use super::{
@@ -510,9 +510,9 @@ pub fn trace_ray(
             None => return RaycastStep::Exit,
             Some(id) => id,
         };
-        match cache.world.registry.collidable(id) {
-            true => RaycastStep::Hit,
-            false => RaycastStep::Continue,
+        match cache.world.registry.collision_type(id) {
+            CollisionType::Solid => RaycastStep::Hit,
+            _ => RaycastStep::Continue,
         }
     })
 }

@@ -786,6 +786,12 @@ impl<'a> RenderParams<'a> {
     }
 }
 
+#[rustfmt::skip]
+fn spans_overlap(amin: f32, amax: f32, bmin: f32, bmax: f32) -> bool {
+    util::is_between(bmin, amin, amax) || util::is_between(amin, bmin, bmax) ||
+    util::is_between(bmax, amin, amax) || util::is_between(amax, bmin, bmax)
+}
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Aabb {
     pub min: Point3<f32>,
@@ -810,8 +816,9 @@ impl Aabb {
 
     #[rustfmt::skip]
     pub fn intersects(&self, other: &Aabb) -> bool {
-        (self.contains(&other.min) || self.contains(&other.max)) ||
-        (other.contains(&self.min) || other.contains(&self.max))
+        spans_overlap(self.min.x, self.max.x, other.min.x, other.max.x) &&
+        spans_overlap(self.min.y, self.max.y, other.min.y, other.max.y) &&
+        spans_overlap(self.min.z, self.max.z, other.min.z, other.max.z)
     }
 
     pub fn dimensions(&self) -> Vector3<f32> {

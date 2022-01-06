@@ -1,11 +1,15 @@
-use crate::engine::prelude::*;
+use crate::{engine::prelude::*, util::block_aabb};
 use nalgebra::{vector, Vector3};
 use std::{ops::RangeInclusive, sync::Arc};
 
 use super::{
     render::renderer::{add_debug_box, Aabb, DebugBox, DebugBoxKind},
     transform::Transform,
-    world::{chunk::ChunkSnapshotCache, registry::BlockRegistry, BlockPos, VoxelWorld},
+    world::{
+        chunk::ChunkSnapshotCache,
+        registry::{BlockRegistry, CollisionType},
+        BlockPos, VoxelWorld,
+    },
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
@@ -20,6 +24,7 @@ pub struct RigidBody {
 pub struct AabbCollider {
     pub aabb: Aabb,
     pub on_ground: bool,
+    pub in_liquid: bool,
 }
 
 impl AabbCollider {
@@ -27,6 +32,7 @@ impl AabbCollider {
         Self {
             aabb,
             on_ground: false,
+            in_liquid: false,
         }
     }
 }
@@ -49,6 +55,9 @@ struct CollisionContext<'a> {
     registry: &'a BlockRegistry,
     current: Aabb,
     previous: Aabb,
+
+    resolution: Vector3<f32>,
+    in_liquid: bool,
 }
 
 impl<'a> CollisionContext<'a> {
@@ -63,6 +72,9 @@ impl<'a> CollisionContext<'a> {
             registry,
             current,
             previous,
+
+            resolution: vector![0.0, 0.0, 0.0],
+            in_liquid: false,
         }
     }
 }
@@ -73,28 +85,43 @@ fn does_block_collide(ctx: &mut CollisionContext, block_pos: BlockPos) -> Option
         max: ctx.previous.max.map(f32::ceil),
     });
 
-    Some(!prev_intersects && ctx.registry.collidable(ctx.cache.block(block_pos)?))
+    match ctx.registry.collision_type(ctx.cache.block(block_pos)?) {
+        CollisionType::Solid => Some(!prev_intersects),
+        _ => Some(false),
+    }
 }
 
-fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>> {
+fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
     let delta = ctx.current.center() - ctx.previous.center();
-    let mut resolution = vector![0.0, 0.0, 0.0];
+
+    for x in make_collision_range(ctx.previous.min.x, ctx.previous.max.x) {
+        for y in make_collision_range(ctx.previous.min.y, ctx.previous.max.y) {
+            for z in make_collision_range(ctx.previous.min.z, ctx.previous.max.z) {
+                let block_pos = BlockPos { x, y, z };
+                ctx.in_liquid |= ctx
+                    .registry
+                    .collision_type(ctx.cache.block(block_pos)?)
+                    .is_liquid();
+            }
+        }
+    }
 
     // let proj_x = ctx.previous.translated(delta.x * Vector3::x());
+    // let proj_y = ctx.previous.translated(delta.y * Vector3::y());
+    // let proj_z = ctx.previous.translated(delta.z * Vector3::z());
+
     // add_debug_box(DebugBox {
     //     bounds: proj_x,
     //     rgba: [1.0, 0.0, 0.0, 0.6],
     //     kind: DebugBoxKind::Dashed,
     // });
 
-    // let proj_y = ctx.previous.translated(delta.y * Vector3::y());
     // add_debug_box(DebugBox {
     //     bounds: proj_y,
     //     rgba: [0.0, 1.0, 0.0, 0.6],
     //     kind: DebugBoxKind::Dashed,
     // });
 
-    // let proj_z = ctx.previous.translated(delta.z * Vector3::z());
     // add_debug_box(DebugBox {
     //     bounds: proj_z,
     //     rgba: [0.0, 0.0, 1.0, 0.6],
@@ -115,7 +142,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
                         rgba: [1.0, 0.2, 0.2, 0.6],
                         kind: DebugBoxKind::Solid,
                     });
-                    resolution.x = match delta.x < 0.0 {
+                    ctx.resolution.x = match delta.x < 0.0 {
                         true => x as f32 + 1.0 - ctx.current.min.x,
                         false => x as f32 - ctx.current.max.x,
                     };
@@ -138,7 +165,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
                         rgba: [0.2, 1.0, 0.2, 0.6],
                         kind: DebugBoxKind::Solid,
                     });
-                    resolution.y = match delta.y < 0.0 {
+                    ctx.resolution.y = match delta.y < 0.0 {
                         true => y as f32 + 1.0 - ctx.current.min.y,
                         false => y as f32 - ctx.current.max.y,
                     };
@@ -161,7 +188,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
                         rgba: [0.2, 0.2, 1.0, 0.6],
                         kind: DebugBoxKind::Solid,
                     });
-                    resolution.z = match delta.z < 0.0 {
+                    ctx.resolution.z = match delta.z < 0.0 {
                         true => z as f32 + 1.0 - ctx.current.min.z,
                         false => z as f32 - ctx.current.max.z,
                     };
@@ -187,7 +214,8 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
     let xz = dotx > doty || dotz > doty;
     let xy = dotx > dotz || doty > dotz;
 
-    if xz && delta.x != 0.0 && delta.z != 0.0 && resolution.x == 0.0 && resolution.z == 0.0 {
+    if xz && delta.x != 0.0 && delta.z != 0.0 && ctx.resolution.x == 0.0 && ctx.resolution.z == 0.0
+    {
         let x = match delta.x > 0.0 {
             true => make_collision_bound(ctx.current.max.x),
             false => ctx.current.min.x.floor() as i32,
@@ -200,12 +228,12 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
             let block_pos = BlockPos { x, y, z };
             if does_block_collide(ctx, block_pos)? {
                 if dotx > dotz {
-                    resolution.z = match delta.z < 0.0 {
+                    ctx.resolution.z = match delta.z < 0.0 {
                         true => z as f32 + 1.0 - ctx.current.min.z,
                         false => z as f32 - ctx.current.max.z,
                     };
                 } else {
-                    resolution.x = match delta.x < 0.0 {
+                    ctx.resolution.x = match delta.x < 0.0 {
                         true => x as f32 + 1.0 - ctx.current.min.x,
                         false => x as f32 - ctx.current.max.x,
                     };
@@ -214,7 +242,8 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
         }
     }
 
-    if yz && delta.y != 0.0 && delta.z != 0.0 && resolution.y == 0.0 && resolution.z == 0.0 {
+    if yz && delta.y != 0.0 && delta.z != 0.0 && ctx.resolution.y == 0.0 && ctx.resolution.z == 0.0
+    {
         let y = match delta.y > 0.0 {
             true => make_collision_bound(ctx.current.max.y),
             false => ctx.current.min.y.floor() as i32,
@@ -227,12 +256,12 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
             let block_pos = BlockPos { x, y, z };
             if does_block_collide(ctx, block_pos)? {
                 if doty > dotz {
-                    resolution.z = match delta.z < 0.0 {
+                    ctx.resolution.z = match delta.z < 0.0 {
                         true => z as f32 + 1.0 - ctx.current.min.z,
                         false => z as f32 - ctx.current.max.z,
                     };
                 } else {
-                    resolution.y = match delta.y < 0.0 {
+                    ctx.resolution.y = match delta.y < 0.0 {
                         true => y as f32 + 1.0 - ctx.current.min.y,
                         false => y as f32 - ctx.current.max.y,
                     };
@@ -241,7 +270,8 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
         }
     }
 
-    if xy && delta.x != 0.0 && delta.y != 0.0 && resolution.x == 0.0 && resolution.y == 0.0 {
+    if xy && delta.x != 0.0 && delta.y != 0.0 && ctx.resolution.x == 0.0 && ctx.resolution.y == 0.0
+    {
         let x = match delta.x > 0.0 {
             true => make_collision_bound(ctx.current.max.x),
             false => ctx.current.min.x.floor() as i32,
@@ -254,12 +284,12 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
             let block_pos = BlockPos { x, y, z };
             if does_block_collide(ctx, block_pos)? {
                 if dotx > doty {
-                    resolution.y = match delta.y < 0.0 {
+                    ctx.resolution.y = match delta.y < 0.0 {
                         true => y as f32 + 1.0 - ctx.current.min.y,
                         false => y as f32 - ctx.current.max.y,
                     };
                 } else {
-                    resolution.x = match delta.x < 0.0 {
+                    ctx.resolution.x = match delta.x < 0.0 {
                         true => x as f32 + 1.0 - ctx.current.min.x,
                         false => x as f32 - ctx.current.max.x,
                     };
@@ -268,7 +298,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>
         }
     }
 
-    Some(resolution)
+    Some(())
 }
 
 fn resolve_terrain_collisions_main(
@@ -277,29 +307,30 @@ fn resolve_terrain_collisions_main(
     rigidbody: &mut RigidBody,
     transform: &mut Transform,
 ) {
-    // revert movement to previous state if we didn't resolve the collision;
-    // probably because of an unloaded chunk.
-    if let Some(resolved) = resolve_terrain_collisions(ctx) {
-        if resolved.x != 0.0 {
-            rigidbody.velocity.x = 0.0;
-            rigidbody.acceleration.x = 0.0;
-        }
-        if resolved.y != 0.0 {
-            rigidbody.velocity.y = 0.0;
-            rigidbody.acceleration.y = 0.0;
-        }
-        if resolved.z != 0.0 {
-            rigidbody.velocity.z = 0.0;
-            rigidbody.acceleration.z = 0.0;
-        }
-
-        collider.on_ground = resolved.y > 0.0;
-
-        transform.translation.vector += resolved;
-    } else {
+    if resolve_terrain_collisions(ctx).is_none() {
         let reverse = ctx.previous.center() - ctx.current.center();
         transform.translation.vector += reverse;
     }
+
+    // revert movement to previous state if we didn't resolve the collision;
+    // probably because of an unloaded chunk.
+    if ctx.resolution.x != 0.0 {
+        rigidbody.velocity.x = 0.0;
+        rigidbody.acceleration.x = 0.0;
+    }
+    if ctx.resolution.y != 0.0 {
+        rigidbody.velocity.y = 0.0;
+        rigidbody.acceleration.y = 0.0;
+    }
+    if ctx.resolution.z != 0.0 {
+        rigidbody.velocity.z = 0.0;
+        rigidbody.acceleration.z = 0.0;
+    }
+
+    collider.on_ground = ctx.resolution.y > 0.0;
+    collider.in_liquid = ctx.in_liquid;
+
+    transform.translation.vector += ctx.resolution;
 }
 
 pub struct PreviousCollider {

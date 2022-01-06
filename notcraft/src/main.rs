@@ -41,6 +41,7 @@ use glium::{
     Display,
 };
 use nalgebra::{point, Point3, UnitQuaternion, Vector2, Vector3};
+use num_traits::Float;
 use std::{rc::Rc, sync::Arc};
 use structopt::StructOpt;
 
@@ -261,7 +262,7 @@ fn build_to_me_positive(
         let pos = replace_axis(from, axis, n);
         if cache
             .block(pos)
-            .map_or(true, |id| ctx.world.registry.collidable(id))
+            .map_or(true, |id| ctx.world.registry.collision_type(id).is_solid())
         {
             break;
         }
@@ -300,7 +301,7 @@ fn build_to_me_negative(
         let pos = replace_axis(from, axis, n);
         if cache
             .block(pos)
-            .map_or(true, |id| ctx.world.registry.collidable(id))
+            .map_or(true, |id| ctx.world.registry.collision_type(id).is_solid())
         {
             break;
         }
@@ -457,24 +458,32 @@ fn terrain_manipulation(
     });
 }
 
+fn player_look_controller(
+    input: Res<InputState>,
+    player_controller: ResMut<PlayerController>,
+    mut query: Query<&mut Transform>,
+) {
+    use std::f32::consts::PI;
+
+    let pitch_delta = input.cursor_delta().y.to_radians();
+    let yaw_delta = input.cursor_delta().x.to_radians();
+
+    if let Some(mut transform) = query.get_mut(player_controller.player).ok() {
+        transform.rotation.yaw -= yaw_delta;
+        transform.rotation.pitch -= pitch_delta;
+        transform.rotation.pitch = util::clamp(transform.rotation.pitch, -PI / 2.0, PI / 2.0);
+    }
+}
+
 fn player_controller(
     time: Res<Time>,
     input: Res<InputState>,
     player_controller: ResMut<PlayerController>,
     mut player_query: Query<(&mut Transform, &mut RigidBody, &AabbCollider)>,
 ) {
-    use std::f32::consts::PI;
-
-    let pitch_delta = input.cursor_delta().y * (PI / 180.0);
-    let yaw_delta = input.cursor_delta().x * (PI / 180.0);
-
     if let Some((mut transform, mut rigidbody, collider)) =
         player_query.get_mut(player_controller.player).ok()
     {
-        transform.rotation.yaw -= yaw_delta;
-        transform.rotation.pitch -= pitch_delta;
-        transform.rotation.pitch = util::clamp(transform.rotation.pitch, -PI / 2.0, PI / 2.0);
-
         let mut vert_acceleration = 9.0;
         let mut horiz_acceleration = 70.0;
 
@@ -504,7 +513,9 @@ fn player_controller(
                 transform_project_xz(&mut transform, nalgebra::vector![-horiz_acceleration, 0.0]);
         }
         if input.key(keys::UP).is_pressed() {
-            if collider.on_ground {
+            if collider.in_liquid {
+                rigidbody.acceleration.y += 60.0;
+            } else if collider.on_ground {
                 rigidbody.velocity.y = vert_acceleration;
             }
         }
@@ -513,8 +524,13 @@ fn player_controller(
         // such rigidbody.velocity.x *= 0.96;
         // rigidbody.velocity.z *= 0.96;
 
-        rigidbody.velocity.x *= 0.9 * f32::max(0.0, 1.0 - time.delta_seconds());
-        rigidbody.velocity.z *= 0.9 * f32::max(0.0, 1.0 - time.delta_seconds());
+        let horiz_drag = 0.1;
+        rigidbody.velocity.x *= util::lerp(1.0 - horiz_drag, 0.0, time.delta_seconds());
+        rigidbody.velocity.z *= util::lerp(1.0 - horiz_drag, 0.0, time.delta_seconds());
+
+        if collider.in_liquid {
+            rigidbody.velocity.y *= util::lerp(0.96, 0.0, time.delta_seconds());
+        }
 
         if input
             .key(VirtualKeyCode::C)
@@ -660,6 +676,11 @@ fn main() {
         .add_plugin(CollisionPlugin::default())
         .add_startup_system(setup_player.system())
         // .add_system(intermittent_music.system())
+        .add_system(
+            player_look_controller
+                .system()
+                .label(PlayerControllerUpdate),
+        )
         .add_system(player_controller.system().label(PlayerControllerUpdate))
         .add_system(
             camera_controller

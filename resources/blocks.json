@@ -35,7 +35,7 @@
             "name": "air",
             "mesh-type": "none",
             "properties": {
-                "collidable": false,
+                "collision-type": "none",
                 "liquid": false
             }
         },
@@ -43,7 +43,7 @@
             "name": "stone",
             "mesh-type": "full-cube",
             "properties": {
-                "collidable": true,
+                "collision-type": "solid",
                 "liquid": false
             },
             "texture-variants": [
@@ -56,7 +56,7 @@
             "name": "dirt",
             "mesh-type": "full-cube",
             "properties": {
-                "collidable": true,
+                "collision-type": "solid",
                 "liquid": false
             },
             "texture-variants": [
@@ -69,7 +69,7 @@
             "name": "grass",
             "mesh-type": "full-cube",
             "properties": {
-                "collidable": true,
+                "collision-type": "solid",
                 "liquid": false
             },
             "texture-variants": [
@@ -84,7 +84,7 @@
             "name": "sand",
             "mesh-type": "full-cube",
             "properties": {
-                "collidable": true,
+                "collision-type": "solid",
                 "liquid": false
             },
             "texture-variants": [
@@ -97,7 +97,7 @@
             "name": "water",
             "mesh-type": "full-cube",
             "properties": {
-                "collidable": false,
+                "collision-type": "liquid",
                 "liquid": true
             },
             "texture-variants": [
@@ -110,7 +110,7 @@
             "name": "detail_grass",
             "mesh-type": "cross",
             "properties": {
-                "collidable": false,
+                "collision-type": "none",
                 "liquid": false
             },
             "texture-variants": [

@@ -28,10 +28,34 @@ pub struct BlockTextureReference {
     faces: Faces<Option<String>>,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CollisionType {
+    None,
+    Solid,
+    Liquid,
+}
+
+impl CollisionType {
+    /// Returns `true` if the collision type is [`Solid`].
+    ///
+    /// [`Solid`]: CollisionType::Solid
+    pub fn is_solid(&self) -> bool {
+        matches!(self, Self::Solid)
+    }
+
+    /// Returns `true` if the collision type is [`Liquid`].
+    ///
+    /// [`Liquid`]: CollisionType::Liquid
+    pub fn is_liquid(&self) -> bool {
+        matches!(self, Self::Liquid)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct BlockProperties {
-    collidable: bool,
+    collision_type: CollisionType,
     #[serde(default)]
     liquid: bool,
 }
@@ -184,8 +208,8 @@ impl BlockRegistry {
     }
 
     #[inline(always)]
-    pub fn collidable(&self, id: BlockId) -> bool {
-        self.entries[id.0].properties.collidable
+    pub fn collision_type(&self, id: BlockId) -> CollisionType {
+        self.entries[id.0].properties.collision_type
     }
 
     #[inline(always)]
