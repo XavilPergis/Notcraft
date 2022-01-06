@@ -10,7 +10,7 @@ out vec2 v_texcoord;
 void main() {
     vec2 pos = uv;
     pos.x /= (screen_width / screen_height);
-    pos /= screen_height / 24.0;
+    pos /= screen_height / 16.0;
 
     v_texcoord = 0.5 * uv + 0.5;
     gl_Position = vec4(pos, 0.0, 1.0);
