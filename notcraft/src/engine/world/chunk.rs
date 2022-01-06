@@ -97,6 +97,7 @@ pub struct ChunkUpdate {
 pub struct Chunk {
     pos: ChunkPos,
     inner: ArcSwap<ChunkInner>,
+    was_ever_modified: AtomicBool,
     dirty: AtomicBool,
     dirty_sender: Sender<ChunkPos>,
     write_queue_tx: Sender<ChunkUpdate>,
@@ -111,6 +112,7 @@ impl Chunk {
         Self {
             pos,
             inner,
+            was_ever_modified: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
             dirty_sender: dirty_sender.clone(),
             write_queue_tx,
@@ -129,9 +131,13 @@ impl Chunk {
     pub fn queue_write(&self, index: ChunkIndex, id: BlockId) {
         self.write_queue_tx.send(ChunkUpdate { index, id }).unwrap();
 
-        if !self.dirty.swap(true, Ordering::SeqCst) {
+        if !self.dirty.swap(true, Ordering::Relaxed) {
             self.dirty_sender.send(self.pos).unwrap();
         }
+    }
+
+    pub(crate) fn was_ever_modified(&self) -> bool {
+        self.was_ever_modified.load(Ordering::Relaxed)
     }
 }
 
@@ -231,9 +237,11 @@ pub(crate) fn flush_chunk_writes(chunk: &Chunk, rebuild: &mut HashSet<ChunkPos>)
     // is okay. it just means that if we get updates before the queue is drained and
     // none after it is, then this chunk will be queued to be rechecked when there
     // are no pending updates.
-    if !chunk.dirty.swap(false, Ordering::SeqCst) || chunk.write_queue_rx.is_empty() {
+    if !chunk.dirty.swap(false, Ordering::Relaxed) || chunk.write_queue_rx.is_empty() {
         return;
     }
+
+    chunk.was_ever_modified.store(true, Ordering::Relaxed);
 
     let old_inner = chunk.inner.load();
     if old_inner.lock.try_lock_exclusive() {
@@ -416,5 +424,52 @@ impl TryFrom<Box<[BlockId]>> for ArrayChunk {
         }
 
         Ok(ArrayChunk { data })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct CompactedChunk {
+    runs: Vec<(usize, BlockId)>,
+}
+
+impl CompactedChunk {
+    pub fn compact(data: &ChunkData) -> Self {
+        match data {
+            &ChunkData::Homogeneous(id) => Self {
+                runs: vec![(1, id)],
+            },
+            ChunkData::Array(ArrayChunk { data }) => {
+                let mut current_run = 1;
+                let mut current_id = data[0];
+
+                let mut runs = vec![];
+                for id in data.iter().skip(1).copied() {
+                    if current_id != id {
+                        runs.push((current_run, current_id));
+                        current_run = 1;
+                        current_id = id;
+                    } else {
+                        current_run += 1;
+                    }
+                }
+                runs.push((current_run, current_id));
+
+                Self { runs }
+            }
+        }
+    }
+
+    pub fn decompact(&self) -> ChunkData {
+        match self.runs.len() {
+            1 => ChunkData::Homogeneous(self.runs[0].1),
+            _ => ChunkData::Array({
+                let mut res = Vec::with_capacity(CHUNK_VOLUME);
+                for &(run_len, id) in self.runs.iter() {
+                    res.extend(std::iter::repeat(id).take(run_len));
+                }
+                assert!(res.len() == CHUNK_VOLUME);
+                ArrayChunk::try_from(res.into_boxed_slice()).unwrap()
+            }),
+        }
     }
 }

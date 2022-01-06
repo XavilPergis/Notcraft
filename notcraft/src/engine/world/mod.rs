@@ -16,7 +16,7 @@ use std::{
 
 pub use self::chunk::ArrayChunk;
 use self::{
-    chunk::{Chunk, ChunkPos, ChunkSnapshotCache},
+    chunk::{Chunk, ChunkPos, ChunkSnapshotCache, CompactedChunk},
     registry::{load_registry, BlockId, BlockRegistry, CollisionType},
 };
 
@@ -197,6 +197,7 @@ pub struct VoxelWorld {
     chunk_event_rx: Receiver<ChunkEvent>,
 
     chunks: Arc<flurry::HashMap<ChunkPos, Arc<Chunk>>>,
+    modified_chunks: Arc<flurry::HashMap<ChunkPos, CompactedChunk>>,
     dirty_chunks_rx: Receiver<ChunkPos>,
     dirty_chunks_tx: Sender<ChunkPos>,
 
@@ -226,6 +227,7 @@ impl VoxelWorld {
         Arc::new(VoxelWorld {
             registry,
             chunks: Default::default(),
+            modified_chunks: Default::default(),
             chunks_in_progress: Default::default(),
 
             world_gen_pool,
@@ -250,6 +252,29 @@ impl VoxelWorld {
             let is_cancelled = Arc::new(AtomicBool::new(false));
             self.chunks_in_progress
                 .insert(pos, Arc::clone(&is_cancelled), &guard);
+
+            if let Some(compacted) = self.modified_chunks.pin().get(&pos) {
+                let chunk_data = compacted.decompact();
+                let chunk = Arc::new(Chunk::new(&self.dirty_chunks_tx, pos, chunk_data));
+
+                // insert before and remove if cancelled to prevent a user from cancelling world
+                // chunk after we check whether the chunk was cancelled
+                self.chunks.insert(pos, Arc::clone(&chunk), &guard);
+
+                if !is_cancelled.load(Ordering::SeqCst) {
+                    self.chunk_event_tx.send(ChunkEvent::Added(chunk)).unwrap();
+                    self.chunks_in_progress.pin().remove(&pos);
+                    add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                        bounds: chunk_aabb(pos),
+                        rgba: [0.0, 0.0, 1.0, 1.0],
+                        kind: DebugBoxKind::Solid,
+                    });
+                } else {
+                    self.chunks.remove(&pos, &guard);
+                }
+
+                return;
+            }
 
             let world = Arc::clone(self);
             self.world_gen_pool.spawn(move || {
@@ -289,6 +314,13 @@ impl VoxelWorld {
                 rgba: [1.0, 0.0, 0.0, 1.0],
                 kind: DebugBoxKind::Solid,
             });
+
+            // save this chunk if it differs from what was originally generated
+            if chunk.was_ever_modified() {
+                let compacted = CompactedChunk::compact(chunk.snapshot().data());
+                self.modified_chunks.pin().insert(pos, compacted);
+            }
+
             self.chunk_event_tx
                 .send(ChunkEvent::Removed(Arc::clone(chunk)))
                 .unwrap();
