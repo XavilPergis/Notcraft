@@ -1,93 +1,116 @@
-[
-    {
-        "name": "air",
-        "mesh-type": "none",
-        "properties": {
-            "collidable": false,
-            "liquid": false
-        }
-    },
-    {
-        "name": "stone",
-        "mesh-type": "full-cube",
-        "properties": {
-            "collidable": true,
-            "liquid": false
-        },
-        "textures": [
-            {
-                "default": "stone.png"
-            }
+{
+    "textures": {
+        "stone": [
+            "stone.png"
+        ],
+        "dirt": [
+            "dirt.png"
+        ],
+        "grass-top": [
+            "grass.png"
+        ],
+        "grass-side": [
+            "grass_side.png"
+        ],
+        "sand": [
+            "sand.png"
+        ],
+        "water": [
+            "water.png"
+        ],
+        "detail-grass": [
+            "detail_short_grass.png",
+            "detail_medium_grass.png"
         ]
     },
-    {
-        "name": "dirt",
-        "mesh-type": "full-cube",
-        "properties": {
-            "collidable": true,
-            "liquid": false
-        },
-        "textures": [
-            {
-                "default": "dirt.png"
+    "blocks": [
+        {
+            "name": "air",
+            "mesh-type": "none",
+            "properties": {
+                "collidable": false,
+                "liquid": false
             }
-        ]
-    },
-    {
-        "name": "grass",
-        "mesh-type": "full-cube",
-        "properties": {
-            "collidable": true,
-            "liquid": false
         },
-        "textures": [
-            {
-                "default": "grass_side.png",
-                "top": "grass.png",
-                "bottom": "dirt.png"
-            }
-        ]
-    },
-    {
-        "name": "sand",
-        "mesh-type": "full-cube",
-        "properties": {
-            "collidable": true,
-            "liquid": false
-        },
-        "textures": [
-            {
-                "default": "sand.png"
-            }
-        ]
-    },
-    {
-        "name": "water",
-        "mesh-type": "full-cube",
-        "properties": {
-            "collidable": false,
-            "liquid": true
-        },
-        "textures": [
-            {
-                "default": "water.png"
-            }
-        ]
-    },
-    {
-        "name": "detail_grass",
-        "mesh-type": "cross",
-        "properties": {
-            "collidable": false,
-            "liquid": false
-        },
-        "textures": [
-            {
-                "default": "detail_short_grass.png"
+        {
+            "name": "stone",
+            "mesh-type": "full-cube",
+            "properties": {
+                "collidable": true,
+                "liquid": false
             },
-            {
-                "default": "detail_medium_grass.png"
-            }
-        ]
-    }
-]
+            "texture-variants": [
+                {
+                    "default": "stone"
+                }
+            ]
+        },
+        {
+            "name": "dirt",
+            "mesh-type": "full-cube",
+            "properties": {
+                "collidable": true,
+                "liquid": false
+            },
+            "texture-variants": [
+                {
+                    "default": "dirt"
+                }
+            ]
+        },
+        {
+            "name": "grass",
+            "mesh-type": "full-cube",
+            "properties": {
+                "collidable": true,
+                "liquid": false
+            },
+            "texture-variants": [
+                {
+                    "default": "grass-side",
+                    "top": "grass-top",
+                    "bottom": "dirt"
+                }
+            ]
+        },
+        {
+            "name": "sand",
+            "mesh-type": "full-cube",
+            "properties": {
+                "collidable": true,
+                "liquid": false
+            },
+            "texture-variants": [
+                {
+                    "default": "sand"
+                }
+            ]
+        },
+        {
+            "name": "water",
+            "mesh-type": "full-cube",
+            "properties": {
+                "collidable": false,
+                "liquid": true
+            },
+            "texture-variants": [
+                {
+                    "default": "water"
+                }
+            ]
+        },
+        {
+            "name": "detail_grass",
+            "mesh-type": "cross",
+            "properties": {
+                "collidable": false,
+                "liquid": false
+            },
+            "texture-variants": [
+                {
+                    "default": "detail-grass"
+                }
+            ]
+        }
+    ]
+}

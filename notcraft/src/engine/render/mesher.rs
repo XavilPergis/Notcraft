@@ -5,10 +5,10 @@ use crate::engine::{
     world::{
         chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
         chunk_aabb,
-        registry::{BlockId, BlockMeshType, BlockRegistry, Faces},
+        registry::{BlockId, BlockMeshType, BlockRegistry, TextureId},
         ChunkEvent, VoxelWorld,
     },
-    Side,
+    Faces, Side,
 };
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
@@ -944,12 +944,7 @@ impl MeshConstructor {
 }
 
 fn mesh_cross(ctx: &mut MeshConstructor, id: BlockId, pos: Point3<ChunkAxis>) {
-    let tex_id = {
-        let faces = ctx.registry.block_textures(id).unwrap();
-        let faces = faces.choose(&mut ctx.rng).unwrap();
-        // FIXME: not this!
-        faces[Side::Top] as u16
-    };
+    let tex_id = choose_face_texture(ctx, id, Side::Right).0 as u16;
 
     {
         #[rustfmt::skip]
@@ -1015,9 +1010,7 @@ fn mesh_full_cube(ctx: &mut MeshConstructor, quad: VoxelQuad, side: Side, pos: P
         .indices
         .extend(indices.iter().copied().map(|idx| idx_start + idx));
 
-    let faces = ctx.registry.block_textures(quad.id).unwrap();
-    let faces = faces.choose(&mut ctx.rng).unwrap();
-    let tex_id = faces[side] as u16;
+    let tex_id = choose_face_texture(ctx, quad.id, side).0 as u16;
 
     let mut vert = |offset: Vector3<_>, ao| {
         let pos: Point3<u16> = (16 * pos) + (16 * offset);
@@ -1060,4 +1053,13 @@ fn ao_value(side1: bool, corner: bool, side2: bool) -> u8 {
     } else {
         3 - (side1 as u8 + side2 as u8 + corner as u8)
     }
+}
+
+fn choose_face_texture(ctx: &mut MeshConstructor, id: BlockId, side: Side) -> TextureId {
+    let pool_ids = ctx.registry.block_textures(id).unwrap();
+    let pool_ids = pool_ids.choose(&mut ctx.rng).unwrap();
+    let pool_id = pool_ids[side];
+
+    let tex_ids = ctx.registry.pool_textures(pool_id);
+    *tex_ids.choose(&mut ctx.rng).unwrap()
 }

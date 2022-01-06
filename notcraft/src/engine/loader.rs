@@ -64,7 +64,7 @@ pub struct BlockTextures {
     pub width: u32,
     pub height: u32,
     pub unknown_texture: Arc<RgbaImage>,
-    pub block_textures: HashMap<String, Arc<RgbaImage>>,
+    pub block_textures: HashMap<PathBuf, Arc<RgbaImage>>,
 }
 
 struct BlockTextureLoadContext<'env> {
@@ -80,7 +80,7 @@ impl<'env> BlockTextureLoadContext<'env> {
         }
     }
 
-    fn load(&mut self, path: &str) -> Result<Option<RgbaImage>, TextureLoadError> {
+    fn load(&mut self, path: &Path) -> Result<Option<RgbaImage>, TextureLoadError> {
         let texture_path = self.base_path.join(path);
         log::trace!("loading block texture from {}", texture_path.display());
         let image = match image::open(&texture_path) {
@@ -88,7 +88,7 @@ impl<'env> BlockTextureLoadContext<'env> {
             Err(ImageError::IoError(err)) if err.kind() == ErrorKind::NotFound => {
                 log::warn!(
                     "block texture '{}' was not found in {}!",
-                    path,
+                    path.display(),
                     texture_path.display()
                 );
                 return Ok(None);
@@ -110,25 +110,25 @@ impl<'env> BlockTextureLoadContext<'env> {
 
 pub fn load_block_textures<'a, P, I>(
     base_path: P,
-    names: I,
+    paths: I,
 ) -> Result<BlockTextures, TextureLoadError>
 where
     P: AsRef<Path>,
-    I: IntoIterator<Item = &'a str>,
+    I: IntoIterator<Item = &'a Path>,
 {
     let mut ctx = BlockTextureLoadContext::new(base_path.as_ref());
 
-    let names = names.into_iter();
+    let paths = paths.into_iter();
 
-    let unknown_texture = Arc::new(ctx.load("unknown.png")?.unwrap());
+    let unknown_texture = Arc::new(ctx.load(Path::new("unknown.png"))?.unwrap());
 
     let mut block_textures = HashMap::new();
-    for entry in names {
+    for path in paths {
         let texture = ctx
-            .load(entry)?
+            .load(path)?
             .map(Arc::new)
             .unwrap_or_else(|| Arc::clone(&unknown_texture));
-        block_textures.insert(entry.to_owned(), texture);
+        block_textures.insert(path.to_owned(), texture);
     }
 
     match ctx.dimensions() {
