@@ -3,6 +3,7 @@
         "debug": "debug.glsl",
         "post": "post.glsl",
         "terrain": "simple.glsl",
-        "sky": "sky.glsl"
+        "sky": "sky.glsl",
+        "crosshair": "crosshair.glsl"
     }
 }

@@ -1,4 +1,4 @@
-use super::{camera::CurrentCamera, Tex};
+use super::{camera::CurrentCamera, PosTex, Tex};
 use crate::{
     engine::{
         loader::{self, ShaderLoaderState},
@@ -43,9 +43,11 @@ use std::{
 
 struct RendererMisc {
     fullscreen_quad: VertexBuffer<Tex>,
+    // crosshair_quad: VertexBuffer<PosTex>,
     // FIXME: this shouldn't be here! make a more general static texture loader thingy when this
     // becomes a problem
     block_textures: SrgbTexture2dArray,
+    crosshair_texture: SrgbTexture2d,
 }
 
 impl RendererMisc {
@@ -58,6 +60,24 @@ impl RendererMisc {
             Tex { uv: [-1.0, -1.0] },
             Tex { uv: [1.0, -1.0] },
         ])?;
+
+        // #[rustfmt::skip]
+        // const CROSSHAIR_QUAD_DATA: &[PosTex] = &[
+        //     PosTex { pos: [-0.1,  0.1, 0.0], uv: [-1.0,  1.0] },
+        //     PosTex { pos: [ 0.1,  0.1, 0.0], uv: [ 1.0,  1.0] },
+        //     PosTex { pos: [-0.1, -0.1, 0.0], uv: [-1.0, -1.0] },
+        //     PosTex { pos: [ 0.1,  0.1, 0.0], uv: [ 1.0,  1.0] },
+        //     PosTex { pos: [-0.1, -0.1, 0.0], uv: [-1.0, -1.0] },
+        //     PosTex { pos: [ 0.1, -0.1, 0.0], uv: [ 1.0, -1.0] },
+        // ];
+        // let crosshair_quad = VertexBuffer::immutable(&**display,
+        // CROSSHAIR_QUAD_DATA)?;
+
+        let crosshair_texture = loader::load_texture("resources/textures/crosshair.png")?;
+        let crosshair_texture = SrgbTexture2d::new(
+            &**display,
+            RawImage2d::from_raw_rgba_reversed(&crosshair_texture, crosshair_texture.dimensions()),
+        )?;
 
         let textures =
             loader::load_block_textures("resources/textures/blocks", registry.texture_paths())?;
@@ -75,7 +95,9 @@ impl RendererMisc {
 
         Ok(Self {
             fullscreen_quad,
+            // crosshair_quad,
             block_textures,
+            crosshair_texture,
         })
     }
 }
@@ -1160,6 +1182,23 @@ fn render_post(
             view_matrix: array4x4(&camera.view()),
         },
         &Default::default(),
+    )?;
+
+    let (width, height) = ctx.display().get_framebuffer_dimensions();
+    let program = ctx.shaders.get("crosshair")?;
+    final_buffer.draw(
+        &misc.fullscreen_quad,
+        glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
+        &program,
+        &uniform! {
+            screen_width: width as f32,
+            screen_height: height as f32,
+            crosshair_texture: misc.crosshair_texture.sampled().magnify_filter(MagnifySamplerFilter::Nearest),
+        },
+        &glium::DrawParameters {
+            blend: Blend::alpha_blending(),
+            ..Default::default()
+        },
     )?;
 
     Ok(())

@@ -140,30 +140,9 @@ where
     }
 }
 
-#[derive(Debug)]
-pub enum ShaderLoadError {
-    Io(std::io::Error),
-    Program(ProgramCreationError),
-    MissingFragment,
-    MissingVertex,
+pub fn load_texture<P: AsRef<Path>>(path: P) -> Result<RgbaImage> {
+    Ok(image::open(path)?.to_rgba())
 }
-
-impl std::error::Error for ShaderLoadError {}
-
-impl std::fmt::Display for ShaderLoadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "shader load error: ")?;
-        match self {
-            ShaderLoadError::Io(err) => write!(f, "{}", err),
-            ShaderLoadError::Program(err) => write!(f, "{}", err),
-            ShaderLoadError::MissingFragment => write!(f, "missing fragment stage"),
-            ShaderLoadError::MissingVertex => write!(f, "missing vertex stage"),
-        }
-    }
-}
-
-err_from! { ShaderLoadError => std::io::Error = Io }
-err_from! { ShaderLoadError => ProgramCreationError = Program }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 struct ShaderId(usize);
