@@ -83,6 +83,18 @@ impl Side {
         }
     }
 
+    pub fn enumerate<F>(mut func: F)
+    where
+        F: FnMut(Side),
+    {
+        func(Side::Right);
+        func(Side::Left);
+        func(Side::Top);
+        func(Side::Bottom);
+        func(Side::Front);
+        func(Side::Back);
+    }
+
     /// take coordinates (u, v, l) where (u, v) is parallel to this face and
     /// convert it to a relative xyz coord
     pub fn uvl_to_xyz<S: nalgebra::Scalar + Copy + Zero + Neg<Output = S>>(

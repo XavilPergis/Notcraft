@@ -7,7 +7,14 @@
             "dirt.png"
         ],
         "grass-top": [
-            "grass.png"
+            "grass.png",
+            "grass_variant_1.png",
+            "grass_variant_2.png",
+            "grass_variant_3.png",
+            "grass_variant_4.png",
+            "grass_variant_5.png",
+            "grass_variant_6.png",
+            "grass_variant_7.png"
         ],
         "grass-side": [
             "grass_side.png"

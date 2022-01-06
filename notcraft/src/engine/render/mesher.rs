@@ -343,7 +343,8 @@ fn queue_mesh_jobs(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) {
                         // meshing the chunk would be made.
                         ctx.mesher_pool.spawn(move || {
                             if let Some(neighbors) = ChunkNeighbors::lock(&world, pos) {
-                                MeshCreationContext::new(pos, neighbors, &world).mesh(sender);
+                                MeshCreationContext::new(pos, neighbors, &world)
+                                    .mesh_simple(sender);
                                 add_transient_debug_box(Duration::from_secs(1), DebugBox {
                                     bounds: chunk_aabb(chunk.pos()),
                                     rgba: [1.0, 1.0, 0.0, 1.0],
@@ -384,7 +385,7 @@ fn queue_mesh_jobs(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) {
                 // the chunk would be made.
                 ctx.mesher_pool.spawn(move || {
                     if let Some(neighbors) = ChunkNeighbors::lock(&world, pos) {
-                        MeshCreationContext::new(pos, neighbors, &world).mesh(sender);
+                        MeshCreationContext::new(pos, neighbors, &world).mesh_simple(sender);
                         add_transient_debug_box(Duration::from_secs(1), DebugBox {
                             bounds: chunk_aabb(chunk.pos()),
                             rgba: [1.0, 1.0, 0.0, 1.0],
@@ -694,7 +695,47 @@ impl MeshCreationContext {
         }
     }
 
-    pub fn mesh(mut self, sender: Sender<CompletedMesh>) {
+    pub fn mesh_simple(mut self, sender: Sender<CompletedMesh>) {
+        for x in 0..(CHUNK_LENGTH as ChunkAxis) {
+            for z in 0..(CHUNK_LENGTH as ChunkAxis) {
+                for y in 0..(CHUNK_LENGTH as ChunkAxis) {
+                    let pos = na::point![x, y, z];
+                    let cur_id = self.chunks.lookup(pos.cast());
+                    match self.registry.mesh_type(cur_id) {
+                        BlockMeshType::None => {}
+                        BlockMeshType::Cross => mesh_cross(&mut self.mesh_constructor, cur_id, pos),
+                        BlockMeshType::FullCube => Side::enumerate(|side| {
+                            let normal = side.normal::<ChunkAxisOffset>();
+                            let neighbor_id = self.chunks.lookup(pos.cast() + normal);
+                            if should_add_face(&self.registry, cur_id, neighbor_id) {
+                                let ao = self.face_ao(pos, side);
+                                mesh_full_cube(
+                                    &mut self.mesh_constructor,
+                                    VoxelQuad {
+                                        ao,
+                                        id: cur_id,
+                                        width: 1,
+                                        height: 1,
+                                    },
+                                    side,
+                                    pos,
+                                );
+                            }
+                        }),
+                    }
+                }
+            }
+        }
+
+        sender
+            .send(CompletedMesh::Completed {
+                pos: self.pos,
+                terrain: self.mesh_constructor.terrain_mesh,
+            })
+            .unwrap();
+    }
+
+    pub fn mesh_greedy(mut self, sender: Sender<CompletedMesh>) {
         for x in 0..(CHUNK_LENGTH as ChunkAxis) {
             for z in 0..(CHUNK_LENGTH as ChunkAxis) {
                 for y in 0..(CHUNK_LENGTH as ChunkAxis) {
@@ -706,6 +747,7 @@ impl MeshCreationContext {
                 }
             }
         }
+
         self.mesh_slice(Side::Right, |layer, u, v| na::point!(layer, u, v));
         self.mesh_slice(Side::Left, |layer, u, v| na::point!(layer, u, v));
 
