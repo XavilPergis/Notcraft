@@ -126,7 +126,7 @@ pub struct Faces<T> {
 }
 
 impl<T> Faces<T> {
-    fn map<U, F>(self, mut func: F) -> Faces<U>
+    pub fn map<U, F>(self, mut func: F) -> Faces<U>
     where
         F: FnMut(T) -> U,
     {
@@ -138,6 +138,30 @@ impl<T> Faces<T> {
             front: func(self.front),
             back: func(self.back),
         }
+    }
+
+    pub fn all<F>(&self, mut func: F) -> bool
+    where
+        F: FnMut(&T) -> bool,
+    {
+        func(&self.top)
+            && func(&self.bottom)
+            && func(&self.left)
+            && func(&self.right)
+            && func(&self.front)
+            && func(&self.back)
+    }
+
+    pub fn any<F>(&self, mut func: F) -> bool
+    where
+        F: FnMut(&T) -> bool,
+    {
+        func(&self.top)
+            || func(&self.bottom)
+            || func(&self.left)
+            || func(&self.right)
+            || func(&self.front)
+            || func(&self.back)
     }
 }
 

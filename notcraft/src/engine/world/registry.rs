@@ -1,4 +1,4 @@
-use crate::engine::{prelude::*, Faces, Side};
+use crate::engine::{prelude::*, Faces};
 use std::{
     collections::HashMap,
     fs::File,

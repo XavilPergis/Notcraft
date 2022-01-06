@@ -25,14 +25,14 @@ use glium::{
     uniform,
     uniforms::{AsUniformValue, MagnifySamplerFilter, Sampler, UniformValue},
     vertex::VertexBuffer,
-    Blend, Display, DrawParameters, Frame, Program, Surface,
+    Blend, Display, DrawParameters, Frame, Surface,
 };
 use na::vector;
 use parking_lot::RwLock;
 use std::{
     collections::{HashMap, HashSet},
     marker::PhantomData,
-    path::{Path, PathBuf},
+    path::PathBuf,
     rc::Rc,
     sync::{
         atomic::{AtomicUsize, Ordering},

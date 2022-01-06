@@ -1,14 +1,12 @@
 use crate::{engine::prelude::*, util::ChannelPair};
 use anyhow::Context;
 use glium::{
-    backend::Facade, program::SourceCode, texture::TextureCreationError, Display, Program,
-    ProgramCreationError,
+    program::SourceCode, texture::TextureCreationError, Display, Program, ProgramCreationError,
 };
 use image::{GenericImageView, ImageError, RgbaImage};
 use notify::RecommendedWatcher;
 use std::{
     collections::{HashMap, HashSet},
-    ffi::OsStr,
     fs::File,
     io::ErrorKind,
     path::{Path, PathBuf},

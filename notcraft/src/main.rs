@@ -21,7 +21,7 @@ use engine::{
     input::{InputPlugin, RawInputEvent},
     physics::{AabbCollider, CollisionPlugin, PhysicsPlugin, RigidBody},
     render::{
-        mesher::ChunkMesherPlugin,
+        mesher::{ChunkMesherPlugin, MesherMode},
         renderer::{Aabb, RenderPlugin},
     },
     transform::Transform,
@@ -42,6 +42,7 @@ use glium::{
 };
 use nalgebra::{point, Point3, UnitQuaternion, Vector2, Vector3};
 use std::{rc::Rc, sync::Arc};
+use structopt::StructOpt;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PlayerController {
@@ -482,8 +483,8 @@ fn player_controller(
         }
 
         if input.key(VirtualKeyCode::LControl).is_pressed() {
-            horiz_acceleration *= 4.0;
-            vert_acceleration *= 5.0;
+            horiz_acceleration *= 5.5;
+            vert_acceleration *= 3.5;
         }
 
         if input.key(keys::FORWARD).is_pressed() {
@@ -641,12 +642,20 @@ fn glutin_runner(mut app: App) {
     });
 }
 
+#[derive(Clone, Debug, StructOpt)]
+pub struct RunOptions {
+    #[structopt(default_value = "simple", long)]
+    pub mesher_mode: MesherMode,
+}
+
 fn main() {
     simple_logger::init_with_level(log::Level::Debug).unwrap();
 
+    let options = RunOptions::from_args();
+
     App::build()
         .add_plugins(DefaultPlugins)
-        .add_plugin(ChunkMesherPlugin::default())
+        .add_plugin(ChunkMesherPlugin::default().with_mode(options.mesher_mode))
         .add_plugin(PhysicsPlugin::default())
         .add_plugin(CollisionPlugin::default())
         .add_startup_system(setup_player.system())

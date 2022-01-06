@@ -13,11 +13,11 @@ use crate::engine::{
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use glium::{backend::Facade, index::PrimitiveType, IndexBuffer, VertexBuffer};
-use na::OPoint;
-use rand::{prelude::SliceRandom, rngs::SmallRng, FromEntropy, SeedableRng};
+use rand::{prelude::SliceRandom, rngs::SmallRng, FromEntropy};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     collections::{HashMap, HashSet},
+    str::FromStr,
     sync::Arc,
     time::Duration,
 };
@@ -167,10 +167,11 @@ pub struct MesherContext {
     mesher_pool: ThreadPool,
     mesh_tx: Sender<CompletedMesh>,
     mesh_rx: Receiver<CompletedMesh>,
+    mode: MesherMode,
 }
 
-impl Default for MesherContext {
-    fn default() -> Self {
+impl MesherContext {
+    fn new(mode: MesherMode) -> Self {
         let mesher_pool = ThreadPoolBuilder::new().build().unwrap();
         let (mesh_tx, mesh_rx) = crossbeam_channel::unbounded();
         Self {
@@ -180,15 +181,53 @@ impl Default for MesherContext {
             mesher_pool,
             mesh_tx,
             mesh_rx,
+            mode,
         }
     }
 }
 
-#[derive(Debug, Default)]
-pub struct ChunkMesherPlugin {}
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum MesherMode {
+    Simple,
+    /// greedy meshing doesn't play well with randomized textures
+    Greedy,
+}
+
+impl FromStr for MesherMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "simple" => Self::Simple,
+            "greedy" => Self::Greedy,
+            other => bail!("unknown mesher mode '{}'", other),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct ChunkMesherPlugin {
+    pub mode: MesherMode,
+}
+
+impl ChunkMesherPlugin {
+    pub fn with_mode(mut self, mode: MesherMode) -> Self {
+        self.mode = mode;
+        self
+    }
+}
+
+impl Default for ChunkMesherPlugin {
+    fn default() -> Self {
+        Self {
+            mode: MesherMode::Simple,
+        }
+    }
+}
 
 impl Plugin for ChunkMesherPlugin {
     fn build(&self, app: &mut AppBuilder) {
+        app.insert_resource(MesherContext::new(self.mode));
         app.add_system(chunk_mesher.system());
     }
 }
@@ -282,12 +321,8 @@ fn next_mesh_chunk(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) -> Option<C
     }
 }
 
-fn homogenous_should_mesh(
-    world: &Arc<VoxelWorld>,
-    id: BlockId,
-    pos: ChunkPos,
-) -> Option<Faces<bool>> {
-    Some(Faces {
+fn homogenous_should_mesh(world: &Arc<VoxelWorld>, id: BlockId, pos: ChunkPos) -> Option<bool> {
+    let faces = Faces {
         top: match world.chunk(pos.offset([0, 1, 0]))?.snapshot().data() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
@@ -312,7 +347,43 @@ fn homogenous_should_mesh(
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
-    })
+    };
+    Some(faces.any(|&face| face))
+}
+
+fn run_mesh_job(ctx: &mut MesherContext, world: &Arc<VoxelWorld>, chunk: ChunkSnapshot) {
+    let world = Arc::clone(world);
+    let sender = ctx.mesh_tx.clone();
+    let pos = chunk.pos();
+    let mode = ctx.mode;
+
+    // note that we explicittly dont move the locked chunk to the new thread,
+    // because otherwise we would keep the chunk locked while no progress on
+    // meshing the chunk would be made.
+    ctx.mesher_pool.spawn(move || {
+        if let Some(neighbors) = ChunkNeighbors::lock(&world, pos) {
+            let mesher = MeshCreationContext::new(pos, neighbors, &world);
+            match mode {
+                MesherMode::Simple => mesher.mesh_simple(sender),
+                MesherMode::Greedy => mesher.mesh_greedy(sender),
+            }
+            add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                bounds: chunk_aabb(pos),
+                rgba: [1.0, 1.0, 0.0, 0.3],
+                kind: DebugBoxKind::Dashed,
+            });
+        } else {
+            sender.send(CompletedMesh::Failed { pos }).unwrap();
+            add_transient_debug_box(Duration::from_secs(4), DebugBox {
+                bounds: chunk_aabb(pos),
+                rgba: [1.0, 0.0, 0.0, 1.0],
+                kind: DebugBoxKind::Dashed,
+            });
+        }
+    });
+
+    ctx.completed_meshes.insert(pos);
+    ctx.tracker.unconstrained.remove(&pos);
 }
 
 fn queue_mesh_jobs(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) {
@@ -325,85 +396,23 @@ fn queue_mesh_jobs(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) {
 
         let pos = chunk.pos();
         match chunk.data() {
-            &ChunkData::Homogeneous(id) => {
-                match homogenous_should_mesh(world, id, pos).map(|faces| {
-                    faces.top
-                        || faces.bottom
-                        || faces.right
-                        || faces.left
-                        || faces.front
-                        || faces.back
-                }) {
-                    Some(true) => {
-                        let world = Arc::clone(world);
-                        let sender = ctx.mesh_tx.clone();
-
-                        // note that we explicittly dont move the locked chunk to the new thread,
-                        // because otherwise we would keep the chunk locked while no progress on
-                        // meshing the chunk would be made.
-                        ctx.mesher_pool.spawn(move || {
-                            if let Some(neighbors) = ChunkNeighbors::lock(&world, pos) {
-                                MeshCreationContext::new(pos, neighbors, &world)
-                                    .mesh_simple(sender);
-                                add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                                    bounds: chunk_aabb(chunk.pos()),
-                                    rgba: [1.0, 1.0, 0.0, 1.0],
-                                    kind: DebugBoxKind::Dashed,
-                                });
-                            } else {
-                                sender.send(CompletedMesh::Failed { pos }).unwrap();
-                                add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                                    bounds: chunk_aabb(chunk.pos()),
-                                    rgba: [1.0, 0.0, 0.0, 1.0],
-                                    kind: DebugBoxKind::Dashed,
-                                });
-                            }
-                        });
-
-                        ctx.completed_meshes.insert(pos);
-                        ctx.tracker.unconstrained.remove(&pos);
-
-                        remaining_this_frame -= 1;
-                    }
-                    Some(false) | None => {
-                        ctx.tracker.unconstrained.remove(&pos);
-                        add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                            bounds: chunk_aabb(chunk.pos()),
-                            rgba: [1.0, 0.0, 1.0, 0.3],
-                            kind: DebugBoxKind::Dashed,
-                        });
-                    }
+            &ChunkData::Homogeneous(id) => match homogenous_should_mesh(world, id, pos) {
+                Some(true) => {
+                    run_mesh_job(ctx, world, chunk);
+                    remaining_this_frame -= 1;
                 }
-            }
+                Some(false) | None => {
+                    ctx.tracker.unconstrained.remove(&pos);
+                    add_transient_debug_box(Duration::from_secs(1), DebugBox {
+                        bounds: chunk_aabb(chunk.pos()),
+                        rgba: [1.0, 0.0, 1.0, 0.3],
+                        kind: DebugBoxKind::Dashed,
+                    });
+                }
+            },
 
             ChunkData::Array(_) => {
-                let world = Arc::clone(world);
-                let sender = ctx.mesh_tx.clone();
-
-                // note that we explicittly dont move the locked chunk to the new thread,
-                // because otherwise we would keep the chunk locked while no progress on meshing
-                // the chunk would be made.
-                ctx.mesher_pool.spawn(move || {
-                    if let Some(neighbors) = ChunkNeighbors::lock(&world, pos) {
-                        MeshCreationContext::new(pos, neighbors, &world).mesh_simple(sender);
-                        add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                            bounds: chunk_aabb(chunk.pos()),
-                            rgba: [1.0, 1.0, 0.0, 1.0],
-                            kind: DebugBoxKind::Solid,
-                        });
-                    } else {
-                        sender.send(CompletedMesh::Failed { pos }).unwrap();
-                        add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                            bounds: chunk_aabb(chunk.pos()),
-                            rgba: [1.0, 0.0, 0.0, 1.0],
-                            kind: DebugBoxKind::Dashed,
-                        });
-                    }
-                });
-
-                ctx.completed_meshes.insert(pos);
-                ctx.tracker.unconstrained.remove(&pos);
-
+                run_mesh_job(ctx, world, chunk);
                 remaining_this_frame -= 1;
             }
         }
@@ -412,7 +421,7 @@ fn queue_mesh_jobs(ctx: &mut MesherContext, world: &Arc<VoxelWorld>) {
 
 pub fn chunk_mesher(
     mut cmd: Commands,
-    mut ctx: Local<MesherContext>,
+    mut ctx: ResMut<MesherContext>,
     voxel_world: Res<Arc<VoxelWorld>>,
     mesh_context: Res<Arc<SharedMeshContext<TerrainMesh>>>,
     events: EventReader<ChunkEvent>,
@@ -914,7 +923,7 @@ struct MeshConstructor {
 }
 
 impl MeshConstructor {
-    fn add_liquid(&mut self, quad: VoxelQuad, side: Side, pos: Point3<ChunkAxis>) {
+    fn add_liquid(&mut self, _quad: VoxelQuad, _side: Side, _pos: Point3<ChunkAxis>) {
         // let ao_pp = quad.ao.corner_ao(FaceAo::AO_POS_POS);
         // let ao_pn = quad.ao.corner_ao(FaceAo::AO_POS_NEG);
         // let ao_nn = quad.ao.corner_ao(FaceAo::AO_NEG_NEG);
