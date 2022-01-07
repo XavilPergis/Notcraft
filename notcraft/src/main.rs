@@ -3,34 +3,33 @@ extern crate log;
 #[macro_use]
 extern crate serde_derive;
 
-pub mod engine;
-pub mod util;
+pub mod client;
+pub mod common;
 
-use crate::engine::{
-    input::{keys, DigitalInput, InputState},
-    prelude::*,
-    render::{
+use crate::{
+    client::{
         camera::{ActiveCamera, Camera},
-        renderer::{add_debug_box, DebugBox, DebugBoxKind},
+        input::{keys, DigitalInput, InputPlugin, InputState, RawInputEvent},
+        render::{
+            mesher::{ChunkMesherPlugin, MesherMode},
+            renderer::{add_debug_box, DebugBox, DebugBoxKind, RenderPlugin},
+        },
     },
-    world::{registry::AIR, BlockPos, Ray3, VoxelWorld},
+    common::{
+        physics::{AabbCollider, CollisionPlugin, PhysicsPlugin, RigidBody},
+        prelude::*,
+        transform::Transform,
+        world::{
+            chunk::ChunkSnapshotCache,
+            registry::{BlockId, AIR},
+            trace_ray, BlockPos, DynamicChunkLoader, Ray3, RaycastHit, VoxelWorld, WorldPlugin,
+        },
+        Axis, Side,
+    },
 };
-use app::{AppExit, Events};
+use bevy_app::{AppExit, Events};
 use bevy_core::CorePlugin;
-use engine::{
-    input::{InputPlugin, RawInputEvent},
-    physics::{AabbCollider, CollisionPlugin, PhysicsPlugin, RigidBody},
-    render::{
-        mesher::{ChunkMesherPlugin, MesherMode},
-        renderer::{Aabb, RenderPlugin},
-    },
-    transform::Transform,
-    world::{
-        chunk::ChunkSnapshotCache, registry::BlockId, trace_ray, DynamicChunkLoader, RaycastHit,
-        WorldPlugin,
-    },
-    Axis, Side,
-};
+use common::aabb::Aabb;
 use glium::{
     glutin::{
         event::{ButtonId, Event, ModifiersState, VirtualKeyCode, WindowEvent},
@@ -588,7 +587,7 @@ fn setup_player(mut cmd: Commands) {
 pub struct DefaultPlugins;
 
 impl PluginGroup for DefaultPlugins {
-    fn build(&mut self, group: &mut app::PluginGroupBuilder) {
+    fn build(&mut self, group: &mut bevy_app::PluginGroupBuilder) {
         group.add(CorePlugin);
         group.add(WindowingPlugin::default());
         group.add(InputPlugin::default());
@@ -596,7 +595,7 @@ impl PluginGroup for DefaultPlugins {
         group.add(RenderPlugin::default());
 
         #[cfg(feature = "hot-reload")]
-        group.add(engine::loader::HotReloadPlugin::default());
+        group.add(client::loader::HotReloadPlugin::default());
     }
 }
 

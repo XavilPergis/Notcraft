@@ -1,9 +1,9 @@
-use crate::{engine::prelude::*, util::block_aabb};
+use crate::common::{prelude::*, util::block_aabb};
 use nalgebra::{vector, Vector3};
 use std::{ops::RangeInclusive, sync::Arc};
 
 use super::{
-    render::renderer::{add_debug_box, Aabb, DebugBox, DebugBoxKind},
+    aabb::Aabb,
     transform::Transform,
     world::{
         chunk::ChunkSnapshotCache,
@@ -137,11 +137,11 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
             for z in make_collision_range(ctx.previous.min.z, ctx.previous.max.z) {
                 let block_pos = BlockPos { x, y, z };
                 if does_block_collide(ctx, block_pos)? {
-                    add_debug_box(DebugBox {
-                        bounds: util::block_aabb(block_pos).inflate(0.003),
-                        rgba: [1.0, 0.2, 0.2, 0.6],
-                        kind: DebugBoxKind::Solid,
-                    });
+                    // add_debug_box(DebugBox {
+                    //     bounds: util::block_aabb(block_pos).inflate(0.003),
+                    //     rgba: [1.0, 0.2, 0.2, 0.6],
+                    //     kind: DebugBoxKind::Solid,
+                    // });
                     ctx.resolution.x = match delta.x < 0.0 {
                         true => x as f32 + 1.0 - ctx.current.min.x,
                         false => x as f32 - ctx.current.max.x,
@@ -160,11 +160,11 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
             for z in make_collision_range(ctx.previous.min.z, ctx.previous.max.z) {
                 let block_pos = BlockPos { x, y, z };
                 if does_block_collide(ctx, block_pos)? {
-                    add_debug_box(DebugBox {
-                        bounds: util::block_aabb(block_pos).inflate(0.003),
-                        rgba: [0.2, 1.0, 0.2, 0.6],
-                        kind: DebugBoxKind::Solid,
-                    });
+                    // add_debug_box(DebugBox {
+                    //     bounds: util::block_aabb(block_pos).inflate(0.003),
+                    //     rgba: [0.2, 1.0, 0.2, 0.6],
+                    //     kind: DebugBoxKind::Solid,
+                    // });
                     ctx.resolution.y = match delta.y < 0.0 {
                         true => y as f32 + 1.0 - ctx.current.min.y,
                         false => y as f32 - ctx.current.max.y,
@@ -183,11 +183,11 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
             for y in make_collision_range(ctx.previous.min.y, ctx.previous.max.y) {
                 let block_pos = BlockPos { x, y, z };
                 if does_block_collide(ctx, block_pos)? {
-                    add_debug_box(DebugBox {
-                        bounds: util::block_aabb(block_pos).inflate(0.003),
-                        rgba: [0.2, 0.2, 1.0, 0.6],
-                        kind: DebugBoxKind::Solid,
-                    });
+                    // add_debug_box(DebugBox {
+                    //     bounds: util::block_aabb(block_pos).inflate(0.003),
+                    //     rgba: [0.2, 0.2, 1.0, 0.6],
+                    //     kind: DebugBoxKind::Solid,
+                    // });
                     ctx.resolution.z = match delta.z < 0.0 {
                         true => z as f32 + 1.0 - ctx.current.min.z,
                         false => z as f32 - ctx.current.max.z,

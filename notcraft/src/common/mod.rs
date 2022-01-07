@@ -2,33 +2,27 @@ use nalgebra::{vector, Vector3};
 use num_traits::{One, Zero};
 use std::ops::Neg;
 
-// pub mod error;
-pub mod audio;
-pub mod input;
-pub mod loader;
+pub mod aabb;
 pub mod physics;
-pub mod render;
 pub mod transform;
+pub mod util;
 pub mod world;
 
 pub mod math {
-    pub use nalgebra::{
-        self as na, Matrix3, Matrix4, Point1, Point2, Point3, Vector2, Vector3, Vector4,
-    };
+    pub use nalgebra::{Matrix3, Matrix4, Point1, Point2, Point3, Vector2, Vector3, Vector4};
 }
 
 pub mod prelude {
-    pub use bevy_app as app;
-    pub use bevy_ecs as ecs;
+    pub use super::util;
 
-    pub use crate::util;
-
-    pub use app::prelude::*;
+    pub use bevy_app::prelude::*;
     pub use bevy_core::prelude::*;
-    pub use ecs::prelude::*;
+    pub use bevy_ecs::prelude::*;
 
     pub type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
     pub use anyhow::{anyhow, bail};
+
+    pub use nalgebra::{point, vector};
 }
 
 #[repr(u8)]

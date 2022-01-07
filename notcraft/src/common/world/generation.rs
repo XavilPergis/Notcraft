@@ -3,7 +3,7 @@ use super::{
     registry::{BlockId, BlockRegistry, AIR},
     ChunkHeightmapPos, ChunkPos,
 };
-use crate::engine::world::chunk::{CHUNK_LENGTH, CHUNK_VOLUME};
+use crate::common::world::chunk::{CHUNK_LENGTH, CHUNK_VOLUME};
 use noise::{Fbm, NoiseFn, Perlin};
 use rand::{rngs::SmallRng, FromEntropy, Rng};
 use std::{

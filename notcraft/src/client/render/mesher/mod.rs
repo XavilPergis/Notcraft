@@ -1,14 +1,21 @@
-use crate::engine::{
-    math::*,
-    prelude::*,
-    transform::Transform,
-    world::{
-        chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
-        chunk_aabb,
-        registry::{BlockId, BlockMeshType, BlockRegistry, TextureId},
-        ChunkEvent, VoxelWorld,
+use crate::{
+    client::render::renderer::{
+        add_transient_debug_box, DebugBox, DebugBoxKind, MeshBuffers, RenderMeshComponent,
+        SharedMeshContext, UploadableMesh,
     },
-    Faces, Side,
+    common::{
+        aabb::Aabb,
+        math::*,
+        prelude::*,
+        transform::Transform,
+        world::{
+            chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
+            chunk_aabb,
+            registry::{BlockId, BlockMeshType, BlockRegistry, TextureId},
+            ChunkEvent, VoxelWorld,
+        },
+        Faces, Side,
+    },
 };
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
@@ -20,11 +27,6 @@ use std::{
     str::FromStr,
     sync::Arc,
     time::Duration,
-};
-
-use super::renderer::{
-    add_transient_debug_box, Aabb, DebugBox, DebugBoxKind, MeshBuffers, RenderMeshComponent,
-    SharedMeshContext, UploadableMesh,
 };
 
 #[derive(Debug)]
@@ -565,7 +567,7 @@ impl MeshCreationContext {
             registry: Arc::clone(&world.registry),
             chunks: neighbors,
             pos,
-            slice: vec![VoxelFace::default(); crate::engine::world::chunk::CHUNK_AREA],
+            slice: vec![VoxelFace::default(); crate::common::world::chunk::CHUNK_AREA],
             mesh_constructor,
         }
     }
@@ -708,7 +710,7 @@ impl MeshCreationContext {
         for x in 0..(CHUNK_LENGTH as ChunkAxis) {
             for z in 0..(CHUNK_LENGTH as ChunkAxis) {
                 for y in 0..(CHUNK_LENGTH as ChunkAxis) {
-                    let pos = na::point![x, y, z];
+                    let pos = point![x, y, z];
                     let cur_id = self.chunks.lookup(pos.cast());
                     match self.registry.mesh_type(cur_id) {
                         BlockMeshType::None => {}
@@ -748,7 +750,7 @@ impl MeshCreationContext {
         for x in 0..(CHUNK_LENGTH as ChunkAxis) {
             for z in 0..(CHUNK_LENGTH as ChunkAxis) {
                 for y in 0..(CHUNK_LENGTH as ChunkAxis) {
-                    let pos = na::point![x, y, z];
+                    let pos = point![x, y, z];
                     let id = self.chunks.lookup(pos.cast());
                     if matches!(self.registry.mesh_type(id), BlockMeshType::Cross) {
                         mesh_cross(&mut self.mesh_constructor, id, pos)
@@ -757,14 +759,14 @@ impl MeshCreationContext {
             }
         }
 
-        self.mesh_slice(Side::Right, |layer, u, v| na::point!(layer, u, v));
-        self.mesh_slice(Side::Left, |layer, u, v| na::point!(layer, u, v));
+        self.mesh_slice(Side::Right, |layer, u, v| point!(layer, u, v));
+        self.mesh_slice(Side::Left, |layer, u, v| point!(layer, u, v));
 
-        self.mesh_slice(Side::Top, |layer, u, v| na::point!(u, layer, v));
-        self.mesh_slice(Side::Bottom, |layer, u, v| na::point!(u, layer, v));
+        self.mesh_slice(Side::Top, |layer, u, v| point!(u, layer, v));
+        self.mesh_slice(Side::Bottom, |layer, u, v| point!(u, layer, v));
 
-        self.mesh_slice(Side::Front, |layer, u, v| na::point!(u, v, layer));
-        self.mesh_slice(Side::Back, |layer, u, v| na::point!(u, v, layer));
+        self.mesh_slice(Side::Front, |layer, u, v| point!(u, v, layer));
+        self.mesh_slice(Side::Back, |layer, u, v| point!(u, v, layer));
 
         sender
             .send(CompletedMesh::Completed {
@@ -892,8 +894,8 @@ impl UploadableMesh for TerrainTransparencyMesh {
             indices: IndexBuffer::immutable(ctx, PrimitiveType::TrianglesList, &self.indices)?,
 
             aabb: Aabb {
-                min: na::point![0.0, 0.0, 0.0],
-                max: na::point![
+                min: point![0.0, 0.0, 0.0],
+                max: point![
                     CHUNK_LENGTH as f32,
                     CHUNK_LENGTH as f32,
                     CHUNK_LENGTH as f32
@@ -919,8 +921,8 @@ impl UploadableMesh for TerrainMesh {
             indices: IndexBuffer::immutable(ctx, PrimitiveType::TrianglesList, &self.indices)?,
 
             aabb: Aabb {
-                min: na::point![0.0, 0.0, 0.0],
-                max: na::point![
+                min: point![0.0, 0.0, 0.0],
+                max: point![
                     CHUNK_LENGTH as f32,
                     CHUNK_LENGTH as f32,
                     CHUNK_LENGTH as f32
@@ -988,24 +990,24 @@ impl MeshConstructor {
 
         // match side {
         //     Side::Left | Side::Right => {
-        //         vert(na::vector!(h, qw, 0), ao_pn);
-        //         vert(na::vector!(h, qw, qh), ao_pp);
-        //         vert(na::vector!(h, 0, 0), ao_nn);
-        //         vert(na::vector!(h, 0, qh), ao_np);
+        //         vert(vector!(h, qw, 0), ao_pn);
+        //         vert(vector!(h, qw, qh), ao_pp);
+        //         vert(vector!(h, 0, 0), ao_nn);
+        //         vert(vector!(h, 0, qh), ao_np);
         //     }
 
         //     Side::Top | Side::Bottom => {
-        //         vert(na::vector!(0, h, qh), ao_pn);
-        //         vert(na::vector!(qw, h, qh), ao_pp);
-        //         vert(na::vector!(0, h, 0), ao_nn);
-        //         vert(na::vector!(qw, h, 0), ao_np);
+        //         vert(vector!(0, h, qh), ao_pn);
+        //         vert(vector!(qw, h, qh), ao_pp);
+        //         vert(vector!(0, h, 0), ao_nn);
+        //         vert(vector!(qw, h, 0), ao_np);
         //     }
 
         //     Side::Front | Side::Back => {
-        //         vert(na::vector!(0, qh, h), ao_np);
-        //         vert(na::vector!(qw, qh, h), ao_pp);
-        //         vert(na::vector!(0, 0, h), ao_nn);
-        //         vert(na::vector!(qw, 0, h), ao_pn);
+        //         vert(vector!(0, qh, h), ao_np);
+        //         vert(vector!(qw, qh, h), ao_pp);
+        //         vert(vector!(0, 0, h), ao_nn);
+        //         vert(vector!(qw, 0, h), ao_pn);
         //     }
         // }
     }
@@ -1044,15 +1046,15 @@ fn mesh_cross(ctx: &mut MeshConstructor, id: BlockId, pos: Point3<ChunkAxis>) {
     let l = 1;
     let h = 15;
 
-    vert(na::vector![l, 0, l]);
-    vert(na::vector![l, h, l]);
-    vert(na::vector![h, h, h]);
-    vert(na::vector![h, 0, h]);
+    vert(vector![l, 0, l]);
+    vert(vector![l, h, l]);
+    vert(vector![h, h, h]);
+    vert(vector![h, 0, h]);
 
-    vert(na::vector![l, 0, h]);
-    vert(na::vector![l, h, h]);
-    vert(na::vector![h, h, l]);
-    vert(na::vector![h, 0, l]);
+    vert(vector![l, 0, h]);
+    vert(vector![l, h, h]);
+    vert(vector![h, h, l]);
+    vert(vector![h, 0, l]);
 }
 
 fn mesh_full_cube(ctx: &mut MeshConstructor, quad: VoxelQuad, side: Side, pos: Point3<ChunkAxis>) {
@@ -1098,24 +1100,24 @@ fn mesh_full_cube(ctx: &mut MeshConstructor, quad: VoxelQuad, side: Side, pos: P
 
     match side {
         Side::Left | Side::Right => {
-            vert(na::vector!(h, qw, 0), ao_pn);
-            vert(na::vector!(h, qw, qh), ao_pp);
-            vert(na::vector!(h, 0, 0), ao_nn);
-            vert(na::vector!(h, 0, qh), ao_np);
+            vert(vector!(h, qw, 0), ao_pn);
+            vert(vector!(h, qw, qh), ao_pp);
+            vert(vector!(h, 0, 0), ao_nn);
+            vert(vector!(h, 0, qh), ao_np);
         }
 
         Side::Top | Side::Bottom => {
-            vert(na::vector!(0, h, qh), ao_pn);
-            vert(na::vector!(qw, h, qh), ao_pp);
-            vert(na::vector!(0, h, 0), ao_nn);
-            vert(na::vector!(qw, h, 0), ao_np);
+            vert(vector!(0, h, qh), ao_pn);
+            vert(vector!(qw, h, qh), ao_pp);
+            vert(vector!(0, h, 0), ao_nn);
+            vert(vector!(qw, h, 0), ao_np);
         }
 
         Side::Front | Side::Back => {
-            vert(na::vector!(0, qh, h), ao_np);
-            vert(na::vector!(qw, qh, h), ao_pp);
-            vert(na::vector!(0, 0, h), ao_nn);
-            vert(na::vector!(qw, 0, h), ao_pn);
+            vert(vector!(0, qh, h), ao_np);
+            vert(vector!(qw, qh, h), ao_pp);
+            vert(vector!(0, 0, h), ao_nn);
+            vert(vector!(qw, 0, h), ao_pn);
         }
     }
 }

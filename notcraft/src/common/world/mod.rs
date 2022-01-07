@@ -1,4 +1,3 @@
-use crate::engine::{prelude::*, world::chunk::CHUNK_LENGTH};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::{Point3, Scalar, Vector3};
 use rayon::{ThreadPool, ThreadPoolBuilder};
@@ -19,11 +18,8 @@ use self::{
     chunk::{Chunk, ChunkPos, ChunkSnapshotCache, CompactedChunk},
     registry::{load_registry, BlockId, BlockRegistry, CollisionType},
 };
-
-use super::{
-    render::renderer::{add_transient_debug_box, Aabb, DebugBox, DebugBoxKind},
-    transform::Transform,
-    Axis, Side,
+use crate::common::{
+    aabb::Aabb, prelude::*, transform::Transform, world::chunk::CHUNK_LENGTH, Axis, Side,
 };
 
 pub mod chunk;
@@ -264,11 +260,11 @@ impl VoxelWorld {
                 if !is_cancelled.load(Ordering::SeqCst) {
                     self.chunk_event_tx.send(ChunkEvent::Added(chunk)).unwrap();
                     self.chunks_in_progress.pin().remove(&pos);
-                    add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                        bounds: chunk_aabb(pos),
-                        rgba: [0.0, 0.0, 1.0, 1.0],
-                        kind: DebugBoxKind::Solid,
-                    });
+                    // add_transient_debug_box(Duration::from_secs(1), DebugBox
+                    // {     bounds: chunk_aabb(pos),
+                    //     rgba: [0.0, 0.0, 1.0, 1.0],
+                    //     kind: DebugBoxKind::Solid,
+                    // });
                 } else {
                     self.chunks.remove(&pos, &guard);
                 }
@@ -292,11 +288,12 @@ impl VoxelWorld {
                     if !is_cancelled.load(Ordering::SeqCst) {
                         world.chunk_event_tx.send(ChunkEvent::Added(chunk)).unwrap();
                         world.chunks_in_progress.pin().remove(&pos);
-                        add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                            bounds: chunk_aabb(pos),
-                            rgba: [0.0, 1.0, 0.0, 1.0],
-                            kind: DebugBoxKind::Solid,
-                        });
+                        // add_transient_debug_box(Duration::from_secs(1),
+                        // DebugBox {     bounds:
+                        // chunk_aabb(pos),
+                        //     rgba: [0.0, 1.0, 0.0, 1.0],
+                        //     kind: DebugBoxKind::Solid,
+                        // });
                     } else {
                         world.chunks.remove(&pos, &guard);
                     }
@@ -309,11 +306,11 @@ impl VoxelWorld {
         if let Some(cancelled) = self.chunks_in_progress.pin().remove(&pos) {
             cancelled.store(true, Ordering::SeqCst);
         } else if let Some(chunk) = self.chunks.pin().remove(&pos) {
-            add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                bounds: chunk_aabb(chunk.pos()),
-                rgba: [1.0, 0.0, 0.0, 1.0],
-                kind: DebugBoxKind::Solid,
-            });
+            // add_transient_debug_box(Duration::from_secs(1), DebugBox {
+            //     bounds: chunk_aabb(chunk.pos()),
+            //     rgba: [1.0, 0.0, 0.0, 1.0],
+            //     kind: DebugBoxKind::Solid,
+            // });
 
             // save this chunk if it differs from what was originally generated
             if chunk.was_ever_modified() {

@@ -1,18 +1,17 @@
-use crate::engine::{prelude::*, transform::Transform};
-use ecs::system::SystemParam;
-use na::{point, Matrix4, Perspective3, Point3};
-use nalgebra as na;
+use crate::common::{prelude::*, transform::Transform};
+use bevy_ecs::system::SystemParam;
+use nalgebra::{Matrix4, Perspective3, Point3};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Camera {
-    pub projection: na::Perspective3<f32>,
+    pub projection: Perspective3<f32>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub struct ActiveCamera(pub Option<Entity>);
 
 impl Camera {
-    pub fn projection_matrix(&self) -> na::Matrix4<f32> {
+    pub fn projection_matrix(&self) -> Matrix4<f32> {
         self.projection.into()
     }
 }
@@ -20,7 +19,7 @@ impl Camera {
 impl Default for Camera {
     fn default() -> Self {
         Camera {
-            projection: na::Perspective3::new(1.0, std::f32::consts::PI / 2.0, 0.1, 1000.0),
+            projection: Perspective3::new(1.0, std::f32::consts::PI / 2.0, 0.1, 1000.0),
         }
     }
 }

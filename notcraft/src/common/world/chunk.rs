@@ -1,4 +1,4 @@
-use crate::{engine::world::registry::BlockId, util};
+use crate::{common::world::registry::BlockId, util};
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Point3;
@@ -62,17 +62,6 @@ struct ChunkInner {
     data: UnsafeCell<ChunkData<BlockId>>,
     orphaned: AtomicBool,
 }
-
-// impl Drop for ChunkInner {
-//     fn drop(&mut self) {
-//         log::debug!(
-//             "inner dropped! {} {} {}",
-//             self.pos.x,
-//             self.pos.y,
-//             self.pos.z
-//         );
-//     }
-// }
 
 impl ChunkInner {
     pub fn new(pos: ChunkPos, data: ChunkData<BlockId>) -> Self {
