@@ -142,7 +142,7 @@ impl Chunk {
 }
 
 fn write_chunk_updates_array<I: Iterator<Item = ChunkUpdate>>(
-    data: &mut ArrayChunk,
+    data: &mut ArrayChunk<BlockId>,
     center: ChunkPos,
     rebuild: &mut HashSet<ChunkPos>,
     updates: I,
@@ -307,7 +307,7 @@ impl ChunkSnapshotCache {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ChunkData {
     Homogeneous(BlockId),
-    Array(ArrayChunk),
+    Array(ArrayChunk<BlockId>),
 }
 
 impl ChunkData {
@@ -320,13 +320,13 @@ impl ChunkData {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct ArrayChunk {
+pub struct ArrayChunk<T> {
     // data order is XZY
-    data: Box<[BlockId]>,
+    data: Box<[T]>,
 }
 
-impl ArrayChunk {
-    pub fn homogeneous(id: BlockId) -> Self {
+impl<T: Copy> ArrayChunk<T> {
+    pub fn homogeneous(id: T) -> Self {
         Self {
             data: vec![id; CHUNK_VOLUME].into_boxed_slice(),
         }
@@ -337,8 +337,8 @@ pub fn is_in_chunk_bounds(x: usize, y: usize, z: usize) -> bool {
     x < CHUNK_LENGTH && y < CHUNK_LENGTH && z < CHUNK_LENGTH
 }
 
-impl<I: Into<[usize; 3]>> Index<I> for ArrayChunk {
-    type Output = BlockId;
+impl<T, I: Into<[usize; 3]>> Index<I> for ArrayChunk<T> {
+    type Output = T;
 
     fn index(&self, index: I) -> &Self::Output {
         let [x, y, z] = index.into();
@@ -355,7 +355,7 @@ impl<I: Into<[usize; 3]>> Index<I> for ArrayChunk {
 
 pub type ChunkIndex = [usize; 3];
 
-impl<I: Into<[usize; 3]>> IndexMut<I> for ArrayChunk {
+impl<T, I: Into<[usize; 3]>> IndexMut<I> for ArrayChunk<T> {
     fn index_mut(&mut self, index: I) -> &mut Self::Output {
         let [x, y, z] = index.into();
         if is_in_chunk_bounds(x, y, z) {
@@ -412,10 +412,10 @@ impl std::fmt::Display for ChunkTryFromError {
     }
 }
 
-impl TryFrom<Box<[BlockId]>> for ArrayChunk {
+impl<T> TryFrom<Box<[T]>> for ArrayChunk<T> {
     type Error = ChunkTryFromError;
 
-    fn try_from(data: Box<[BlockId]>) -> Result<Self, Self::Error> {
+    fn try_from(data: Box<[T]>) -> Result<Self, Self::Error> {
         if data.len() != CHUNK_VOLUME {
             return Err(ChunkTryFromError {
                 provided_size: data.len(),
