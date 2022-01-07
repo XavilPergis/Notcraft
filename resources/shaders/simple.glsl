@@ -2,7 +2,7 @@
 #version 330 core
 
 in uint pos_ao;
-in uint side_id;
+in uint light_side_id;
 
 uniform mat4 model;
 uniform mat4 view;
@@ -40,11 +40,16 @@ void main()
     uint bx = (pos_ao >> 22) & uint(1023);
     vec3 pos = vec3(float(bx) / 16.0, float(by) / 16.0, float(bz) / 16.0);
 
-    uint bid = side_id & uint(65535);
+    uint bid = light_side_id & uint(65535);
     int id = int(bid);
     
-    uint baxis = (side_id >> 16) & uint(3);
-    uint baxisSign = (side_id >> 18) & uint(1);
+    uint light_side = light_side_id >> 16;
+    uint baxis = light_side & uint(3);
+    uint baxisSign = (light_side >> 2) & uint(1);
+
+    uint light = (light_side >> 8) & uint(1);
+    float blockLight = float(light & uint(15)) / 16.0;
+    float skyLight = float((light >> 4) & uint(15)) / 16.0;
 
     vec3 normal = normalFromAxis[baxis];
     normal *= axisSign[baxisSign];
@@ -60,13 +65,19 @@ void main()
     // normal shader code
     gl_Position = projection * view * model * vec4(pos, 1.0);
 
-    float brightness = 1.0 - ((1.0 - ao) * (1.0 - MIN_AO_BRIGHTNESS));
+    float brightness = 1.0;
+    brightness *= mix(MIN_AO_BRIGHTNESS, 1.0, ao);
 
     // directional lighting
     brightness *= contribution(baxis == uint(1) && baxisSign == uint(0), 0.0); // top
     brightness *= contribution(baxis == uint(1) && baxisSign == uint(1), 0.4); // bottom
     brightness *= contribution(baxis == uint(0), 0.1); // X
     brightness *= contribution(baxis == uint(2), 0.2); // Z
+
+    brightness *= max(
+        mix(0.1, 1.0, blockLight),
+        mix(0.1, 1.0, skyLight)
+    );
 
     v_color_filter = vec3(brightness);
 

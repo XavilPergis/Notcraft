@@ -669,7 +669,7 @@ fn declare_targets(mut targets: NonSendMut<RenderTargets>) -> Result<()> {
     targets.declare_target("final", RenderTargetDesc {
         size: RenderTargetSize::WindowExact,
         kind: RenderTargetKind::ColorOnly {
-            color: ColorTextureFormat::UncompressedFloat(UncompressedFloatFormat::U8U8U8),
+            color: ColorTextureFormat::UncompressedFloat(UncompressedFloatFormat::F16F16F16),
             clear_color: None, // completely filled in with post pass
         },
         samples: None,

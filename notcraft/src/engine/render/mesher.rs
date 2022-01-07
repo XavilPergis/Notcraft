@@ -810,17 +810,19 @@ pub struct TerrainVertex {
     // lower AO values mean darker shadows
     pub pos_ao: u32,
 
-    // (13 bit residual)
+    // - 4 bits for sky light
+    // - 4 bits for block light
+    // (5 bit residual)
     // - 1 bit for side
     // - 2 bits for axis
     // we can compute the UV coordinates from the surface normal and the world position, and we can
     // get the normal via a lookup table using the side
     // - 16 bits for block id
     // this seems substantial enough to never ever be a problem
-    pub side_id: u32,
+    pub light_side_id: u32,
 }
 
-glium::implement_vertex!(TerrainVertex, pos_ao, side_id);
+glium::implement_vertex!(TerrainVertex, pos_ao, light_side_id);
 
 fn pack_side(side: Side) -> u8 {
     match side {
@@ -836,7 +838,14 @@ fn pack_side(side: Side) -> u8 {
 }
 
 impl TerrainVertex {
-    pub fn pack(pos: [u16; 3], side: Side, id: u16, ao: u8) -> Self {
+    pub fn pack(
+        pos: [u16; 3],
+        side: Side,
+        sky_light: u16,
+        block_light: u16,
+        id: u16,
+        ao: u8,
+    ) -> Self {
         let [x, y, z] = pos;
         let mut pos_ao = 0u32;
         // while 10 bits are reserved for each axis, we only use 5 of them currently.
@@ -849,13 +858,21 @@ impl TerrainVertex {
         pos_ao <<= 2;
         pos_ao |= ao as u32;
 
-        // .... .... .... .DSS  IIII IIII IIII IIII
-        let mut side_id = 0u32;
-        side_id |= pack_side(side) as u32;
-        side_id <<= 16;
-        side_id |= id as u32;
+        let mut light = 0u32;
+        light |= ((sky_light & 0xf) as u32) << 4;
+        light |= (block_light & 0xf) as u32;
 
-        Self { pos_ao, side_id }
+        // SSSS BBBB .... .DSS  IIII IIII IIII IIII
+        let mut light_side_id = 0u32;
+        light_side_id |= light << 8;
+        light_side_id |= pack_side(side) as u32;
+        light_side_id <<= 16;
+        light_side_id |= id as u32;
+
+        Self {
+            pos_ao,
+            light_side_id,
+        }
     }
 }
 
@@ -1012,9 +1029,14 @@ fn mesh_cross(ctx: &mut MeshConstructor, id: BlockId, pos: Point3<ChunkAxis>) {
 
     let mut vert = |offset: Vector3<_>| {
         let pos = (16 * pos) + offset;
-        ctx.terrain_mesh
-            .vertices
-            .push(TerrainVertex::pack(pos.into(), Side::Right, tex_id, 3));
+        ctx.terrain_mesh.vertices.push(TerrainVertex::pack(
+            pos.into(),
+            Side::Right,
+            0,
+            0,
+            tex_id,
+            3,
+        ));
     };
 
     // we dont just use 1 here because of some weird wrapping behavior in the
@@ -1067,7 +1089,7 @@ fn mesh_full_cube(ctx: &mut MeshConstructor, quad: VoxelQuad, side: Side, pos: P
         let pos: Point3<u16> = (16 * pos) + (16 * offset);
         ctx.terrain_mesh
             .vertices
-            .push(TerrainVertex::pack(pos.into(), side, tex_id, ao));
+            .push(TerrainVertex::pack(pos.into(), side, 0, 0, tex_id, ao));
     };
 
     let h = if side.facing_positive() { 1 } else { 0 };
