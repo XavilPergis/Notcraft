@@ -197,7 +197,7 @@ impl ChunkGenerator {
         }
     }
 
-    pub fn make_chunk(&self, pos: ChunkPos, heights: SurfaceHeightmap) -> ChunkData {
+    pub fn make_chunk(&self, pos: ChunkPos, heights: SurfaceHeightmap) -> ChunkData<BlockId> {
         let base_y = pos.origin().y as f32;
 
         let mut rng = SmallRng::from_entropy();

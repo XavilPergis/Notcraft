@@ -37,7 +37,7 @@ impl ChunkSnapshot {
         self.inner.pos
     }
 
-    pub fn data(&self) -> &ChunkData {
+    pub fn data(&self) -> &ChunkData<BlockId> {
         unsafe { &*self.inner.data.get() }
     }
 
@@ -59,7 +59,7 @@ impl Drop for ChunkSnapshot {
 struct ChunkInner {
     pos: ChunkPos,
     lock: RawRwLock,
-    data: UnsafeCell<ChunkData>,
+    data: UnsafeCell<ChunkData<BlockId>>,
     orphaned: AtomicBool,
 }
 
@@ -75,7 +75,7 @@ struct ChunkInner {
 // }
 
 impl ChunkInner {
-    pub fn new(pos: ChunkPos, data: ChunkData) -> Self {
+    pub fn new(pos: ChunkPos, data: ChunkData<BlockId>) -> Self {
         Self {
             pos,
             lock: RawRwLock::INIT,
@@ -105,7 +105,7 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    pub fn new(dirty_sender: &Sender<ChunkPos>, pos: ChunkPos, kind: ChunkData) -> Self {
+    pub fn new(dirty_sender: &Sender<ChunkPos>, pos: ChunkPos, kind: ChunkData<BlockId>) -> Self {
         let (write_queue_tx, write_queue_rx) = crossbeam_channel::unbounded();
         let inner = ArcSwap::from_pointee(ChunkInner::new(pos, kind));
 
@@ -198,7 +198,7 @@ fn write_chunk_updates_array<I: Iterator<Item = ChunkUpdate>>(
 }
 
 fn write_chunk_updates<I: Iterator<Item = ChunkUpdate>>(
-    data: &mut ChunkData,
+    data: &mut ChunkData<BlockId>,
     center: ChunkPos,
     rebuild: &mut HashSet<ChunkPos>,
     mut updates: I,
@@ -305,13 +305,13 @@ impl ChunkSnapshotCache {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub enum ChunkData {
-    Homogeneous(BlockId),
-    Array(ArrayChunk<BlockId>),
+pub enum ChunkData<T> {
+    Homogeneous(T),
+    Array(ArrayChunk<T>),
 }
 
-impl ChunkData {
-    pub fn get(&self, index: ChunkIndex) -> BlockId {
+impl<T: Copy> ChunkData<T> {
+    pub fn get(&self, index: ChunkIndex) -> T {
         match self {
             &ChunkData::Homogeneous(id) => id,
             ChunkData::Array(data) => data[index],
@@ -433,7 +433,7 @@ pub struct CompactedChunk {
 }
 
 impl CompactedChunk {
-    pub fn compact(data: &ChunkData) -> Self {
+    pub fn compact(data: &ChunkData<BlockId>) -> Self {
         match data {
             &ChunkData::Homogeneous(id) => Self {
                 runs: vec![(1, id)],
@@ -459,7 +459,7 @@ impl CompactedChunk {
         }
     }
 
-    pub fn decompact(&self) -> ChunkData {
+    pub fn decompact(&self) -> ChunkData<BlockId> {
         match self.runs.len() {
             1 => ChunkData::Homogeneous(self.runs[0].1),
             _ => ChunkData::Array({
