@@ -1,8 +1,6 @@
 use crate::{common::prelude::*, util::ChannelPair};
 use anyhow::Context;
-use glium::{
-    program::SourceCode, texture::TextureCreationError, Display, Program, ProgramCreationError,
-};
+use glium::{program::SourceCode, texture::TextureCreationError, Display, Program};
 use image::{GenericImageView, ImageError, RgbaImage};
 use notify::RecommendedWatcher;
 use std::{

@@ -40,7 +40,6 @@ use glium::{
     Display,
 };
 use nalgebra::{point, Point3, UnitQuaternion, Vector2, Vector3};
-use num_traits::Float;
 use std::{rc::Rc, sync::Arc};
 use structopt::StructOpt;
 

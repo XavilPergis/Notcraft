@@ -5,14 +5,12 @@ use crate::{
     },
     common::{
         aabb::Aabb,
-        math::*,
         prelude::*,
-        transform::Transform,
         world::{
             chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
             chunk_aabb,
             registry::BlockId,
-            ChunkEvent, VoxelWorld,
+            VoxelWorld,
         },
         Faces, Side,
     },
@@ -21,12 +19,7 @@ use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use glium::{backend::Facade, index::PrimitiveType, IndexBuffer, VertexBuffer};
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use std::{
-    collections::{HashMap, HashSet},
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashSet, str::FromStr, sync::Arc, time::Duration};
 
 use self::{
     generation::{should_add_face, ChunkNeighbors, CompletedMesh, MeshCreationContext},
@@ -114,7 +107,7 @@ pub struct HasTerrainMesh;
 
 fn update_completed_meshes(
     mut cmd: Commands,
-    mut ctx: ResMut<MesherContext>,
+    ctx: Res<MesherContext>,
     mut tracker: ResMut<MeshTracker>,
     voxel_world: Res<Arc<VoxelWorld>>,
     mesh_context: Res<Arc<SharedMeshContext<TerrainMesh>>>,

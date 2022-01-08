@@ -14,15 +14,12 @@ use std::{
 
 use nalgebra::Point3;
 
-use crate::{
-    client::render::renderer::{add_debug_box, DebugBox, DebugBoxKind},
-    common::{
-        prelude::*,
-        transform::Transform,
-        world::{
-            chunk::{Chunk, ChunkPos},
-            chunk_aabb, ChunkEvent, VoxelWorld,
-        },
+use crate::common::{
+    prelude::*,
+    transform::Transform,
+    world::{
+        chunk::{Chunk, ChunkPos},
+        ChunkEvent, VoxelWorld,
     },
 };
 
