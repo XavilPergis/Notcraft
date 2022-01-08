@@ -298,7 +298,7 @@ impl ShaderStage {
 pub enum ShaderParseEvent<'src> {
     /// the beginning of the shader located at the path specified in the parser
     /// these events came from. this is emitted before anything else.
-    /// likewise, [`End`] is emitted after everything else in the file.
+    /// likewise, [`Self::End`] is emitted after everything else in the file.
     Start,
     End,
 

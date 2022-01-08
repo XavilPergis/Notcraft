@@ -1,11 +1,29 @@
+//! this module provides tracking for which chunks need to be meshed.
+//!
+//! this tracking is needed because we can only mesh a chunk properly when all
+//! 26 neighboring chunks are loaded, so directly meshing a chunk when a ["chunk
+//! added" event][crate::common::world::ChunkEvent] is received is off the
+//! table. tracking is handled by [`MeshTracker`], which receives updates about
+//! the state of the world, and produces positions of chunks that have enough
+//! data to be meshed.
+
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
 
-use crate::common::world::{
-    chunk::{Chunk, ChunkPos},
-    VoxelWorld,
+use nalgebra::Point3;
+
+use crate::{
+    client::render::renderer::{add_debug_box, DebugBox, DebugBoxKind},
+    common::{
+        prelude::*,
+        transform::Transform,
+        world::{
+            chunk::{Chunk, ChunkPos},
+            chunk_aabb, ChunkEvent, VoxelWorld,
+        },
+    },
 };
 
 fn neighbors<F>(pos: ChunkPos, mut func: F)
@@ -28,9 +46,11 @@ where
 pub struct MeshTracker {
     constraining: HashMap<ChunkPos, HashSet<ChunkPos>>,
     constrained_by: HashMap<ChunkPos, HashSet<ChunkPos>>,
-    unconstrained: HashSet<ChunkPos>,
 
-    have_data: HashSet<ChunkPos>,
+    needs_mesh: HashSet<ChunkPos>,
+
+    loaded: HashSet<ChunkPos>,
+    terrain_entities: HashMap<ChunkPos, Entity>,
 }
 
 impl MeshTracker {
@@ -42,124 +62,185 @@ impl MeshTracker {
     // INVARIANT: for a chunk X and each value Y of `constraining[X]`,
     // `constrained_by[Y]` must contain X
 
+    fn constrain_self(&mut self, center: ChunkPos) {
+        neighbors(center, |neighbor| {
+            if !self.loaded.contains(&neighbor) {
+                self.constraining
+                    .entry(neighbor)
+                    .or_default()
+                    .insert(center);
+                self.constrained_by
+                    .entry(center)
+                    .or_default()
+                    .insert(neighbor);
+            }
+        });
+    }
+
+    fn constrain_neighbors(&mut self, center: ChunkPos) {
+        neighbors(center, |neighbor| {
+            if self.loaded.contains(&neighbor) {
+                self.constraining
+                    .entry(center)
+                    .or_default()
+                    .insert(neighbor);
+                self.constrained_by
+                    .entry(neighbor)
+                    .or_default()
+                    .insert(center);
+
+                self.needs_mesh.remove(&neighbor);
+            }
+        });
+    }
+
+    fn unconstrain_self(&mut self, center: ChunkPos) {
+        let constrainers = match self.constrained_by.remove(&center) {
+            Some(constrainers) => constrainers,
+            None => return,
+        };
+
+        for &constrainer in constrainers.iter() {
+            let neighbor_constraining = self
+                .constraining
+                .get_mut(&constrainer)
+                .expect("(remove) constraints not bidirectional");
+
+            neighbor_constraining.remove(&center);
+            if neighbor_constraining.is_empty() {
+                self.constraining.remove(&constrainer);
+            }
+        }
+    }
+
+    fn unconstrain_neighbors(&mut self, center: ChunkPos) {
+        let constraining = match self.constraining.remove(&center) {
+            Some(constraining) => constraining,
+            None => return,
+        };
+
+        for &neighbor in constraining.iter() {
+            let neighbor_constraints = self
+                .constrained_by
+                .get_mut(&neighbor)
+                .expect("(add) constraints not bidirectional");
+
+            neighbor_constraints.remove(&center);
+            if neighbor_constraints.is_empty() {
+                self.constrained_by.remove(&neighbor);
+                self.needs_mesh.insert(neighbor);
+            }
+        }
+    }
+
     pub fn chunk_mesh_failed(&mut self, chunk: ChunkPos) {
         // by the time it gets here, the failed chunk might have been unloaded itself,
         // or might have had its neighbors been unloaded. if it was unloaded itself,
         // there is nothing to do because of the `have_data` invariants.
-        if !self.have_data.contains(&chunk) {
+        if !self.loaded.contains(&chunk) {
             return;
         }
 
-        neighbors(chunk, |neighbor| {
-            if !self.have_data.contains(&neighbor) {
-                self.constraining.entry(neighbor).or_default().insert(chunk);
-                self.constrained_by
-                    .entry(chunk)
-                    .or_default()
-                    .insert(neighbor);
-            }
-        });
+        self.constrain_self(chunk);
 
         // it might be the case that a mesh failed because of unloaded neighbors, but
         // between the time that the failed response was queued and now, the neighbors
         // became loaded.
-        if !self.constrained_by.contains_key(&chunk) {
-            self.unconstrained.insert(chunk);
-        }
+        self.request_mesh(chunk);
     }
 
-    pub fn chunk_added(&mut self, chunk: ChunkPos) {
-        self.have_data.insert(chunk);
+    pub fn add_chunk(&mut self, chunk: ChunkPos, cmd: &mut Commands) {
+        let success = self.loaded.insert(chunk);
+        assert!(
+            success,
+            "chunk {:?} was added to tracker, but it was already tracked",
+            chunk
+        );
+
+        let world_pos: Point3<f32> = chunk.origin().origin().into();
+        let transform = Transform::from(world_pos);
+        self.terrain_entities
+            .insert(chunk, cmd.spawn().insert(transform).id());
 
         // set up constraints for the newly-added chunk
-        neighbors(chunk, |neighbor| {
-            if !self.have_data.contains(&neighbor) {
-                self.constraining.entry(neighbor).or_default().insert(chunk);
-                self.constrained_by
-                    .entry(chunk)
-                    .or_default()
-                    .insert(neighbor);
-            }
-        });
+        self.constrain_self(chunk);
+
+        // remove constraints for neighbors that depended on us
+        self.unconstrain_neighbors(chunk);
 
         // it may be the case that we get a new chunk where all its neighbors already
         // have data, in which case the new chunk is already unconstrained.
-        if !self.constrained_by.contains_key(&chunk) {
-            self.unconstrained.insert(chunk);
-        }
-
-        // remove constraints for neighbors that depended on us
-        if let Some(constraining) = self.constraining.get_mut(&chunk) {
-            for &neighbor in constraining.iter() {
-                let neighbor_constraints = self
-                    .constrained_by
-                    .get_mut(&neighbor)
-                    .expect("(add) constraints not bidirectional");
-
-                neighbor_constraints.remove(&chunk);
-                if neighbor_constraints.is_empty() {
-                    self.unconstrained.insert(neighbor);
-                    self.constrained_by.remove(&neighbor);
-                }
-            }
-
-            self.constraining.remove(&chunk);
-        }
+        self.request_mesh(chunk);
 
         assert!(!self.constraining.contains_key(&chunk));
     }
 
-    pub fn chunk_removed(&mut self, chunk: ChunkPos) {
-        self.have_data.remove(&chunk);
+    pub fn remove_chunk(&mut self, chunk: ChunkPos, cmd: &mut Commands) {
+        let success = self.loaded.remove(&chunk);
+        assert!(
+            success,
+            "chunk {:?} was removed from tracker, but it wasn't tracked",
+            chunk
+        );
 
-        // add constraints to neighbors of the newly-removed chunk
-        neighbors(chunk, |neighbor| {
-            if self.have_data.contains(&neighbor) {
-                self.constraining.entry(chunk).or_default().insert(neighbor);
-                self.constrained_by
-                    .entry(neighbor)
-                    .or_default()
-                    .insert(chunk);
-
-                self.unconstrained.remove(&neighbor);
-            }
-        });
+        let entity = self.terrain_entities.remove(&chunk).unwrap();
+        cmd.entity(entity).despawn();
 
         // remove old `constraining` entries that pointed to the removed chunk,
         // upholding one of our `have_data` invariants.
-        if let Some(constrainers) = self.constrained_by.get(&chunk) {
-            for &constrainer in constrainers.iter() {
-                let neighbor_constraining = self
-                    .constraining
-                    .get_mut(&constrainer)
-                    .expect("(remove) constraints not bidirectional");
+        self.unconstrain_self(chunk);
 
-                neighbor_constraining.remove(&chunk);
-                if neighbor_constraining.is_empty() {
-                    self.constraining.remove(&constrainer);
-                }
-            }
-        }
+        // add constraints to neighbors of the newly-removed chunk
+        self.constrain_neighbors(chunk);
 
-        // uphold our second `have_data` invariant.
-        self.constrained_by.remove(&chunk);
+        assert!(!self.constrained_by.contains_key(&chunk));
     }
 
-    pub fn chunk_modified(&mut self, chunk: ChunkPos) {
-        if self.have_data.contains(&chunk) {
-            self.unconstrained.insert(chunk);
+    pub fn request_mesh(&mut self, chunk: ChunkPos) {
+        let is_unconstrained = !self.constrained_by.contains_key(&chunk);
+        let is_loaded = self.loaded.contains(&chunk);
+        if is_unconstrained && is_loaded {
+            self.needs_mesh.insert(chunk);
         }
     }
 
     pub fn next(&mut self, world: &Arc<VoxelWorld>) -> Option<Arc<Chunk>> {
-        let &pos = self.unconstrained.iter().next()?;
-        self.unconstrained.remove(&pos);
+        let &pos = self.needs_mesh.iter().next()?;
         let chunk = world.chunk(pos);
         assert!(
             chunk.is_some(),
             "chunk {:?} was tracked for meshing but didnt exist in the world",
             pos
         );
+        assert!(
+            !self.constrained_by.contains_key(&pos),
+            "chunk {:?} was in to-mesh set, but was constrained by {:?}",
+            pos,
+            self.constrained_by[&pos]
+        );
+        self.needs_mesh.remove(&pos);
         chunk
+    }
+
+    pub fn terrain_entity(&self, pos: ChunkPos) -> Option<Entity> {
+        self.terrain_entities.get(&pos).cloned()
+    }
+}
+
+pub fn update_tracker(
+    mut cmd: Commands,
+    mut tracker: ResMut<MeshTracker>,
+    mut events: EventReader<ChunkEvent>,
+) {
+    for event in events.iter() {
+        match event {
+            ChunkEvent::Added(chunk) => tracker.add_chunk(chunk.pos(), &mut cmd),
+            ChunkEvent::Removed(chunk) => tracker.remove_chunk(chunk.pos(), &mut cmd),
+            ChunkEvent::Modified(chunk) => {
+                // NOTE: we're choosing to keep chunk meshes for chunks that have already been
+                // meshed, but no longer have enough data to re-mesh
+                tracker.request_mesh(chunk.pos());
+            }
+        }
     }
 }
