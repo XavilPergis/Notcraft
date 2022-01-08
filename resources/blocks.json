@@ -118,6 +118,19 @@
                     "default": "detail-grass"
                 }
             ]
+        },
+        {
+            "name": "debug_glow_block",
+            "mesh-type": "cross",
+            "properties": {
+                "collision-type": "none",
+                "liquid": false
+            },
+            "texture-variants": [
+                {
+                    "default": "water"
+                }
+            ]
         }
     ]
 }

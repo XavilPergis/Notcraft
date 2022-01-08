@@ -108,6 +108,8 @@ fn camera_controller(
 pub struct TerrainManipulator {
     start_pos: Option<BlockPos>,
     start_button: Option<ButtonId>,
+    // TODO: certainly not this!!
+    block_name: &'static str,
 }
 
 fn make_ray(transform: &Transform, reference: &Vector3<f32>) -> Ray3<f32> {
@@ -187,7 +189,7 @@ fn terrain_manipulation_area(
                 kind: DebugBoxKind::Solid,
             });
             if input.key(DigitalInput::Button(3)).is_falling() {
-                let id = ctx.world.registry.get_id("stone");
+                let id = ctx.world.registry.get_id(ctx.manip.block_name);
                 iter_blocks_in(start_pos, end_pos, |pos| {
                     ctx.set_block(pos, id);
                 });
@@ -321,7 +323,7 @@ fn terrain_manipulation_build_to_me(
     hit: &RaycastHit,
     ctx: &mut TerrainManipulationContext,
 ) {
-    let id = ctx.world.registry.get_id("stone");
+    let id = ctx.world.registry.get_id(ctx.manip.block_name);
     if let Some(side) = hit.side {
         let offset = side.normal::<i32>();
         let start_pos = BlockPos {
@@ -385,7 +387,7 @@ fn terrain_manipulation_single(
             kind: DebugBoxKind::Solid,
         });
         if input.key(DigitalInput::Button(3)).is_rising() {
-            let id = ctx.world.registry.get_id("stone");
+            let id = ctx.world.registry.get_id(ctx.manip.block_name);
             ctx.set_block(offset, id);
         }
     }
@@ -568,6 +570,7 @@ fn setup_player(mut cmd: Commands) {
         .insert(TerrainManipulator {
             start_pos: None,
             start_button: None,
+            block_name: "debug_glow_block",
         })
         .id();
 

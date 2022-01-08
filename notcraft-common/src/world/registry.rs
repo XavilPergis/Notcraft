@@ -60,6 +60,8 @@ pub struct BlockProperties {
     collision_type: CollisionType,
     #[serde(default)]
     liquid: bool,
+    #[serde(default)]
+    block_light: usize,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Deserialize)]
