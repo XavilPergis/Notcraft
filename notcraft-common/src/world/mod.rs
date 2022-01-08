@@ -15,13 +15,16 @@ use std::{
 
 pub use self::chunk::ArrayChunk;
 use self::{
-    chunk::{Chunk, ChunkPos, ChunkSnapshotCache, CompactedChunk},
+    chunk::{Chunk, ChunkData, ChunkPos, ChunkSnapshotCache, CompactedChunk},
+    lighting::LightValue,
     registry::{load_registry, BlockId, BlockRegistry, CollisionType},
 };
 use crate::{aabb::Aabb, prelude::*, transform::Transform, world::chunk::CHUNK_LENGTH, Axis, Side};
 
 pub mod chunk;
 pub mod generation;
+pub mod lighting;
+pub mod orphan;
 pub mod registry;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -249,7 +252,12 @@ impl VoxelWorld {
 
             if let Some(compacted) = self.modified_chunks.pin().get(&pos) {
                 let chunk_data = compacted.decompact();
-                let chunk = Arc::new(Chunk::new(&self.dirty_chunks_tx, pos, chunk_data));
+                let chunk = Arc::new(Chunk::new(
+                    &self.dirty_chunks_tx,
+                    pos,
+                    chunk_data,
+                    ChunkData::Homogeneous(LightValue::default()),
+                ));
 
                 // insert before and remove if cancelled to prevent a user from cancelling world
                 // chunk after we check whether the chunk was cancelled
@@ -276,7 +284,12 @@ impl VoxelWorld {
                     let heights = world.surface_cache.surface_heights(pos.into());
                     let chunk_data = world.chunk_generator.make_chunk(pos, heights);
 
-                    let chunk = Arc::new(Chunk::new(&world.dirty_chunks_tx, pos, chunk_data));
+                    let chunk = Arc::new(Chunk::new(
+                        &world.dirty_chunks_tx,
+                        pos,
+                        chunk_data,
+                        ChunkData::Homogeneous(LightValue::default()),
+                    ));
 
                     // insert before and remove if cancelled to prevent a user from cancelling world
                     // chunk after we check whether the chunk was cancelled
@@ -312,7 +325,7 @@ impl VoxelWorld {
 
             // save this chunk if it differs from what was originally generated
             if chunk.was_ever_modified() {
-                let compacted = CompactedChunk::compact(chunk.snapshot().data());
+                let compacted = CompactedChunk::compact(chunk.snapshot().blocks());
                 self.modified_chunks.pin().insert(pos, compacted);
             }
 

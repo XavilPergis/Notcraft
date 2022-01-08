@@ -1,10 +1,7 @@
-use crate::{util, world::registry::BlockId};
-use arc_swap::ArcSwap;
+use crate::world::registry::BlockId;
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Point3;
-use parking_lot::{lock_api::RawRwLock as RawRwLockApi, RawRwLock};
 use std::{
-    cell::UnsafeCell,
     collections::{hash_map::Entry, HashMap, HashSet},
     ops::{Index, IndexMut},
     sync::{
@@ -13,7 +10,11 @@ use std::{
     },
 };
 
-use super::{BlockPos, VoxelWorld};
+use super::{
+    lighting::LightValue,
+    orphan::{Orphan, OrphanSnapshot},
+    BlockPos, VoxelWorld,
+};
 
 // The width of the chunk is `2 ^ SIZE_BITS`
 pub const CHUNK_LENGTH_BITS: usize = 5;
@@ -23,13 +24,33 @@ pub const CHUNK_AREA: usize = CHUNK_LENGTH * CHUNK_LENGTH;
 pub const CHUNK_VOLUME: usize = CHUNK_LENGTH * CHUNK_LENGTH * CHUNK_LENGTH;
 
 #[derive(Clone)]
+struct ChunkInner {
+    pos: ChunkPos,
+    block_data: ChunkData<BlockId>,
+    block_light_data: ChunkData<LightValue>,
+}
+
+impl ChunkInner {
+    fn new(
+        pos: ChunkPos,
+        block_data: ChunkData<BlockId>,
+        block_light_data: ChunkData<LightValue>,
+    ) -> Self {
+        Self {
+            pos,
+            block_data,
+            block_light_data,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct ChunkSnapshot {
-    inner: Arc<ChunkInner>,
+    inner: OrphanSnapshot<ChunkInner>,
 }
 
 impl ChunkSnapshot {
-    fn acquire(inner: Arc<ChunkInner>) -> Self {
-        inner.lock.lock_shared();
+    fn new(inner: OrphanSnapshot<ChunkInner>) -> Self {
         Self { inner }
     }
 
@@ -37,45 +58,19 @@ impl ChunkSnapshot {
         self.inner.pos
     }
 
-    pub fn data(&self) -> &ChunkData<BlockId> {
-        unsafe { &*self.inner.data.get() }
+    pub fn blocks(&self) -> &ChunkData<BlockId> {
+        &self.inner.block_data
     }
 
-    /// returns true if this chunk reader is known to be orphaned, and therefore
-    /// not the most up-to-date version of the chunk data in this location. it
-    /// is important to note that this _may_ return false even if the reader has
-    /// been orphaned, and is meant more for coarse-grained optimizations.
+    pub fn block_light(&self) -> &ChunkData<LightValue> {
+        &self.inner.block_light_data
+    }
+
+    /// See [`OrphanSnapshot::is_orphaned`]
     pub fn is_orphaned(&self) -> bool {
-        self.inner.orphaned.load(Ordering::Relaxed)
+        self.inner.is_orphaned()
     }
 }
-
-impl Drop for ChunkSnapshot {
-    fn drop(&mut self) {
-        unsafe { self.inner.lock.unlock_shared() };
-    }
-}
-
-struct ChunkInner {
-    pos: ChunkPos,
-    lock: RawRwLock,
-    data: UnsafeCell<ChunkData<BlockId>>,
-    orphaned: AtomicBool,
-}
-
-impl ChunkInner {
-    pub fn new(pos: ChunkPos, data: ChunkData<BlockId>) -> Self {
-        Self {
-            pos,
-            lock: RawRwLock::INIT,
-            data: UnsafeCell::new(data),
-            orphaned: AtomicBool::new(false),
-        }
-    }
-}
-
-unsafe impl Send for ChunkInner {}
-unsafe impl Sync for ChunkInner {}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ChunkUpdate {
@@ -85,7 +80,7 @@ pub struct ChunkUpdate {
 
 pub struct Chunk {
     pos: ChunkPos,
-    inner: ArcSwap<ChunkInner>,
+    inner: Orphan<ChunkInner>,
     was_ever_modified: AtomicBool,
     dirty: AtomicBool,
     dirty_sender: Sender<ChunkPos>,
@@ -94,9 +89,14 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    pub fn new(dirty_sender: &Sender<ChunkPos>, pos: ChunkPos, kind: ChunkData<BlockId>) -> Self {
+    pub fn new(
+        dirty_sender: &Sender<ChunkPos>,
+        pos: ChunkPos,
+        block_data: ChunkData<BlockId>,
+        block_light_data: ChunkData<LightValue>,
+    ) -> Self {
         let (write_queue_tx, write_queue_rx) = crossbeam_channel::unbounded();
-        let inner = ArcSwap::from_pointee(ChunkInner::new(pos, kind));
+        let inner = Orphan::new(ChunkInner::new(pos, block_data, block_light_data));
 
         Self {
             pos,
@@ -114,7 +114,7 @@ impl Chunk {
     }
 
     pub fn snapshot(&self) -> ChunkSnapshot {
-        ChunkSnapshot::acquire(self.inner.load_full())
+        ChunkSnapshot::new(self.inner.snapshot())
     }
 
     pub fn queue_write(&self, index: ChunkIndex, id: BlockId) {
@@ -232,31 +232,15 @@ pub(crate) fn flush_chunk_writes(chunk: &Chunk, rebuild: &mut HashSet<ChunkPos>)
 
     chunk.was_ever_modified.store(true, Ordering::Relaxed);
 
-    let old_inner = chunk.inner.load();
-    if old_inner.lock.try_lock_exclusive() {
-        util::defer!(unsafe { old_inner.lock.unlock_exclusive() });
+    // TODO: light propagation
 
-        let data = unsafe { &mut *old_inner.data.get() };
-        write_chunk_updates(data, chunk.pos(), rebuild, chunk.write_queue_rx.try_iter())
-    } else {
-        log::debug!("flush failed, orphaning");
-        old_inner.lock.lock_shared();
-        util::defer!(unsafe { old_inner.lock.unlock_shared() });
-
-        let mut chunk_data_copy = unsafe { (*old_inner.data.get()).clone() };
-        write_chunk_updates(
-            &mut chunk_data_copy,
-            chunk.pos(),
-            rebuild,
-            chunk.write_queue_rx.try_iter(),
-        );
-        if rebuild.contains(&chunk.pos()) {
-            chunk
-                .inner
-                .store(Arc::new(ChunkInner::new(chunk.pos, chunk_data_copy)));
-            old_inner.orphaned.store(true, Ordering::SeqCst);
-        }
-    }
+    let mut inner = chunk.inner.orphan_readers();
+    write_chunk_updates(
+        &mut inner.block_data,
+        chunk.pos(),
+        rebuild,
+        chunk.write_queue_rx.try_iter(),
+    );
 }
 
 /// a cache for multiple unaligned world accesses over a short period of time.
@@ -283,7 +267,7 @@ impl ChunkSnapshotCache {
     #[must_use]
     pub fn block(&mut self, pos: BlockPos) -> Option<BlockId> {
         let (chunk_pos, chunk_index) = pos.chunk_and_offset();
-        Some(self.chunk(chunk_pos)?.data().get(chunk_index))
+        Some(self.chunk(chunk_pos)?.blocks().get(chunk_index))
     }
 
     pub fn set_block(&self, pos: BlockPos, id: BlockId) -> Option<()> {

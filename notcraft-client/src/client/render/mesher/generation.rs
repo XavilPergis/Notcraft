@@ -48,7 +48,7 @@ impl ChunkNeighbors {
         let (cy, my) = chunks_index_and_offset(y);
         let (cz, mz) = chunks_index_and_offset(z);
 
-        match self.chunks[9 * cx + 3 * cy + cz].data() {
+        match self.chunks[9 * cx + 3 * cy + cz].blocks() {
             ChunkData::Homogeneous(id) => *id,
             ChunkData::Array(arr) => arr[[mx, my, mz]],
         }

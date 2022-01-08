@@ -128,27 +128,27 @@ fn update_completed_meshes(
 
 fn homogenous_should_mesh(world: &Arc<VoxelWorld>, id: BlockId, pos: ChunkPos) -> Option<bool> {
     let faces = Faces {
-        top: match world.chunk(pos.offset([0, 1, 0]))?.snapshot().data() {
+        top: match world.chunk(pos.offset([0, 1, 0]))?.snapshot().blocks() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
-        bottom: match world.chunk(pos.offset([0, -1, 0]))?.snapshot().data() {
+        bottom: match world.chunk(pos.offset([0, -1, 0]))?.snapshot().blocks() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
-        right: match world.chunk(pos.offset([1, 0, 0]))?.snapshot().data() {
+        right: match world.chunk(pos.offset([1, 0, 0]))?.snapshot().blocks() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
-        left: match world.chunk(pos.offset([-1, 0, 0]))?.snapshot().data() {
+        left: match world.chunk(pos.offset([-1, 0, 0]))?.snapshot().blocks() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
-        front: match world.chunk(pos.offset([0, 0, 1]))?.snapshot().data() {
+        front: match world.chunk(pos.offset([0, 0, 1]))?.snapshot().blocks() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
-        back: match world.chunk(pos.offset([0, 0, -1]))?.snapshot().data() {
+        back: match world.chunk(pos.offset([0, 0, -1]))?.snapshot().blocks() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
@@ -194,7 +194,7 @@ fn queue_mesh_job(ctx: &mut MesherContext, world: &Arc<VoxelWorld>, chunk: &Chun
 // count towards the number of meshed chunks this frame.
 fn mesh_one(ctx: &mut MesherContext, world: &Arc<VoxelWorld>, chunk: &ChunkSnapshot) -> bool {
     let pos = chunk.pos();
-    match chunk.data() {
+    match chunk.blocks() {
         &ChunkData::Homogeneous(id) => match homogenous_should_mesh(world, id, pos) {
             Some(true) => queue_mesh_job(ctx, world, chunk),
             Some(false) | None => {
