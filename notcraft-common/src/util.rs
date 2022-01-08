@@ -1,4 +1,4 @@
-use crate::common::{aabb::Aabb, world::BlockPos};
+use crate::{aabb::Aabb, world::BlockPos};
 use bevy_app::{AppExit, EventWriter};
 use bevy_ecs::prelude::In;
 use nalgebra::{point, vector, Point3, Vector3};

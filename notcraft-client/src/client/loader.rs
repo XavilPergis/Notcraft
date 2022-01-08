@@ -1,8 +1,8 @@
-use crate::{common::prelude::*, util::ChannelPair};
+use crate::util::ChannelPair;
 use anyhow::Context;
 use glium::{program::SourceCode, texture::TextureCreationError, Display, Program};
 use image::{GenericImageView, ImageError, RgbaImage};
-use notify::RecommendedWatcher;
+use notcraft_common::prelude::*;
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -649,7 +649,7 @@ pub struct HotReloadPlugin {}
 #[cfg(feature = "hot-reload")]
 pub struct FileWatcher {
     channel: ChannelPair<notify::Result<notify::Event>>,
-    watcher: RecommendedWatcher,
+    watcher: notify::RecommendedWatcher,
 }
 
 #[cfg(feature = "hot-reload")]

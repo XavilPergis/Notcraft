@@ -1,12 +1,7 @@
 use super::{super::camera::CurrentCamera, Tex};
-use crate::{
-    client::{
-        loader::{self, ShaderLoaderState},
-        render::mesher::TerrainMesh,
-    },
-    common::{
-        aabb::Aabb, math::*, prelude::*, transform::Transform, util, world::registry::BlockRegistry,
-    },
+use crate::client::{
+    loader::{self, ShaderLoaderState},
+    render::mesher::TerrainMesh,
 };
 use bevy_ecs::system::SystemParam;
 use crossbeam_channel::{Receiver, Sender};
@@ -23,6 +18,9 @@ use glium::{
     uniforms::{AsUniformValue, MagnifySamplerFilter, Sampler, UniformValue},
     vertex::VertexBuffer,
     Blend, Display, DrawParameters, Frame, Surface,
+};
+use notcraft_common::{
+    aabb::Aabb, math::*, prelude::*, transform::Transform, util, world::registry::BlockRegistry,
 };
 use parking_lot::RwLock;
 use std::{

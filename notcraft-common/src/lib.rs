@@ -1,5 +1,6 @@
 use nalgebra::{vector, Vector3};
 use num_traits::{One, Zero};
+use serde::{Deserialize, Serialize};
 use std::ops::Neg;
 
 pub mod aabb;

@@ -1,4 +1,6 @@
-use crate::common::{prelude::*, Faces};
+use serde::Deserialize;
+
+use crate::{prelude::*, Faces};
 use std::{
     collections::HashMap,
     fs::File,

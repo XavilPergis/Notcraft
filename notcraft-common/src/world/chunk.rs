@@ -1,4 +1,4 @@
-use crate::{common::world::registry::BlockId, util};
+use crate::{util, world::registry::BlockId};
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Point3;

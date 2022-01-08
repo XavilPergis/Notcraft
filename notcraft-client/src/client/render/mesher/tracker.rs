@@ -14,7 +14,7 @@ use std::{
 
 use nalgebra::Point3;
 
-use crate::common::{
+use notcraft_common::{
     prelude::*,
     transform::Transform,
     world::{

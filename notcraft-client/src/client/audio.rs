@@ -1,4 +1,4 @@
-use crate::common::prelude::*;
+use notcraft_common::prelude::*;
 use rand::prelude::*;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{

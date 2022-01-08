@@ -18,9 +18,7 @@ use self::{
     chunk::{Chunk, ChunkPos, ChunkSnapshotCache, CompactedChunk},
     registry::{load_registry, BlockId, BlockRegistry, CollisionType},
 };
-use crate::common::{
-    aabb::Aabb, prelude::*, transform::Transform, world::chunk::CHUNK_LENGTH, Axis, Side,
-};
+use crate::{aabb::Aabb, prelude::*, transform::Transform, world::chunk::CHUNK_LENGTH, Axis, Side};
 
 pub mod chunk;
 pub mod generation;

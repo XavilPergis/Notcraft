@@ -1,4 +1,4 @@
-use crate::common::prelude::*;
+use crate::prelude::*;
 use nalgebra::{vector, Vector3};
 use std::{ops::RangeInclusive, sync::Arc};
 

@@ -1,4 +1,4 @@
-use crate::common::{math::*, util, vector};
+use crate::{math::*, util, vector};
 
 use super::transform::Transform;
 

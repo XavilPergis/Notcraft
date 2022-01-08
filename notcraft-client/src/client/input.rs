@@ -1,4 +1,3 @@
-use crate::common::prelude::*;
 use glium::{
     glutin::{
         event::{
@@ -9,6 +8,7 @@ use glium::{
     },
     Display,
 };
+use notcraft_common::prelude::*;
 use std::{
     collections::{HashMap, HashSet},
     rc::Rc,

@@ -11,7 +11,7 @@ use crossbeam_channel::Sender;
 use nalgebra::{Point3, Vector3};
 use rand::{prelude::SliceRandom, rngs::SmallRng, FromEntropy};
 
-use crate::common::{
+use notcraft_common::{
     prelude::*,
     world::{
         chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
@@ -157,7 +157,7 @@ impl MeshCreationContext {
             registry: Arc::clone(&world.registry),
             chunks: neighbors,
             pos,
-            slice: vec![VoxelFace::default(); crate::common::world::chunk::CHUNK_AREA],
+            slice: vec![VoxelFace::default(); notcraft_common::world::chunk::CHUNK_AREA],
             mesh_constructor,
         }
     }

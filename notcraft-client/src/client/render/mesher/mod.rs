@@ -1,23 +1,21 @@
-use crate::{
-    client::render::renderer::{
-        add_transient_debug_box, DebugBox, DebugBoxKind, MeshBuffers, RenderMeshComponent,
-        SharedMeshContext, UploadableMesh,
-    },
-    common::{
-        aabb::Aabb,
-        prelude::*,
-        world::{
-            chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
-            chunk_aabb,
-            registry::BlockId,
-            VoxelWorld,
-        },
-        Faces, Side,
-    },
+use crate::client::render::renderer::{
+    add_transient_debug_box, DebugBox, DebugBoxKind, MeshBuffers, RenderMeshComponent,
+    SharedMeshContext, UploadableMesh,
 };
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use glium::{backend::Facade, index::PrimitiveType, IndexBuffer, VertexBuffer};
+use notcraft_common::{
+    aabb::Aabb,
+    prelude::*,
+    world::{
+        chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
+        chunk_aabb,
+        registry::BlockId,
+        VoxelWorld,
+    },
+    Faces, Side,
+};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{collections::HashSet, str::FromStr, sync::Arc, time::Duration};
 

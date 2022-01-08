@@ -4,32 +4,17 @@ extern crate log;
 extern crate serde_derive;
 
 pub mod client;
-pub mod common;
 
-use crate::{
-    client::{
-        camera::{ActiveCamera, Camera},
-        input::{keys, DigitalInput, InputPlugin, InputState, RawInputEvent},
-        render::{
-            mesher::{ChunkMesherPlugin, MesherMode},
-            renderer::{add_debug_box, DebugBox, DebugBoxKind, RenderPlugin},
-        },
-    },
-    common::{
-        physics::{AabbCollider, CollisionPlugin, PhysicsPlugin, RigidBody},
-        prelude::*,
-        transform::Transform,
-        world::{
-            chunk::ChunkSnapshotCache,
-            registry::{BlockId, AIR},
-            trace_ray, BlockPos, DynamicChunkLoader, Ray3, RaycastHit, VoxelWorld, WorldPlugin,
-        },
-        Axis, Side,
+use crate::client::{
+    camera::{ActiveCamera, Camera},
+    input::{keys, DigitalInput, InputPlugin, InputState, RawInputEvent},
+    render::{
+        mesher::{ChunkMesherPlugin, MesherMode},
+        renderer::{add_debug_box, DebugBox, DebugBoxKind, RenderPlugin},
     },
 };
 use bevy_app::{AppExit, Events};
 use bevy_core::CorePlugin;
-use common::aabb::Aabb;
 use glium::{
     glutin::{
         event::{ButtonId, Event, ModifiersState, VirtualKeyCode, WindowEvent},
@@ -40,6 +25,18 @@ use glium::{
     Display,
 };
 use nalgebra::{point, Point3, UnitQuaternion, Vector2, Vector3};
+use notcraft_common::{
+    aabb::Aabb,
+    physics::{AabbCollider, CollisionPlugin, PhysicsPlugin, RigidBody},
+    prelude::*,
+    transform::Transform,
+    world::{
+        chunk::ChunkSnapshotCache,
+        registry::{BlockId, AIR},
+        trace_ray, BlockPos, DynamicChunkLoader, Ray3, RaycastHit, VoxelWorld, WorldPlugin,
+    },
+    Axis, Side,
+};
 use std::{rc::Rc, sync::Arc};
 use structopt::StructOpt;
 

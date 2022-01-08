@@ -1,6 +1,6 @@
-use crate::common::{prelude::*, transform::Transform};
 use bevy_ecs::system::SystemParam;
 use nalgebra::{Matrix4, Perspective3, Point3};
+use notcraft_common::{prelude::*, transform::Transform};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Camera {
