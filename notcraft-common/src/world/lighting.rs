@@ -43,6 +43,7 @@ impl LightValue {
 pub(crate) fn propagate_block_light(
     light_updates: &HashMap<BlockPos, u16>,
     access: &mut MutableChunkAccess,
+    rebuild: &mut HashSet<ChunkPos>,
 ) {
     let mut queue = VecDeque::new();
     queue.extend(light_updates.iter().map(|(&k, &v)| (k, v)));
@@ -50,9 +51,14 @@ pub(crate) fn propagate_block_light(
     let mut visited = HashSet::new();
 
     while let Some((pos, value)) = queue.pop_front() {
-        access.set_block_light(pos, value).unwrap();
+        if !visited.insert(pos) {
+            continue;
+        }
 
-        if !visited.insert(pos) || value == 0 {
+        access.set_block_light(pos, value).unwrap();
+        rebuild.insert(pos.into());
+
+        if value == 0 {
             continue;
         }
 

@@ -247,8 +247,6 @@ pub(crate) fn flush_chunk_writes(
     let registry = Arc::clone(access.registry());
     let mut block_light_updates = HashMap::new();
 
-    // log::debug!("B {:?}", chunk.pos());
-
     {
         let inner = access.chunk(chunk.pos()).unwrap();
         write_chunk_updates(inner.blocks_mut(), chunk.pos(), rebuild, updates);
@@ -273,7 +271,7 @@ pub(crate) fn flush_chunk_writes(
         }
     }
 
-    propagate_block_light(&block_light_updates, access);
+    propagate_block_light(&block_light_updates, access, rebuild);
 }
 
 // TODO: maybe think about splitting this into a read half and a write half, so
