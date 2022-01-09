@@ -17,15 +17,42 @@ pub use self::chunk::ArrayChunk;
 use self::{
     chunk::{Chunk, ChunkAccess, ChunkData, ChunkPos, CompactedChunk},
     lighting::LightValue,
-    registry::{load_registry, BlockId, BlockRegistry, CollisionType},
+    registry::{load_registry, BlockRegistry, CollisionType},
 };
-use crate::{aabb::Aabb, prelude::*, transform::Transform, world::chunk::CHUNK_LENGTH, Axis, Side};
+use crate::{
+    aabb::Aabb, debug::send_debug_event, prelude::*, transform::Transform,
+    world::chunk::CHUNK_LENGTH, Axis, Side,
+};
 
 pub mod chunk;
 pub mod generation;
 pub mod lighting;
 pub mod orphan;
 pub mod registry;
+
+pub mod debug {
+    use std::collections::HashSet;
+
+    use super::chunk::ChunkPos;
+    use crate::{debug::enable_debug_event, debug_events};
+
+    pub enum WorldLoadEvent {
+        Loaded(ChunkPos),
+        Unloaded(ChunkPos),
+        Modified(ChunkPos),
+    }
+    pub enum WorldAccessEvent {
+        Read(ChunkPos),
+        Written(ChunkPos),
+        Orphaned(ChunkPos),
+    }
+
+    debug_events! {
+        events,
+        WorldLoadEvent => "world-load",
+        WorldAccessEvent => "world-access",
+    }
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct BlockPos {
@@ -260,11 +287,7 @@ impl VoxelWorld {
                 if !is_cancelled.load(Ordering::SeqCst) {
                     self.chunk_event_tx.send(ChunkEvent::Added(chunk)).unwrap();
                     self.chunks_in_progress.pin().remove(&pos);
-                    // add_transient_debug_box(Duration::from_secs(1), DebugBox
-                    // {     bounds: chunk_aabb(pos),
-                    //     rgba: [0.0, 0.0, 1.0, 1.0],
-                    //     kind: DebugBoxKind::Solid,
-                    // });
+                    send_debug_event(debug::WorldLoadEvent::Loaded(pos));
                 } else {
                     self.chunks.remove(&pos, &guard);
                 }
@@ -292,12 +315,7 @@ impl VoxelWorld {
                     if !is_cancelled.load(Ordering::SeqCst) {
                         world.chunk_event_tx.send(ChunkEvent::Added(chunk)).unwrap();
                         world.chunks_in_progress.pin().remove(&pos);
-                        // add_transient_debug_box(Duration::from_secs(1),
-                        // DebugBox {     bounds:
-                        // chunk_aabb(pos),
-                        //     rgba: [0.0, 1.0, 0.0, 1.0],
-                        //     kind: DebugBoxKind::Solid,
-                        // });
+                        send_debug_event(debug::WorldLoadEvent::Loaded(pos));
                     } else {
                         world.chunks.remove(&pos, &guard);
                     }
@@ -310,11 +328,7 @@ impl VoxelWorld {
         if let Some(cancelled) = self.chunks_in_progress.pin().remove(&pos) {
             cancelled.store(true, Ordering::SeqCst);
         } else if let Some(chunk) = self.chunks.pin().remove(&pos) {
-            // add_transient_debug_box(Duration::from_secs(1), DebugBox {
-            //     bounds: chunk_aabb(chunk.pos()),
-            //     rgba: [1.0, 0.0, 0.0, 1.0],
-            //     kind: DebugBoxKind::Solid,
-            // });
+            send_debug_event(debug::WorldLoadEvent::Unloaded(pos));
 
             // save this chunk if it differs from what was originally generated
             if chunk.was_ever_modified() {
@@ -380,6 +394,7 @@ pub fn update_world(
     for &pos in rebuild_set.iter() {
         if let Some(chunk) = world.chunk(pos) {
             chunk_events.send(ChunkEvent::Modified(chunk));
+            send_debug_event(debug::WorldLoadEvent::Modified(pos));
         }
     }
 

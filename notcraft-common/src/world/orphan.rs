@@ -83,6 +83,12 @@ pub struct OrphanWriteGuard<'a, T> {
     value: OrphanWriteGuardCow<'a, T>,
 }
 
+impl<'a, T> OrphanWriteGuard<'a, T> {
+    pub fn was_cloned(&self) -> bool {
+        matches!(&self.value, OrphanWriteGuardCow::Cloned(_))
+    }
+}
+
 unsafe impl<'a, T: Send> Send for OrphanWriteGuard<'a, T> {}
 unsafe impl<'a, T: Sync> Sync for OrphanWriteGuard<'a, T> {}
 

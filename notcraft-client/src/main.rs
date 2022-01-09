@@ -27,17 +27,19 @@ use glium::{
 use nalgebra::{point, Point3, UnitQuaternion, Vector2, Vector3};
 use notcraft_common::{
     aabb::Aabb,
+    debug::enable_debug_event,
     physics::{AabbCollider, CollisionPlugin, PhysicsPlugin, RigidBody},
     prelude::*,
     transform::Transform,
     world::{
+        self,
         chunk::ChunkAccess,
         registry::{BlockId, AIR},
         trace_ray, BlockPos, DynamicChunkLoader, Ray3, RaycastHit, VoxelWorld, WorldPlugin,
     },
     Axis, Side,
 };
-use std::{rc::Rc, sync::Arc};
+use std::{collections::HashSet, rc::Rc, sync::Arc};
 use structopt::StructOpt;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -653,12 +655,25 @@ fn glutin_runner(mut app: App) {
 pub struct RunOptions {
     #[structopt(default_value = "simple", long)]
     pub mesher_mode: MesherMode,
+
+    #[structopt(default_value = "simple", long, short = "D")]
+    pub enable_debug_events: Vec<String>,
 }
 
 fn main() {
     simple_logger::init_with_level(log::Level::Debug).unwrap();
 
     let options = RunOptions::from_args();
+
+    {
+        let enabled: HashSet<_> = options.enable_debug_events.into_iter().collect();
+        let enabled = match enabled.is_empty() {
+            true => None,
+            false => Some(&enabled),
+        };
+
+        world::debug::events::enumerate(enabled);
+    }
 
     App::build()
         .add_plugins(DefaultPlugins)
@@ -680,6 +695,10 @@ fn main() {
                 .after(PlayerControllerUpdate),
         )
         .add_system(terrain_manipulation.system().after(CameraControllerUpdate))
+        .add_system_to_stage(
+            CoreStage::Last,
+            notcraft_common::debug::clear_debug_events.system(),
+        )
         .set_runner(glutin_runner)
         .run();
 }

@@ -6,11 +6,9 @@ edition = "2021"
 license = "AGPL-3.0"
 
 [features]
-default = ["hot-reload"]
+default = ["debug"]
 hot-reload = ["notify", "notcraft-common/hot-reload"]
-
-[profile.dev]
-opt-level = 1
+debug = ["hot-reload"]
 
 [dependencies.notcraft-common]
 version = "0.1.0"

@@ -9,6 +9,8 @@ pub mod transform;
 pub mod util;
 pub mod world;
 
+pub mod debug;
+
 pub mod math {
     pub use nalgebra::{Matrix3, Matrix4, Point1, Point2, Point3, Vector2, Vector3, Vector4};
 }

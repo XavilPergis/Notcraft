@@ -1,4 +1,4 @@
-use crate::world::registry::BlockId;
+use crate::{debug::send_debug_event, world::registry::BlockId};
 use nalgebra::Point3;
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
@@ -211,6 +211,12 @@ pub(crate) fn flush_chunk_writes(
     // TODO: light propagation
     let mut inner = chunk.inner.orphan_readers();
     write_chunk_updates(&mut inner.block_data, chunk.pos(), rebuild, updates);
+
+    #[cfg(feature = "debug")]
+    match inner.was_cloned() {
+        true => send_debug_event(super::debug::WorldAccessEvent::Orphaned(chunk.pos())),
+        false => send_debug_event(super::debug::WorldAccessEvent::Written(chunk.pos())),
+    }
 }
 
 // TODO: maybe think about splitting this into a read half and a write half, so
@@ -266,6 +272,11 @@ impl ChunkAccess {
 }
 
 pub(crate) fn flush_chunk_access(access: &mut ChunkAccess, rebuild: &mut HashSet<ChunkPos>) {
+    #[cfg(feature = "debug")]
+    for &pos in access.chunks.keys() {
+        send_debug_event(super::debug::WorldAccessEvent::Read(pos));
+    }
+
     // let go of our snapshots before we flush chunk updates so that we don't force
     // an orphan of every updated chunk because we still have readers here.
     access.chunks.clear();
