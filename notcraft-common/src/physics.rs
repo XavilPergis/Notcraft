@@ -6,7 +6,7 @@ use super::{
     aabb::Aabb,
     transform::Transform,
     world::{
-        chunk::ChunkSnapshotCache,
+        chunk::ChunkAccess,
         registry::{BlockRegistry, CollisionType},
         BlockPos, VoxelWorld,
     },
@@ -51,7 +51,7 @@ fn make_collision_range(min: f32, max: f32) -> RangeInclusive<i32> {
 }
 
 struct CollisionContext<'a> {
-    cache: &'a mut ChunkSnapshotCache,
+    cache: &'a mut ChunkAccess,
     registry: &'a BlockRegistry,
     current: Aabb,
     previous: Aabb,
@@ -62,7 +62,7 @@ struct CollisionContext<'a> {
 
 impl<'a> CollisionContext<'a> {
     fn new(
-        cache: &'a mut ChunkSnapshotCache,
+        cache: &'a mut ChunkAccess,
         registry: &'a BlockRegistry,
         current: Aabb,
         previous: Aabb,
@@ -364,7 +364,7 @@ pub fn terrain_collision(
         &mut Transform,
     )>,
 ) {
-    let mut cache = ChunkSnapshotCache::new(&voxel_world);
+    let mut cache = ChunkAccess::new(&voxel_world);
     query.for_each_mut(
         |(mut collider, previous_collider, mut rigidbody, mut transform)| {
             let prev_aabb = collider.aabb.transformed(&transform);

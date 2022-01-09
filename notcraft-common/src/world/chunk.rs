@@ -1,5 +1,4 @@
 use crate::world::registry::BlockId;
-use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Point3;
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
@@ -13,6 +12,7 @@ use std::{
 use super::{
     lighting::LightValue,
     orphan::{Orphan, OrphanSnapshot},
+    registry::BlockRegistry,
     BlockPos, VoxelWorld,
 };
 
@@ -73,7 +73,7 @@ impl ChunkSnapshot {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct ChunkUpdate {
+pub struct LocalBlockUpdate {
     pub index: ChunkIndex,
     pub id: BlockId,
 }
@@ -82,30 +82,20 @@ pub struct Chunk {
     pos: ChunkPos,
     inner: Orphan<ChunkInner>,
     was_ever_modified: AtomicBool,
-    dirty: AtomicBool,
-    dirty_sender: Sender<ChunkPos>,
-    write_queue_tx: Sender<ChunkUpdate>,
-    write_queue_rx: Receiver<ChunkUpdate>,
 }
 
 impl Chunk {
     pub fn new(
-        dirty_sender: &Sender<ChunkPos>,
         pos: ChunkPos,
         block_data: ChunkData<BlockId>,
         block_light_data: ChunkData<LightValue>,
     ) -> Self {
-        let (write_queue_tx, write_queue_rx) = crossbeam_channel::unbounded();
         let inner = Orphan::new(ChunkInner::new(pos, block_data, block_light_data));
 
         Self {
             pos,
             inner,
             was_ever_modified: AtomicBool::new(false),
-            dirty: AtomicBool::new(false),
-            dirty_sender: dirty_sender.clone(),
-            write_queue_tx,
-            write_queue_rx,
         }
     }
 
@@ -117,24 +107,16 @@ impl Chunk {
         ChunkSnapshot::new(self.inner.snapshot())
     }
 
-    pub fn queue_write(&self, index: ChunkIndex, id: BlockId) {
-        self.write_queue_tx.send(ChunkUpdate { index, id }).unwrap();
-
-        if !self.dirty.swap(true, Ordering::Relaxed) {
-            self.dirty_sender.send(self.pos).unwrap();
-        }
-    }
-
     pub(crate) fn was_ever_modified(&self) -> bool {
         self.was_ever_modified.load(Ordering::Relaxed)
     }
 }
 
-fn write_chunk_updates_array<I: Iterator<Item = ChunkUpdate>>(
+fn write_chunk_updates_array(
     data: &mut ArrayChunk<BlockId>,
     center: ChunkPos,
     rebuild: &mut HashSet<ChunkPos>,
-    updates: I,
+    updates: &[LocalBlockUpdate],
 ) {
     const MAX_AXIS_INDEX: usize = CHUNK_LENGTH - 1;
 
@@ -146,7 +128,7 @@ fn write_chunk_updates_array<I: Iterator<Item = ChunkUpdate>>(
     let mut nz = false;
     let mut pz = false;
 
-    updates.for_each(|update| {
+    for update in updates.iter() {
         let slot = &mut data[update.index];
         if *slot != update.id {
             c = true;
@@ -158,7 +140,7 @@ fn write_chunk_updates_array<I: Iterator<Item = ChunkUpdate>>(
             pz |= update.index[2] == MAX_AXIS_INDEX;
             *slot = update.id;
         }
-    });
+    }
 
     if c {
         rebuild.insert(center);
@@ -186,25 +168,21 @@ fn write_chunk_updates_array<I: Iterator<Item = ChunkUpdate>>(
     }
 }
 
-fn write_chunk_updates<I: Iterator<Item = ChunkUpdate>>(
+fn write_chunk_updates(
     data: &mut ChunkData<BlockId>,
     center: ChunkPos,
     rebuild: &mut HashSet<ChunkPos>,
-    mut updates: I,
+    updates: &[LocalBlockUpdate],
 ) {
     match data {
         &mut ChunkData::Homogeneous(id) => {
-            let differing = loop {
-                match updates.next() {
-                    None => return,
-                    Some(update) if update.id == id => {}
-                    Some(update) => break update,
-                }
+            let differing = match updates.iter().position(|update| update.id != id) {
+                Some(pos) => pos,
+                None => return,
             };
 
             let mut chunk = ArrayChunk::homogeneous(id);
-            write_chunk_updates_array(&mut chunk, center, rebuild, std::iter::once(differing));
-            write_chunk_updates_array(&mut chunk, center, rebuild, updates);
+            write_chunk_updates_array(&mut chunk, center, rebuild, &updates[differing..]);
 
             *data = ChunkData::Array(chunk);
         }
@@ -221,40 +199,43 @@ fn write_chunk_updates<I: Iterator<Item = ChunkUpdate>>(
 // concurrent calls will not produce UB.
 //
 // returns whether any modifications happened
-pub(crate) fn flush_chunk_writes(chunk: &Chunk, rebuild: &mut HashSet<ChunkPos>) {
-    // we clear the dirty flag here before processing anything in the queue, which
-    // is okay. it just means that if we get updates before the queue is drained and
-    // none after it is, then this chunk will be queued to be rechecked when there
-    // are no pending updates.
-    if !chunk.dirty.swap(false, Ordering::Relaxed) || chunk.write_queue_rx.is_empty() {
-        return;
-    }
+pub(crate) fn flush_chunk_writes(
+    chunk: &Chunk,
+    updates: &[LocalBlockUpdate],
+    rebuild: &mut HashSet<ChunkPos>,
+) {
+    assert!(!updates.is_empty());
 
     chunk.was_ever_modified.store(true, Ordering::Relaxed);
 
     // TODO: light propagation
-
     let mut inner = chunk.inner.orphan_readers();
-    write_chunk_updates(
-        &mut inner.block_data,
-        chunk.pos(),
-        rebuild,
-        chunk.write_queue_rx.try_iter(),
-    );
+    write_chunk_updates(&mut inner.block_data, chunk.pos(), rebuild, updates);
 }
 
+// TODO: maybe think about splitting this into a read half and a write half, so
+// writers can operate in parallel with readers.
 /// a cache for multiple unaligned world accesses over a short period of time.
-pub struct ChunkSnapshotCache {
+pub struct ChunkAccess {
     pub world: Arc<VoxelWorld>,
     chunks: HashMap<ChunkPos, ChunkSnapshot>,
+
+    free_update_queues: Vec<Vec<LocalBlockUpdate>>,
+    update_queues: HashMap<ChunkPos, Vec<LocalBlockUpdate>>,
 }
 
-impl ChunkSnapshotCache {
+impl ChunkAccess {
     pub fn new(world: &Arc<VoxelWorld>) -> Self {
         Self {
             world: Arc::clone(world),
             chunks: Default::default(),
+            free_update_queues: Default::default(),
+            update_queues: Default::default(),
         }
+    }
+
+    pub fn registry(&self) -> &Arc<BlockRegistry> {
+        &self.world.registry
     }
 
     pub fn chunk(&mut self, pos: ChunkPos) -> Option<&ChunkSnapshot> {
@@ -270,10 +251,34 @@ impl ChunkSnapshotCache {
         Some(self.chunk(chunk_pos)?.blocks().get(chunk_index))
     }
 
-    pub fn set_block(&self, pos: BlockPos, id: BlockId) -> Option<()> {
+    // TODO: what do we do about updates of chunks that don't exist in the world??
+    pub fn set_block(&mut self, pos: BlockPos, id: BlockId) {
         let (chunk_pos, chunk_index) = pos.chunk_and_offset();
-        self.world.chunk(chunk_pos)?.queue_write(chunk_index, id);
-        Some(())
+        let queue = self
+            .update_queues
+            .entry(chunk_pos)
+            .or_insert_with(|| self.free_update_queues.pop().unwrap_or_default());
+        queue.push(LocalBlockUpdate {
+            index: chunk_index,
+            id,
+        });
+    }
+}
+
+pub(crate) fn flush_chunk_access(access: &mut ChunkAccess, rebuild: &mut HashSet<ChunkPos>) {
+    // let go of our snapshots before we flush chunk updates so that we don't force
+    // an orphan of every updated chunk because we still have readers here.
+    access.chunks.clear();
+
+    for (pos, mut updates) in access.update_queues.drain() {
+        match access.world.chunk(pos) {
+            Some(chunk) => flush_chunk_writes(&chunk, &updates, rebuild),
+            None => todo!("unloaded chunk write"),
+        }
+
+        // recycle old queues to amortize alloocation cost
+        updates.clear();
+        access.free_update_queues.push(updates);
     }
 }
 

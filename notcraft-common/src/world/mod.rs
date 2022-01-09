@@ -15,7 +15,7 @@ use std::{
 
 pub use self::chunk::ArrayChunk;
 use self::{
-    chunk::{Chunk, ChunkData, ChunkPos, ChunkSnapshotCache, CompactedChunk},
+    chunk::{Chunk, ChunkAccess, ChunkData, ChunkPos, CompactedChunk},
     lighting::LightValue,
     registry::{load_registry, BlockId, BlockRegistry, CollisionType},
 };
@@ -195,8 +195,6 @@ pub struct VoxelWorld {
 
     chunks: Arc<flurry::HashMap<ChunkPos, Arc<Chunk>>>,
     modified_chunks: Arc<flurry::HashMap<ChunkPos, CompactedChunk>>,
-    dirty_chunks_rx: Receiver<ChunkPos>,
-    dirty_chunks_tx: Sender<ChunkPos>,
 
     world_gen_pool: ThreadPool,
     chunk_generator: Arc<generation::ChunkGenerator>,
@@ -216,7 +214,6 @@ pub enum ChunkEvent {
 impl VoxelWorld {
     pub fn new(registry: Arc<BlockRegistry>) -> Arc<Self> {
         let (chunk_event_tx, chunk_event_rx) = crossbeam_channel::unbounded();
-        let (dirty_chunks_tx, dirty_chunks_rx) = crossbeam_channel::unbounded();
         let world_gen_pool = ThreadPoolBuilder::new().build().unwrap();
 
         let chunk_generator = Arc::new(generation::ChunkGenerator::new_default(&registry));
@@ -233,8 +230,6 @@ impl VoxelWorld {
 
             chunk_event_tx,
             chunk_event_rx,
-            dirty_chunks_tx,
-            dirty_chunks_rx,
         })
     }
 
@@ -253,7 +248,6 @@ impl VoxelWorld {
             if let Some(compacted) = self.modified_chunks.pin().get(&pos) {
                 let chunk_data = compacted.decompact();
                 let chunk = Arc::new(Chunk::new(
-                    &self.dirty_chunks_tx,
                     pos,
                     chunk_data,
                     ChunkData::Homogeneous(LightValue::default()),
@@ -285,7 +279,6 @@ impl VoxelWorld {
                     let chunk_data = world.chunk_generator.make_chunk(pos, heights);
 
                     let chunk = Arc::new(Chunk::new(
-                        &world.dirty_chunks_tx,
                         pos,
                         chunk_data,
                         ChunkData::Homogeneous(LightValue::default()),
@@ -338,34 +331,6 @@ impl VoxelWorld {
     pub fn chunk(&self, pos: ChunkPos) -> Option<Arc<Chunk>> {
         self.chunks.pin().get(&pos).map(Arc::clone)
     }
-
-    fn update(&self, mut chunk_events: EventWriter<ChunkEvent>) {
-        self.surface_cache.evict_after(Duration::from_secs(10));
-        let guard = self.chunks.guard();
-        for chunk in self.dirty_chunks_rx.try_iter() {
-            if let Some(chunk) = self.chunks.get(&chunk, &guard) {
-                let mut rebuild_set = HashSet::new();
-                chunk::flush_chunk_writes(chunk, &mut rebuild_set);
-                for &pos in rebuild_set.iter() {
-                    if let Some(chunk) = self.chunk(pos) {
-                        self.chunk_event_tx
-                            .send(ChunkEvent::Modified(chunk))
-                            .unwrap();
-                    }
-                }
-            }
-        }
-
-        for event in self.chunk_event_rx.try_iter() {
-            chunk_events.send(event);
-        }
-    }
-
-    pub fn set_block(&self, pos: BlockPos, id: BlockId) -> Option<()> {
-        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
-        self.chunk(chunk_pos)?.queue_write(chunk_index, id);
-        Some(())
-    }
 }
 
 #[derive(Debug, Default)]
@@ -389,8 +354,11 @@ impl Plugin for WorldPlugin {
         )
         .unwrap();
 
-        app.insert_resource(VoxelWorld::new(Arc::clone(&registry)));
+        let world = VoxelWorld::new(Arc::clone(&registry));
+
+        app.insert_resource(Arc::clone(&world));
         app.insert_resource(registry);
+        app.insert_resource(ChunkAccess::new(&world));
 
         app.add_event::<ChunkEvent>();
 
@@ -399,8 +367,26 @@ impl Plugin for WorldPlugin {
     }
 }
 
-pub fn update_world(world: Res<Arc<VoxelWorld>>, chunk_events: EventWriter<ChunkEvent>) {
-    world.update(chunk_events);
+pub fn update_world(
+    world: Res<Arc<VoxelWorld>>,
+    mut access: ResMut<ChunkAccess>,
+    mut chunk_events: EventWriter<ChunkEvent>,
+) {
+    world.surface_cache.evict_after(Duration::from_secs(10));
+
+    let mut rebuild_set = HashSet::new();
+    chunk::flush_chunk_access(&mut access, &mut rebuild_set);
+
+    for &pos in rebuild_set.iter() {
+        if let Some(chunk) = world.chunk(pos) {
+            chunk_events.send(ChunkEvent::Modified(chunk));
+        }
+    }
+
+    // this is mainly for add/remove events
+    for event in world.chunk_event_rx.try_iter() {
+        chunk_events.send(event);
+    }
 }
 
 pub fn chunk_aabb(pos: ChunkPos) -> Aabb {
@@ -532,11 +518,7 @@ pub struct Ray3<T: Scalar> {
 }
 
 #[must_use]
-pub fn trace_ray(
-    cache: &mut ChunkSnapshotCache,
-    ray: Ray3<f32>,
-    radius: f32,
-) -> Option<RaycastHit> {
+pub fn trace_ray(cache: &mut ChunkAccess, ray: Ray3<f32>, radius: f32) -> Option<RaycastHit> {
     let start_block = BlockPos {
         x: ray.origin.x.floor() as i32,
         y: ray.origin.y.floor() as i32,
@@ -550,7 +532,7 @@ pub fn trace_ray(
             None => return RaycastStep::Exit,
             Some(id) => id,
         };
-        match cache.world.registry.collision_type(id) {
+        match cache.registry().collision_type(id) {
             CollisionType::Solid => RaycastStep::Hit,
             _ => RaycastStep::Continue,
         }

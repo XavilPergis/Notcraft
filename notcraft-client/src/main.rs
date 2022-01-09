@@ -31,7 +31,7 @@ use notcraft_common::{
     prelude::*,
     transform::Transform,
     world::{
-        chunk::ChunkSnapshotCache,
+        chunk::ChunkAccess,
         registry::{BlockId, AIR},
         trace_ray, BlockPos, DynamicChunkLoader, Ray3, RaycastHit, VoxelWorld, WorldPlugin,
     },
@@ -189,7 +189,7 @@ fn terrain_manipulation_area(
                 kind: DebugBoxKind::Solid,
             });
             if input.key(DigitalInput::Button(3)).is_falling() {
-                let id = ctx.world.registry.get_id(ctx.manip.block_name);
+                let id = ctx.access.registry().get_id(ctx.manip.block_name);
                 iter_blocks_in(start_pos, end_pos, |pos| {
                     ctx.set_block(pos, id);
                 });
@@ -241,7 +241,7 @@ fn replace_axis(mut pos: BlockPos, axis: Axis, value: i32) -> BlockPos {
 }
 
 fn build_to_me_positive(
-    ctx: &TerrainManipulationContext,
+    ctx: &mut TerrainManipulationContext,
     input: &InputState,
     axis: Axis,
     from: BlockPos,
@@ -252,15 +252,12 @@ fn build_to_me_positive(
         return;
     }
 
-    let mut cache = ChunkSnapshotCache::new(ctx.world);
-
     let mut max_n = from[axis];
     for n in from[axis]..=to[axis] {
         let pos = replace_axis(from, axis, n);
-        if cache
-            .block(pos)
-            .map_or(true, |id| ctx.world.registry.collision_type(id).is_solid())
-        {
+        if ctx.access.block(pos).map_or(true, |id| {
+            ctx.access.registry().collision_type(id).is_solid()
+        }) {
             break;
         }
         max_n = n;
@@ -280,7 +277,7 @@ fn build_to_me_positive(
 }
 
 fn build_to_me_negative(
-    ctx: &TerrainManipulationContext,
+    ctx: &mut TerrainManipulationContext,
     input: &InputState,
     axis: Axis,
     from: BlockPos,
@@ -291,15 +288,12 @@ fn build_to_me_negative(
         return;
     }
 
-    let mut cache = ChunkSnapshotCache::new(ctx.world);
-
     let mut min_n = from[axis];
     for n in (to[axis]..=from[axis]).rev() {
         let pos = replace_axis(from, axis, n);
-        if cache
-            .block(pos)
-            .map_or(true, |id| ctx.world.registry.collision_type(id).is_solid())
-        {
+        if ctx.access.block(pos).map_or(true, |id| {
+            ctx.access.registry().collision_type(id).is_solid()
+        }) {
             break;
         }
         min_n = n;
@@ -323,7 +317,7 @@ fn terrain_manipulation_build_to_me(
     hit: &RaycastHit,
     ctx: &mut TerrainManipulationContext,
 ) {
-    let id = ctx.world.registry.get_id(ctx.manip.block_name);
+    let id = ctx.access.registry().get_id(ctx.manip.block_name);
     if let Some(side) = hit.side {
         let offset = side.normal::<i32>();
         let start_pos = BlockPos {
@@ -387,21 +381,21 @@ fn terrain_manipulation_single(
             kind: DebugBoxKind::Solid,
         });
         if input.key(DigitalInput::Button(3)).is_rising() {
-            let id = ctx.world.registry.get_id(ctx.manip.block_name);
+            let id = ctx.access.registry().get_id(ctx.manip.block_name);
             ctx.set_block(offset, id);
         }
     }
 }
 
 struct TerrainManipulationContext<'a> {
-    world: &'a Arc<VoxelWorld>,
+    access: &'a mut ChunkAccess,
     manip: &'a mut TerrainManipulator,
     transform: &'a Transform,
     // collider: &'a AabbCollider,
 }
 
 impl<'a> TerrainManipulationContext<'a> {
-    fn set_block(&self, pos: BlockPos, id: BlockId) {
+    fn set_block(&mut self, pos: BlockPos, id: BlockId) {
         // if !self
         //     .collider
         //     .aabb
@@ -409,13 +403,13 @@ impl<'a> TerrainManipulationContext<'a> {
         //     .intersects(&util::block_aabb(pos))
         // {
         // }
-        self.world.set_block(pos, id);
+        self.access.set_block(pos, id);
     }
 }
 
 fn terrain_manipulation(
     input: Res<InputState>,
-    voxel_world: Res<Arc<VoxelWorld>>,
+    mut access: ResMut<ChunkAccess>,
     query: Query<(
         &Transform,
         // &AabbCollider,
@@ -435,10 +429,9 @@ fn terrain_manipulation(
     // button 2 - middle click
     // button 3 - right click
     query.for_each_mut(|(transform, mut manip)| {
-        let mut cache = ChunkSnapshotCache::new(&voxel_world);
-        if let Some(hit) = trace_ray(&mut cache, make_ray(transform, &-Vector3::z()), 20.0) {
+        if let Some(hit) = trace_ray(&mut access, make_ray(transform, &-Vector3::z()), 100.0) {
             let mut ctx = TerrainManipulationContext {
-                world: &voxel_world,
+                access: &mut access,
                 manip: &mut manip,
                 transform,
                 // collider,
