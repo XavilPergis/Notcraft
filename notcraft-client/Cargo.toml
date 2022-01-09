@@ -8,7 +8,7 @@ license = "AGPL-3.0"
 [features]
 default = ["debug"]
 hot-reload = ["notify", "notcraft-common/hot-reload"]
-debug = ["hot-reload"]
+debug = ["hot-reload", "notcraft-common/debug"]
 
 [dependencies.notcraft-common]
 version = "0.1.0"

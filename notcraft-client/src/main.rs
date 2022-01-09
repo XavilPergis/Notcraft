@@ -15,6 +15,7 @@ use crate::client::{
 };
 use bevy_app::{AppExit, Events};
 use bevy_core::CorePlugin;
+use client::render::renderer::RenderStage;
 use glium::{
     glutin::{
         event::{ButtonId, Event, ModifiersState, VirtualKeyCode, WindowEvent},
@@ -27,7 +28,6 @@ use glium::{
 use nalgebra::{point, Point3, UnitQuaternion, Vector2, Vector3};
 use notcraft_common::{
     aabb::Aabb,
-    debug::enable_debug_event,
     physics::{AabbCollider, CollisionPlugin, PhysicsPlugin, RigidBody},
     prelude::*,
     transform::Transform,
@@ -35,11 +35,11 @@ use notcraft_common::{
         self,
         chunk::ChunkAccess,
         registry::{BlockId, AIR},
-        trace_ray, BlockPos, DynamicChunkLoader, Ray3, RaycastHit, VoxelWorld, WorldPlugin,
+        trace_ray, BlockPos, DynamicChunkLoader, Ray3, RaycastHit, WorldPlugin,
     },
     Axis, Side,
 };
-use std::{collections::HashSet, rc::Rc, sync::Arc};
+use std::{collections::HashSet, rc::Rc};
 use structopt::StructOpt;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -656,8 +656,8 @@ pub struct RunOptions {
     #[structopt(default_value = "simple", long)]
     pub mesher_mode: MesherMode,
 
-    #[structopt(default_value = "simple", long, short = "D")]
-    pub enable_debug_events: Vec<String>,
+    #[structopt(long, short = "D")]
+    pub enable_debug_events: Option<Vec<String>>,
 }
 
 fn main() {
@@ -665,14 +665,18 @@ fn main() {
 
     let options = RunOptions::from_args();
 
+    if let Some(enabled) = options
+        .enable_debug_events
+        .map(|names| names.into_iter().collect::<HashSet<_>>())
     {
-        let enabled: HashSet<_> = options.enable_debug_events.into_iter().collect();
         let enabled = match enabled.is_empty() {
             true => None,
-            false => Some(&enabled),
+            false => Some(enabled),
         };
+        println!("enabled debug events: {:?}", enabled);
 
-        world::debug::events::enumerate(enabled);
+        world::debug::events::enumerate(enabled.as_ref());
+        client::debug::events::enumerate(enabled.as_ref());
     }
 
     App::build()
@@ -696,8 +700,12 @@ fn main() {
         )
         .add_system(terrain_manipulation.system().after(CameraControllerUpdate))
         .add_system_to_stage(
+            RenderStage::PreRender,
+            client::debug::debug_event_handler.system(),
+        )
+        .add_system_to_stage(
             CoreStage::Last,
-            notcraft_common::debug::clear_debug_events.system(),
+            notcraft_common::debug::clear_debug_events.exclusive_system(),
         )
         .set_runner(glutin_runner)
         .run();

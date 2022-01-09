@@ -5,6 +5,7 @@ mod inner {
     use std::{
         any::{Any, TypeId},
         collections::HashSet,
+        sync::atomic::{AtomicBool, Ordering},
     };
 
     lazy_static::lazy_static! {
@@ -13,6 +14,7 @@ mod inner {
 
     pub trait DebugEventChannel: Any + Send + Sync + 'static {
         fn clear(&self);
+        fn set_drained(&self);
     }
 
     impl dyn DebugEventChannel {
@@ -25,9 +27,24 @@ mod inner {
         }
     }
 
-    impl<E: Send + Sync + 'static> DebugEventChannel for ChannelPair<E> {
+    struct DebugChannel<E> {
+        inner: ChannelPair<E>,
+        drained: AtomicBool,
+    }
+
+    impl<E: Send + Sync + 'static> DebugEventChannel for DebugChannel<E> {
         fn clear(&self) {
-            self.rx.try_iter().for_each(drop);
+            // the `self.drained` flag is needed because there might be events that come in
+            // after the channel has been drained, but before the channels are cleared. we
+            // want to clear a channel if nobody is listening to it, though, to avoid debug
+            // events piling up.
+            if !self.drained.swap(false, Ordering::SeqCst) {
+                self.inner.rx.try_iter().for_each(drop);
+            }
+        }
+
+        fn set_drained(&self) {
+            self.drained.store(true, Ordering::SeqCst);
         }
     }
 
@@ -37,7 +54,10 @@ mod inner {
 
     pub fn enable_debug_event<E: DebugEvent>(enable: bool) {
         let id = TypeId::of::<E>();
-        let channel = Box::new(ChannelPair::<E>::new()) as Box<dyn DebugEventChannel>;
+        let channel = Box::new(DebugChannel {
+            inner: ChannelPair::<E>::new(),
+            drained: AtomicBool::new(false),
+        }) as Box<dyn DebugEventChannel>;
         match enable {
             true => drop(DEBUG_EVENTS.pin().try_insert(id, channel.into())),
             false => drop(DEBUG_EVENTS.pin().remove(&id)),
@@ -46,12 +66,8 @@ mod inner {
 
     pub fn send_debug_event<E: DebugEvent>(event: E) {
         if let Some(channel) = DEBUG_EVENTS.pin().get(&TypeId::of::<E>()) {
-            channel
-                .downcast_ref::<ChannelPair<E>>()
-                .unwrap()
-                .tx
-                .send(event)
-                .unwrap();
+            let tx = &channel.downcast_ref::<DebugChannel<E>>().unwrap().inner.tx;
+            tx.send(event).unwrap();
         }
     }
 
@@ -60,7 +76,8 @@ mod inner {
         F: FnMut(E),
     {
         if let Some(channel) = DEBUG_EVENTS.pin().get(&TypeId::of::<E>()) {
-            let rx = &channel.downcast_ref::<ChannelPair<E>>().unwrap().rx;
+            channel.set_drained();
+            let rx = &channel.downcast_ref::<DebugChannel<E>>().unwrap().inner.rx;
             rx.try_iter().for_each(func);
         }
     }

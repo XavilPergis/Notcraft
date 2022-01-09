@@ -19,6 +19,8 @@ float contribution(bool contribute, float strength) {
 
 #define MIN_AO_BRIGHTNESS (0.2)
 
+#define BITS(packed, a, n) ((packed) >> (a)) & uint((1 << (n)) - 1)
+
 void main()
 {
     vec3 normalFromAxis[3];
@@ -32,24 +34,18 @@ void main()
     axisSign = float[2](1.0, -1.0);
 
     // unpack attributes
-    uint bao = pos_ao & uint(3);
-    float ao = float(bao) / 3.0;
+    float ao = float(BITS(pos_ao, 0, 2)) / 3.0;
 
-    uint bz = (pos_ao >> 2) & uint(1023);
-    uint by = (pos_ao >> 12) & uint(1023);
-    uint bx = (pos_ao >> 22) & uint(1023);
-    vec3 pos = vec3(float(bx) / 16.0, float(by) / 16.0, float(bz) / 16.0);
+    float z = float(BITS(pos_ao, 2, 10)) / 16.0;
+    float y = float(BITS(pos_ao, 12, 10)) / 16.0;
+    float x = float(BITS(pos_ao, 22, 10)) / 16.0;
+    vec3 pos = vec3(x, y, z);
 
-    uint bid = light_side_id & uint(65535);
-    int id = int(bid);
-    
-    uint light_side = light_side_id >> 16;
-    uint baxis = light_side & uint(3);
-    uint baxisSign = (light_side >> 2) & uint(1);
-
-    uint light = (light_side >> 8) & uint(1);
-    float blockLight = float(light & uint(15)) / 16.0;
-    float skyLight = float((light >> 4) & uint(15)) / 16.0;
+    int id = int(BITS(light_side_id, 0, 16));
+    uint baxis = uint(BITS(light_side_id, 16, 2));
+    uint baxisSign = uint(BITS(light_side_id, 18, 1));
+    float blockLight = float(BITS(light_side_id, 24, 4)) / 16.0;
+    float skyLight = float(BITS(light_side_id, 28, 4)) / 16.0;
 
     vec3 normal = normalFromAxis[baxis];
     normal *= axisSign[baxisSign];

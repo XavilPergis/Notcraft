@@ -1,4 +1,7 @@
-use crate::{debug::send_debug_event, world::registry::BlockId};
+use crate::{
+    debug::send_debug_event,
+    world::{lighting::propagate_block_light, registry::BlockId},
+};
 use nalgebra::Point3;
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
@@ -11,7 +14,7 @@ use std::{
 
 use super::{
     lighting::LightValue,
-    orphan::{Orphan, OrphanSnapshot},
+    orphan::{Orphan, OrphanSnapshot, OrphanWriter},
     registry::BlockRegistry,
     BlockPos, VoxelWorld,
 };
@@ -24,10 +27,10 @@ pub const CHUNK_AREA: usize = CHUNK_LENGTH * CHUNK_LENGTH;
 pub const CHUNK_VOLUME: usize = CHUNK_LENGTH * CHUNK_LENGTH * CHUNK_LENGTH;
 
 #[derive(Clone)]
-struct ChunkInner {
+pub struct ChunkInner {
     pos: ChunkPos,
     block_data: ChunkData<BlockId>,
-    block_light_data: ChunkData<LightValue>,
+    light_data: ChunkData<LightValue>,
 }
 
 impl ChunkInner {
@@ -39,7 +42,7 @@ impl ChunkInner {
         Self {
             pos,
             block_data,
-            block_light_data,
+            light_data: block_light_data,
         }
     }
 }
@@ -62,13 +65,47 @@ impl ChunkSnapshot {
         &self.inner.block_data
     }
 
-    pub fn block_light(&self) -> &ChunkData<LightValue> {
-        &self.inner.block_light_data
+    pub fn light(&self) -> &ChunkData<LightValue> {
+        &self.inner.light_data
     }
 
     /// See [`OrphanSnapshot::is_orphaned`]
     pub fn is_orphaned(&self) -> bool {
         self.inner.is_orphaned()
+    }
+}
+
+pub struct ChunkSnapshotMut {
+    inner: OrphanWriter<ChunkInner>,
+}
+
+impl ChunkSnapshotMut {
+    fn new(inner: OrphanWriter<ChunkInner>) -> Self {
+        Self { inner }
+    }
+
+    pub fn pos(&self) -> ChunkPos {
+        self.inner.pos
+    }
+
+    pub fn blocks(&self) -> &ChunkData<BlockId> {
+        &self.inner.block_data
+    }
+
+    pub fn light(&self) -> &ChunkData<LightValue> {
+        &self.inner.light_data
+    }
+
+    pub fn blocks_mut(&mut self) -> &mut ChunkData<BlockId> {
+        &mut self.inner.block_data
+    }
+
+    pub fn light_mut(&mut self) -> &mut ChunkData<LightValue> {
+        &mut self.inner.light_data
+    }
+
+    pub fn was_cloned(&self) -> bool {
+        self.inner.was_cloned()
     }
 }
 
@@ -197,26 +234,46 @@ fn write_chunk_updates(
 //
 // NOTE: this should not be called concurrently, the only guarantee is
 // concurrent calls will not produce UB.
-//
-// returns whether any modifications happened
 pub(crate) fn flush_chunk_writes(
     chunk: &Chunk,
     updates: &[LocalBlockUpdate],
+    access: &mut MutableChunkAccess,
     rebuild: &mut HashSet<ChunkPos>,
 ) {
     assert!(!updates.is_empty());
 
     chunk.was_ever_modified.store(true, Ordering::Relaxed);
 
-    // TODO: light propagation
-    let mut inner = chunk.inner.orphan_readers();
-    write_chunk_updates(&mut inner.block_data, chunk.pos(), rebuild, updates);
+    let registry = Arc::clone(access.registry());
+    let mut block_light_updates = HashMap::new();
 
-    #[cfg(feature = "debug")]
-    match inner.was_cloned() {
-        true => send_debug_event(super::debug::WorldAccessEvent::Orphaned(chunk.pos())),
-        false => send_debug_event(super::debug::WorldAccessEvent::Written(chunk.pos())),
+    // log::debug!("B {:?}", chunk.pos());
+
+    {
+        let inner = access.chunk(chunk.pos()).unwrap();
+        write_chunk_updates(inner.blocks_mut(), chunk.pos(), rebuild, updates);
+
+        for update in updates.iter() {
+            let new_light = registry.block_light(update.id);
+            if new_light != inner.light().get(update.index).block() {
+                let [x, y, z] = update.index;
+                let block_pos = BlockPos {
+                    x: chunk.pos().x * CHUNK_LENGTH as i32 + x as i32,
+                    y: chunk.pos().y * CHUNK_LENGTH as i32 + y as i32,
+                    z: chunk.pos().z * CHUNK_LENGTH as i32 + z as i32,
+                };
+                block_light_updates.insert(block_pos, new_light);
+            }
+        }
+
+        #[cfg(feature = "debug")]
+        match inner.was_cloned() {
+            true => send_debug_event(super::debug::WorldAccessEvent::Orphaned(chunk.pos())),
+            false => send_debug_event(super::debug::WorldAccessEvent::Written(chunk.pos())),
+        }
     }
+
+    propagate_block_light(&block_light_updates, access);
 }
 
 // TODO: maybe think about splitting this into a read half and a write half, so
@@ -257,6 +314,12 @@ impl ChunkAccess {
         Some(self.chunk(chunk_pos)?.blocks().get(chunk_index))
     }
 
+    #[must_use]
+    pub fn light(&mut self, pos: BlockPos) -> Option<LightValue> {
+        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
+        Some(self.chunk(chunk_pos)?.light().get(chunk_index))
+    }
+
     // TODO: what do we do about updates of chunks that don't exist in the world??
     pub fn set_block(&mut self, pos: BlockPos, id: BlockId) {
         let (chunk_pos, chunk_index) = pos.chunk_and_offset();
@@ -271,6 +334,61 @@ impl ChunkAccess {
     }
 }
 
+pub struct MutableChunkAccess {
+    world: Arc<VoxelWorld>,
+    writers: HashMap<ChunkPos, ChunkSnapshotMut>,
+}
+
+impl MutableChunkAccess {
+    fn new(world: &Arc<VoxelWorld>) -> Self {
+        Self {
+            world: Arc::clone(world),
+            writers: Default::default(),
+        }
+    }
+
+    pub fn registry(&self) -> &Arc<BlockRegistry> {
+        &self.world.registry
+    }
+
+    fn chunk(&mut self, pos: ChunkPos) -> Option<&mut ChunkSnapshotMut> {
+        Some(match self.writers.entry(pos) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(ChunkSnapshotMut::new(
+                self.world.chunk(pos)?.inner.orphan_readers(),
+            )),
+        })
+    }
+
+    #[must_use]
+    pub fn block(&mut self, pos: BlockPos) -> Option<BlockId> {
+        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
+        Some(self.chunk(chunk_pos)?.blocks().get(chunk_index))
+    }
+
+    #[must_use]
+    pub fn set_block(&mut self, pos: BlockPos, id: BlockId) -> Option<()> {
+        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
+        self.chunk(chunk_pos)?.blocks_mut().set(chunk_index, id);
+        Some(())
+    }
+
+    #[must_use]
+    pub fn light(&mut self, pos: BlockPos) -> Option<LightValue> {
+        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
+        Some(self.chunk(chunk_pos)?.light().get(chunk_index))
+    }
+
+    #[must_use]
+    pub fn set_block_light(&mut self, pos: BlockPos, light: u16) -> Option<()> {
+        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
+        let light_data = self.chunk(chunk_pos)?.light_mut();
+        let prev_sky = light_data.get(chunk_index).sky();
+        light_data.set(chunk_index, LightValue::pack(prev_sky, light));
+        Some(())
+    }
+}
+
 pub(crate) fn flush_chunk_access(access: &mut ChunkAccess, rebuild: &mut HashSet<ChunkPos>) {
     #[cfg(feature = "debug")]
     for &pos in access.chunks.keys() {
@@ -281,9 +399,11 @@ pub(crate) fn flush_chunk_access(access: &mut ChunkAccess, rebuild: &mut HashSet
     // an orphan of every updated chunk because we still have readers here.
     access.chunks.clear();
 
+    let mut mut_access = MutableChunkAccess::new(&access.world);
+
     for (pos, mut updates) in access.update_queues.drain() {
         match access.world.chunk(pos) {
-            Some(chunk) => flush_chunk_writes(&chunk, &updates, rebuild),
+            Some(chunk) => flush_chunk_writes(&chunk, &updates, &mut mut_access, rebuild),
             None => todo!("unloaded chunk write"),
         }
 
@@ -299,11 +419,23 @@ pub enum ChunkData<T> {
     Array(ArrayChunk<T>),
 }
 
-impl<T: Copy> ChunkData<T> {
+impl<T: Copy + Eq> ChunkData<T> {
     pub fn get(&self, index: ChunkIndex) -> T {
         match self {
-            &ChunkData::Homogeneous(id) => id,
+            &ChunkData::Homogeneous(value) => value,
             ChunkData::Array(data) => data[index],
+        }
+    }
+
+    pub fn set(&mut self, index: ChunkIndex, new_value: T) {
+        match self {
+            &mut ChunkData::Homogeneous(value) if value == new_value => {}
+            &mut ChunkData::Homogeneous(value) => {
+                let mut array_chunk = ArrayChunk::homogeneous(value);
+                array_chunk[index] = new_value;
+                *self = ChunkData::Array(array_chunk);
+            }
+            ChunkData::Array(data) => data[index] = new_value,
         }
     }
 }

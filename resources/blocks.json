@@ -124,7 +124,8 @@
             "mesh-type": "cross",
             "properties": {
                 "collision-type": "none",
-                "liquid": false
+                "liquid": false,
+                "block-light": 15
             },
             "texture-variants": [
                 {

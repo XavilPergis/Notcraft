@@ -61,7 +61,7 @@ pub struct BlockProperties {
     #[serde(default)]
     liquid: bool,
     #[serde(default)]
-    block_light: usize,
+    block_light: u16,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Deserialize)]
@@ -219,6 +219,11 @@ impl BlockRegistry {
     #[inline(always)]
     pub fn liquid(&self, id: BlockId) -> bool {
         self.entries[id.0].properties.liquid
+    }
+
+    #[inline(always)]
+    pub fn block_light(&self, id: BlockId) -> u16 {
+        self.entries[id.0].properties.block_light
     }
 
     #[inline(always)]

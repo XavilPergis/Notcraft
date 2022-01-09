@@ -15,6 +15,7 @@ use notcraft_common::{
     prelude::*,
     world::{
         chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
+        lighting::LightValue,
         registry::{BlockId, BlockMeshType, BlockRegistry, TextureId},
         VoxelWorld,
     },
@@ -42,13 +43,25 @@ impl ChunkNeighbors {
         Some(Self { chunks })
     }
 
-    fn lookup<I: Into<[ChunkAxisOffset; 3]>>(&self, pos: I) -> BlockId {
+    fn id<I: Into<[ChunkAxisOffset; 3]>>(&self, pos: I) -> BlockId {
         let [x, y, z] = pos.into();
         let (cx, mx) = chunks_index_and_offset(x);
         let (cy, my) = chunks_index_and_offset(y);
         let (cz, mz) = chunks_index_and_offset(z);
 
         match self.chunks[9 * cx + 3 * cy + cz].blocks() {
+            ChunkData::Homogeneous(id) => *id,
+            ChunkData::Array(arr) => arr[[mx, my, mz]],
+        }
+    }
+
+    fn light<I: Into<[ChunkAxisOffset; 3]>>(&self, pos: I) -> LightValue {
+        let [x, y, z] = pos.into();
+        let (cx, mx) = chunks_index_and_offset(x);
+        let (cy, my) = chunks_index_and_offset(y);
+        let (cz, mz) = chunks_index_and_offset(z);
+
+        match self.chunks[9 * cx + 3 * cy + cz].light() {
             ChunkData::Homogeneous(id) => *id,
             ChunkData::Array(arr) => arr[[mx, my, mz]],
         }
@@ -165,7 +178,7 @@ impl MeshCreationContext {
     fn face_ao(&self, pos: Point3<ChunkAxis>, side: Side) -> FaceAo {
         let pos = pos.cast::<ChunkAxisOffset>();
         let contributes_ao = |pos| {
-            let id = self.chunks.lookup(pos);
+            let id = self.chunks.id(pos);
             matches!(self.registry.mesh_type(id), BlockMeshType::FullCube)
                 && !self.registry.liquid(id)
         };
@@ -267,6 +280,8 @@ impl MeshCreationContext {
                     quad,
                     side,
                     point_constructor(u, v),
+                    // TODO
+                    LightValue::default(),
                 );
             }
         }
@@ -282,8 +297,8 @@ impl MeshCreationContext {
             for u in 0..(CHUNK_LENGTH as ChunkAxis) {
                 for v in 0..(CHUNK_LENGTH as ChunkAxis) {
                     let pos = make_coordinate(layer, u, v);
-                    let cur_id = self.chunks.lookup(pos.cast());
-                    let neighbor_id = self.chunks.lookup(pos.cast() + normal);
+                    let cur_id = self.chunks.id(pos.cast());
+                    let neighbor_id = self.chunks.id(pos.cast() + normal);
 
                     let face = should_add_face(&self.registry, cur_id, neighbor_id)
                         .then(|| VoxelFace::new(self.face_ao(pos, side), cur_id))
@@ -301,13 +316,17 @@ impl MeshCreationContext {
             for z in 0..(CHUNK_LENGTH as ChunkAxis) {
                 for y in 0..(CHUNK_LENGTH as ChunkAxis) {
                     let pos = point![x, y, z];
-                    let cur_id = self.chunks.lookup(pos.cast());
+                    let cur_id = self.chunks.id(pos.cast());
+                    let cur_light = self.chunks.light(pos.cast());
                     match self.registry.mesh_type(cur_id) {
                         BlockMeshType::None => {}
-                        BlockMeshType::Cross => mesh_cross(&mut self.mesh_constructor, cur_id, pos),
+                        BlockMeshType::Cross => {
+                            mesh_cross(&mut self.mesh_constructor, cur_id, pos, cur_light)
+                        }
                         BlockMeshType::FullCube => Side::enumerate(|side| {
                             let normal = side.normal::<ChunkAxisOffset>();
-                            let neighbor_id = self.chunks.lookup(pos.cast() + normal);
+                            let neighbor_id = self.chunks.id(pos.cast() + normal);
+                            let neighbor_light = self.chunks.light(pos.cast() + normal);
                             if should_add_face(&self.registry, cur_id, neighbor_id) {
                                 let ao = self.face_ao(pos, side);
                                 mesh_full_cube_side(
@@ -320,6 +339,7 @@ impl MeshCreationContext {
                                     },
                                     side,
                                     pos,
+                                    neighbor_light,
                                 );
                             }
                         }),
@@ -341,9 +361,10 @@ impl MeshCreationContext {
             for z in 0..(CHUNK_LENGTH as ChunkAxis) {
                 for y in 0..(CHUNK_LENGTH as ChunkAxis) {
                     let pos = point![x, y, z];
-                    let id = self.chunks.lookup(pos.cast());
+                    let id = self.chunks.id(pos.cast());
                     if matches!(self.registry.mesh_type(id), BlockMeshType::Cross) {
-                        mesh_cross(&mut self.mesh_constructor, id, pos)
+                        // TODO: light
+                        mesh_cross(&mut self.mesh_constructor, id, pos, LightValue::default())
                     }
                 }
             }
@@ -401,7 +422,7 @@ pub struct MeshBuilder {
     rng: SmallRng,
 }
 
-pub fn mesh_cross(ctx: &mut MeshBuilder, id: BlockId, pos: Point3<ChunkAxis>) {
+pub fn mesh_cross(ctx: &mut MeshBuilder, id: BlockId, pos: Point3<ChunkAxis>, light: LightValue) {
     let tex_id = choose_face_texture(ctx, id, Side::Right).0 as u16;
 
     {
@@ -422,8 +443,7 @@ pub fn mesh_cross(ctx: &mut MeshBuilder, id: BlockId, pos: Point3<ChunkAxis>) {
         ctx.terrain_mesh.vertices.push(TerrainVertex::pack(
             pos.into(),
             Side::Right,
-            0,
-            0,
+            light,
             tex_id,
             3,
         ));
@@ -450,6 +470,7 @@ pub fn mesh_full_cube_side(
     quad: VoxelQuad,
     side: Side,
     pos: Point3<ChunkAxis>,
+    light: LightValue,
 ) {
     let ao_pp = quad.ao.corner_ao(FaceAo::AO_POS_POS);
     let ao_pn = quad.ao.corner_ao(FaceAo::AO_POS_NEG);
@@ -484,7 +505,7 @@ pub fn mesh_full_cube_side(
         let pos: Point3<u16> = (16 * pos) + (16 * offset);
         ctx.terrain_mesh
             .vertices
-            .push(TerrainVertex::pack(pos.into(), side, 0, 0, tex_id, ao));
+            .push(TerrainVertex::pack(pos.into(), side, light, tex_id, ao));
     };
 
     let h = if side.facing_positive() { 1 } else { 0 };

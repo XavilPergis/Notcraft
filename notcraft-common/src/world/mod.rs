@@ -31,10 +31,8 @@ pub mod orphan;
 pub mod registry;
 
 pub mod debug {
-    use std::collections::HashSet;
-
     use super::chunk::ChunkPos;
-    use crate::{debug::enable_debug_event, debug_events};
+    use crate::debug_events;
 
     pub enum WorldLoadEvent {
         Loaded(ChunkPos),

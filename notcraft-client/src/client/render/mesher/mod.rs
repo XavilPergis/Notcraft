@@ -1,23 +1,24 @@
-use crate::client::render::renderer::{
-    add_transient_debug_box, DebugBox, DebugBoxKind, MeshBuffers, RenderMeshComponent,
-    SharedMeshContext, UploadableMesh,
+use crate::client::{
+    debug::MesherEvent,
+    render::renderer::{MeshBuffers, RenderMeshComponent, SharedMeshContext, UploadableMesh},
 };
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use glium::{backend::Facade, index::PrimitiveType, IndexBuffer, VertexBuffer};
 use notcraft_common::{
     aabb::Aabb,
+    debug::send_debug_event,
     prelude::*,
     world::{
         chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
-        chunk_aabb,
+        lighting::LightValue,
         registry::BlockId,
         VoxelWorld,
     },
     Faces, Side,
 };
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use std::{collections::HashSet, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashSet, str::FromStr, sync::Arc};
 
 use self::{
     generation::{should_add_face, ChunkNeighbors, CompletedMesh, MeshCreationContext},
@@ -172,18 +173,10 @@ fn queue_mesh_job(ctx: &mut MesherContext, world: &Arc<VoxelWorld>, chunk: &Chun
                 MesherMode::Simple => mesher.mesh_simple(sender),
                 MesherMode::Greedy => mesher.mesh_greedy(sender),
             }
-            add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                bounds: chunk_aabb(pos),
-                rgba: [1.0, 1.0, 0.0, 0.3],
-                kind: DebugBoxKind::Dashed,
-            });
+            send_debug_event(MesherEvent::Meshed { cheap: false, pos });
         } else {
             sender.send(CompletedMesh::Failed { pos }).unwrap();
-            add_transient_debug_box(Duration::from_secs(4), DebugBox {
-                bounds: chunk_aabb(pos),
-                rgba: [1.0, 0.0, 0.0, 1.0],
-                kind: DebugBoxKind::Dashed,
-            });
+            send_debug_event(MesherEvent::MeshFailed(pos));
         }
     });
 
@@ -198,11 +191,7 @@ fn mesh_one(ctx: &mut MesherContext, world: &Arc<VoxelWorld>, chunk: &ChunkSnaps
         &ChunkData::Homogeneous(id) => match homogenous_should_mesh(world, id, pos) {
             Some(true) => queue_mesh_job(ctx, world, chunk),
             Some(false) | None => {
-                add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                    bounds: chunk_aabb(chunk.pos()),
-                    rgba: [1.0, 0.0, 1.0, 0.3],
-                    kind: DebugBoxKind::Dashed,
-                });
+                send_debug_event(MesherEvent::Meshed { cheap: true, pos });
                 return true;
             }
         },
@@ -270,14 +259,7 @@ fn pack_side(side: Side) -> u8 {
 }
 
 impl TerrainVertex {
-    pub fn pack(
-        pos: [u16; 3],
-        side: Side,
-        sky_light: u16,
-        block_light: u16,
-        id: u16,
-        ao: u8,
-    ) -> Self {
+    pub fn pack(pos: [u16; 3], side: Side, light: LightValue, id: u16, ao: u8) -> Self {
         let [x, y, z] = pos;
         let mut pos_ao = 0u32;
         // while 10 bits are reserved for each axis, we only use 5 of them currently.
@@ -290,13 +272,9 @@ impl TerrainVertex {
         pos_ao <<= 2;
         pos_ao |= ao as u32;
 
-        let mut light = 0u32;
-        light |= ((sky_light & 0xf) as u32) << 4;
-        light |= (block_light & 0xf) as u32;
-
         // SSSS BBBB .... .DSS  IIII IIII IIII IIII
         let mut light_side_id = 0u32;
-        light_side_id |= light << 8;
+        light_side_id |= (light.raw() as u32) << 8;
         light_side_id |= pack_side(side) as u32;
         light_side_id <<= 16;
         light_side_id |= id as u32;

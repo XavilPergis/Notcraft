@@ -1,6 +1,5 @@
 use std::{
     cell::UnsafeCell,
-    mem::ManuallyDrop,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -71,36 +70,27 @@ impl<T> std::ops::Deref for OrphanSnapshot<T> {
     }
 }
 
-#[derive(Debug)]
-enum OrphanWriteGuardCow<'a, T> {
-    Borrowed(&'a mut T),
-    Cloned(ManuallyDrop<T>),
-}
-
-pub struct OrphanWriteGuard<'a, T> {
-    orphan: &'a Orphan<T>,
+pub struct OrphanWriter<T> {
     inner: Arc<OrphanInner<T>>,
-    value: OrphanWriteGuardCow<'a, T>,
+    was_cloned: bool,
 }
 
-impl<'a, T> OrphanWriteGuard<'a, T> {
+impl<T> OrphanWriter<T> {
     pub fn was_cloned(&self) -> bool {
-        matches!(&self.value, OrphanWriteGuardCow::Cloned(_))
+        self.was_cloned
     }
 }
 
-unsafe impl<'a, T: Send> Send for OrphanWriteGuard<'a, T> {}
-unsafe impl<'a, T: Sync> Sync for OrphanWriteGuard<'a, T> {}
+unsafe impl<T: Send> Send for OrphanWriter<T> {}
+unsafe impl<T: Sync> Sync for OrphanWriter<T> {}
 
-impl<'a, T: Clone> OrphanWriteGuard<'a, T> {
-    pub fn acquire(orphan: &'a Orphan<T>, wait_shared: bool) -> Option<Self> {
+impl<T: Clone> OrphanWriter<T> {
+    pub fn acquire(orphan: &Orphan<T>, wait_shared: bool) -> Option<Self> {
         let current_inner = orphan.current_inner.load();
         if current_inner.lock.try_lock_exclusive() {
-            let value = unsafe { &mut *current_inner.value.get() };
-            Some(OrphanWriteGuard {
-                orphan,
+            Some(OrphanWriter {
                 inner: Guard::into_inner(current_inner),
-                value: OrphanWriteGuardCow::Borrowed(value),
+                was_cloned: false,
             })
         } else {
             match wait_shared {
@@ -109,50 +99,37 @@ impl<'a, T: Clone> OrphanWriteGuard<'a, T> {
             }
 
             let value = unsafe { (*current_inner.value.get()).clone() };
+            let inner = Arc::new(OrphanInner::new(value));
+            inner.lock.lock_exclusive();
+
+            orphan.current_inner.store(Arc::clone(&inner));
             current_inner.orphaned.store(true, Ordering::Relaxed);
-            Some(OrphanWriteGuard {
-                orphan,
-                inner: Guard::into_inner(current_inner),
-                value: OrphanWriteGuardCow::Cloned(ManuallyDrop::new(value)),
+
+            Some(OrphanWriter {
+                inner,
+                was_cloned: true,
             })
         }
     }
 }
 
-impl<'a, T> Drop for OrphanWriteGuard<'a, T> {
+impl<T> Drop for OrphanWriter<T> {
     fn drop(&mut self) {
-        match &mut self.value {
-            OrphanWriteGuardCow::Borrowed(_) => unsafe { self.inner.lock.unlock_exclusive() },
-            OrphanWriteGuardCow::Cloned(value) => {
-                unsafe { self.inner.lock.unlock_shared() };
-                let value = unsafe { ManuallyDrop::take(value) };
-                // we store the new inner here and not on guard acquisition because it allows
-                // reads to not block while we are still writing.
-                self.orphan
-                    .current_inner
-                    .store(Arc::new(OrphanInner::new(value)));
-            }
-        }
+        unsafe { self.inner.lock.unlock_exclusive() };
     }
 }
 
-impl<'a, T> std::ops::Deref for OrphanWriteGuard<'a, T> {
+impl<T> std::ops::Deref for OrphanWriter<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        match &self.value {
-            OrphanWriteGuardCow::Borrowed(borrow) => borrow,
-            OrphanWriteGuardCow::Cloned(owned) => owned,
-        }
+        unsafe { &*self.inner.value.get() }
     }
 }
 
-impl<'a, T> std::ops::DerefMut for OrphanWriteGuard<'a, T> {
+impl<T> std::ops::DerefMut for OrphanWriter<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        match &mut self.value {
-            OrphanWriteGuardCow::Borrowed(borrow) => borrow,
-            OrphanWriteGuardCow::Cloned(owned) => owned,
-        }
+        unsafe { &mut *self.inner.value.get() }
     }
 }
 
@@ -164,12 +141,12 @@ unsafe impl<T: Send> Send for Orphan<T> {}
 unsafe impl<T: Sync> Sync for Orphan<T> {}
 
 impl<T: Clone> Orphan<T> {
-    pub fn try_orphan_readers(&self) -> Option<OrphanWriteGuard<'_, T>> {
-        OrphanWriteGuard::acquire(self, false)
+    pub fn try_orphan_readers(&self) -> Option<OrphanWriter<T>> {
+        OrphanWriter::acquire(self, false)
     }
 
-    pub fn orphan_readers(&self) -> OrphanWriteGuard<'_, T> {
-        OrphanWriteGuard::acquire(self, true).unwrap()
+    pub fn orphan_readers(&self) -> OrphanWriter<T> {
+        OrphanWriter::acquire(self, true).unwrap()
     }
 
     pub fn try_snapshot(&self) -> Option<OrphanSnapshot<T>> {
