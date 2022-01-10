@@ -431,6 +431,15 @@ fn terrain_manipulation(
     // button 2 - middle click
     // button 3 - right click
     query.for_each_mut(|(transform, mut manip)| {
+        if input.key(VirtualKeyCode::Q).is_rising() {
+            manip.block_name = match manip.block_name {
+                "debug_glow_block" => "stone",
+                _ => "debug_glow_block",
+            };
+
+            log::info!("switched block to {}", manip.block_name);
+        }
+
         if let Some(hit) = trace_ray(&mut access, make_ray(transform, &-Vector3::z()), 100.0) {
             let mut ctx = TerrainManipulationContext {
                 access: &mut access,
