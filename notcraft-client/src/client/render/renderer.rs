@@ -1190,6 +1190,7 @@ fn render_terrain(
                     ..Default::default()
                 },
                 backface_culling: glium::BackfaceCullingMode::CullCounterClockwise,
+                // polygon_mode: glium::PolygonMode::Line,
                 ..Default::default()
             },
         )?;

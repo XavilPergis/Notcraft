@@ -39,6 +39,23 @@ impl LightValue {
     pub const fn block(self) -> u16 {
         self.0 & BLOCK_LIGHT_MASK
     }
+
+    pub const fn intensity(self) -> u16 {
+        if self.sky() > self.block() {
+            self.sky()
+        } else {
+            self.block()
+        }
+    }
+
+    pub fn combine_max(self, other: LightValue) -> LightValue {
+        let block = u16::max(self.0 & BLOCK_LIGHT_MASK, other.0 & BLOCK_LIGHT_MASK);
+        let sky = u16::max(
+            self.0 & (SKY_LIGHT_MASK << BLOCK_LIGHT_BITS),
+            other.0 & (SKY_LIGHT_MASK << BLOCK_LIGHT_BITS),
+        );
+        LightValue(sky | block)
+    }
 }
 
 // the basic idea for this comes from the Seed of Andromeda light update code.

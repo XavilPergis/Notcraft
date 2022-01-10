@@ -83,6 +83,7 @@ type ChunkAxisOffset = i16;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct VoxelQuad {
     ao: FaceAo,
+    light: FaceLight,
     id: BlockId,
     width: ChunkAxis,
     height: ChunkAxis,
@@ -93,6 +94,7 @@ impl From<VoxelFace> for VoxelQuad {
         VoxelQuad {
             ao: face.ao,
             id: face.id,
+            light: face.light,
             width: 1,
             height: 1,
         }
@@ -102,14 +104,16 @@ impl From<VoxelFace> for VoxelQuad {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 struct VoxelFace {
     ao: FaceAo,
+    light: FaceLight,
     id: BlockId,
     visited: bool,
 }
 
 impl VoxelFace {
-    fn new(ao: FaceAo, id: BlockId) -> Self {
+    fn new(ao: FaceAo, light: FaceLight, id: BlockId) -> Self {
         Self {
             ao,
+            light,
             id,
             visited: false,
         }
@@ -205,6 +209,45 @@ impl MeshCreationContext {
         )
     }
 
+    fn face_light(&self, pos: Point3<ChunkAxis>, side: Side) -> FaceLight {
+        let pos = pos.cast::<ChunkAxisOffset>();
+        let light = |pos| self.chunks.light(pos);
+
+        let nn = light(pos + side.uvl_to_xyz(-1, -1, 1));
+        let nc = light(pos + side.uvl_to_xyz(-1, 0, 1));
+        let np = light(pos + side.uvl_to_xyz(-1, 1, 1));
+        let cn = light(pos + side.uvl_to_xyz(0, -1, 1));
+        let cc = light(pos + side.uvl_to_xyz(0, 0, 1));
+        let cp = light(pos + side.uvl_to_xyz(0, 1, 1));
+        let pn = light(pos + side.uvl_to_xyz(1, -1, 1));
+        let pc = light(pos + side.uvl_to_xyz(1, 0, 1));
+        let pp = light(pos + side.uvl_to_xyz(1, 1, 1));
+
+        let neg_neg = LightValue::combine_max(
+            LightValue::combine_max(nn, nc),
+            LightValue::combine_max(cn, cc),
+        );
+        let neg_pos = LightValue::combine_max(
+            LightValue::combine_max(np, nc),
+            LightValue::combine_max(cp, cc),
+        );
+        let pos_neg = LightValue::combine_max(
+            LightValue::combine_max(pn, pc),
+            LightValue::combine_max(cn, cc),
+        );
+        let pos_pos = LightValue::combine_max(
+            LightValue::combine_max(pp, pc),
+            LightValue::combine_max(cp, cc),
+        );
+
+        FaceLight {
+            neg_neg,
+            neg_pos,
+            pos_neg,
+            pos_pos,
+        }
+    }
+
     /*
     for each x:
         for each y:
@@ -280,8 +323,6 @@ impl MeshCreationContext {
                     quad,
                     side,
                     point_constructor(u, v),
-                    // TODO
-                    LightValue::default(),
                 );
             }
         }
@@ -301,7 +342,13 @@ impl MeshCreationContext {
                     let neighbor_id = self.chunks.id(pos.cast() + normal);
 
                     let face = should_add_face(&self.registry, cur_id, neighbor_id)
-                        .then(|| VoxelFace::new(self.face_ao(pos, side), cur_id))
+                        .then(|| {
+                            VoxelFace::new(
+                                self.face_ao(pos, side),
+                                self.face_light(pos, side),
+                                cur_id,
+                            )
+                        })
                         .unwrap_or(VoxelFace::visited());
                     self.slice[idx(u, v)] = face;
                 }
@@ -326,20 +373,20 @@ impl MeshCreationContext {
                         BlockMeshType::FullCube => Side::enumerate(|side| {
                             let normal = side.normal::<ChunkAxisOffset>();
                             let neighbor_id = self.chunks.id(pos.cast() + normal);
-                            let neighbor_light = self.chunks.light(pos.cast() + normal);
                             if should_add_face(&self.registry, cur_id, neighbor_id) {
                                 let ao = self.face_ao(pos, side);
+                                let light = self.face_light(pos, side);
                                 mesh_full_cube_side(
                                     &mut self.mesh_constructor,
                                     VoxelQuad {
                                         ao,
                                         id: cur_id,
+                                        light,
                                         width: 1,
                                         height: 1,
                                     },
                                     side,
                                     pos,
-                                    neighbor_light,
                                 );
                             }
                         }),
@@ -362,9 +409,10 @@ impl MeshCreationContext {
                 for y in 0..(CHUNK_LENGTH as ChunkAxis) {
                     let pos = point![x, y, z];
                     let id = self.chunks.id(pos.cast());
+                    let light = self.chunks.light(pos.cast());
                     if matches!(self.registry.mesh_type(id), BlockMeshType::Cross) {
                         // TODO: light
-                        mesh_cross(&mut self.mesh_constructor, id, pos, LightValue::default())
+                        mesh_cross(&mut self.mesh_constructor, id, pos, light)
                     }
                 }
             }
@@ -406,6 +454,14 @@ impl FaceAo {
     fn corner_ao(&self, bits: u8) -> u8 {
         (self.0 & (3 << bits)) >> bits
     }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
+struct FaceLight {
+    neg_neg: LightValue,
+    neg_pos: LightValue,
+    pos_neg: LightValue,
+    pos_pos: LightValue,
 }
 
 const FLIPPED_QUAD_CW: &'static [u32] = &[0, 1, 2, 3, 2, 1];
@@ -470,13 +526,20 @@ pub fn mesh_full_cube_side(
     quad: VoxelQuad,
     side: Side,
     pos: Point3<ChunkAxis>,
-    light: LightValue,
 ) {
     let ao_pp = quad.ao.corner_ao(FaceAo::AO_POS_POS);
     let ao_pn = quad.ao.corner_ao(FaceAo::AO_POS_NEG);
     let ao_nn = quad.ao.corner_ao(FaceAo::AO_NEG_NEG);
     let ao_np = quad.ao.corner_ao(FaceAo::AO_NEG_POS);
-    let flipped = ao_pp + ao_nn > ao_pn + ao_np;
+    let flipped = ao_pp + ao_nn < ao_pn + ao_np;
+
+    let light_pp = quad.light.pos_pos;
+    let light_pn = quad.light.pos_neg;
+    let light_nn = quad.light.neg_neg;
+    let light_np = quad.light.neg_pos;
+    let flipped = flipped
+        || light_pp.intensity() + light_nn.intensity()
+            <= light_pn.intensity() + light_np.intensity();
 
     let clockwise = match side {
         Side::Top => false,
@@ -501,7 +564,7 @@ pub fn mesh_full_cube_side(
 
     let tex_id = choose_face_texture(ctx, quad.id, side).0 as u16;
 
-    let mut vert = |offset: Vector3<_>, ao| {
+    let mut vert = |offset: Vector3<_>, ao, light| {
         let pos: Point3<u16> = (16 * pos) + (16 * offset);
         ctx.terrain_mesh
             .vertices
@@ -514,24 +577,24 @@ pub fn mesh_full_cube_side(
 
     match side {
         Side::Left | Side::Right => {
-            vert(vector!(h, qw, 0), ao_pn);
-            vert(vector!(h, qw, qh), ao_pp);
-            vert(vector!(h, 0, 0), ao_nn);
-            vert(vector!(h, 0, qh), ao_np);
+            vert(vector!(h, qw, 0), ao_pn, light_pn);
+            vert(vector!(h, qw, qh), ao_pp, light_pp);
+            vert(vector!(h, 0, 0), ao_nn, light_nn);
+            vert(vector!(h, 0, qh), ao_np, light_np);
         }
 
         Side::Top | Side::Bottom => {
-            vert(vector!(0, h, qh), ao_pn);
-            vert(vector!(qw, h, qh), ao_pp);
-            vert(vector!(0, h, 0), ao_nn);
-            vert(vector!(qw, h, 0), ao_np);
+            vert(vector!(0, h, qh), ao_pn, light_pn);
+            vert(vector!(qw, h, qh), ao_pp, light_pp);
+            vert(vector!(0, h, 0), ao_nn, light_nn);
+            vert(vector!(qw, h, 0), ao_np, light_np);
         }
 
         Side::Front | Side::Back => {
-            vert(vector!(0, qh, h), ao_np);
-            vert(vector!(qw, qh, h), ao_pp);
-            vert(vector!(0, 0, h), ao_nn);
-            vert(vector!(qw, 0, h), ao_pn);
+            vert(vector!(0, qh, h), ao_np, light_np);
+            vert(vector!(qw, qh, h), ao_pp, light_pp);
+            vert(vector!(0, 0, h), ao_nn, light_nn);
+            vert(vector!(qw, 0, h), ao_pn, light_pn);
         }
     }
 }

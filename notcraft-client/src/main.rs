@@ -480,8 +480,23 @@ fn player_controller(
     time: Res<Time>,
     input: Res<InputState>,
     player_controller: ResMut<PlayerController>,
+    camera_controller: Res<CameraController>,
     mut player_query: Query<(&mut Transform, &mut RigidBody, &AabbCollider)>,
 ) {
+    if input
+        .key(VirtualKeyCode::C)
+        .require_modifiers(ModifiersState::CTRL)
+        .is_rising()
+    {
+        let grabbed = input.is_cursor_grabbed();
+        input.grab_cursor(!grabbed);
+        input.hide_cursor(!grabbed);
+    }
+
+    if matches!(camera_controller.mode, CameraControllerMode::Static) {
+        return;
+    }
+
     if let Some((mut transform, mut rigidbody, collider)) =
         player_query.get_mut(player_controller.player).ok()
     {
@@ -531,17 +546,6 @@ fn player_controller(
 
         if collider.in_liquid {
             rigidbody.velocity.y *= util::lerp(0.96, 0.0, time.delta_seconds());
-        }
-
-        if input
-            .key(VirtualKeyCode::C)
-            .require_modifiers(ModifiersState::CTRL)
-            .is_rising()
-        {
-            let grabbed = input.is_cursor_grabbed();
-
-            input.grab_cursor(!grabbed);
-            input.hide_cursor(!grabbed);
         }
     }
 }

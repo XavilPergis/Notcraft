@@ -8,16 +8,23 @@ uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
 
-out vec3 v_color_filter;
-out vec3 v_normal;
-out vec2 v_texture_uv;
-flat out int v_id;
+out vec3 vColorFilter;
+out vec3 vNormal;
+out vec2 vTextureUv;
+flat out int vTextureId;
 
 float contribution(bool contribute, float strength) {
     return 1.0 - float(contribute) * strength;
 }
 
-#define MIN_AO_BRIGHTNESS (0.2)
+// higher values mean light "drops off" from the source more quickly.
+#define LIGHT_ATTENUATION 2.0
+
+// lower values mean that zero brightness is darker.
+#define LIGHT_MIN_BRIGHNESS 0.03
+
+#define AO_MIN_BRIGHTNESS 0.3
+#define AO_ATTENUATION 1.5
 
 #define BITS(packed, a, n) ((packed) >> (a)) & uint((1 << (n)) - 1)
 
@@ -62,24 +69,30 @@ void main()
     gl_Position = projection * view * model * vec4(pos, 1.0);
 
     float brightness = 1.0;
-    brightness *= mix(MIN_AO_BRIGHTNESS, 1.0, ao);
+
+    float aoFactor = 1.0;
+    aoFactor *= mix(AO_MIN_BRIGHTNESS, 1.0, ao);
+    aoFactor = pow(aoFactor, AO_ATTENUATION);
+    brightness *= aoFactor;
 
     // directional lighting
-    brightness *= contribution(baxis == uint(1) && baxisSign == uint(0), 0.0); // top
-    brightness *= contribution(baxis == uint(1) && baxisSign == uint(1), 0.4); // bottom
-    brightness *= contribution(baxis == uint(0), 0.1); // X
-    brightness *= contribution(baxis == uint(2), 0.2); // Z
+    float directionFactor = 1.0;
+    directionFactor *= contribution(baxis == uint(1) && baxisSign == uint(0), 0.0); // top
+    directionFactor *= contribution(baxis == uint(1) && baxisSign == uint(1), 0.5); // bottom
+    directionFactor *= contribution(baxis == uint(0), 0.3); // X
+    directionFactor *= contribution(baxis == uint(2), 0.4); // Z
+    brightness *= directionFactor;
 
-    brightness *= max(
-        mix(0.1, 1.0, blockLight),
-        mix(0.1, 1.0, skyLight)
-    );
+    float lightFactor = max(blockLight, skyLight);
+    lightFactor = pow(lightFactor, LIGHT_ATTENUATION);
+    lightFactor = mix(LIGHT_MIN_BRIGHNESS, 1.0, lightFactor);
+    brightness *= lightFactor;
 
-    v_color_filter = vec3(brightness);
+    vColorFilter = vec3(brightness);
 
-    v_id = id;
-    v_texture_uv = uv;
-    v_normal = normal;
+    vTextureId = id;
+    vTextureUv = uv;
+    vNormal = normal;
 }
 
 #pragma shaderstage fragment
@@ -87,19 +100,29 @@ void main()
 
 uniform sampler2DArray albedo_maps;
 
-in vec3 v_color_filter;
-in vec2 v_texture_uv;
-flat in int v_id;
+in vec3 vColorFilter;
+in vec2 vTextureUv;
+flat in int vTextureId;
 
 out vec3 b_color;
 
+const highp float NOISE_GRANULARITY = 0.2/255.0;
+
+highp float random(vec2 coords) {
+   return fract(sin(dot(coords.xy, vec2(12.9898,78.233))) * 43758.5453);
+}
+
 void main()
 {
-    vec3 tex_pos = vec3(v_texture_uv, v_id);
-    vec4 tex = texture(albedo_maps, tex_pos);
-    vec3 albedo = v_color_filter * tex.rgb;
-    if (tex.a < 0.5) {
+    vec4 fragmentColor = texture(albedo_maps, vec3(vTextureUv, vTextureId));
+    if (fragmentColor.a < 0.5) {
         discard;
     }
-    b_color = albedo;
+
+    fragmentColor.rgb *= vColorFilter;
+
+    // apply some slight noise to mitigate banding in dark regions.
+    fragmentColor += mix(-NOISE_GRANULARITY, NOISE_GRANULARITY, random(vTextureUv));
+
+    b_color = fragmentColor.rgb;
 }
