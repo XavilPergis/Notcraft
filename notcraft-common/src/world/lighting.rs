@@ -67,6 +67,13 @@ impl LightUpdateQueues {
             }
 
             let prev_light = access.light(pos).unwrap().block();
+
+            let id = access.block(pos).unwrap();
+            if access.registry().light_transmissible(id) {
+                self.block_removal.push_back((pos, prev_light));
+                access.set_block_light(pos, 0).unwrap();
+            }
+
             match new_light.cmp(&prev_light) {
                 Ordering::Equal => {}
                 Ordering::Less => self.block_removal.push_back((pos, prev_light)),
