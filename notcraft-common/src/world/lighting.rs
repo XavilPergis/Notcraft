@@ -1,12 +1,13 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-
-use super::{
-    chunk::{ChunkAccess, ChunkData, ChunkPos, MutableChunkAccess},
-    BlockPos,
+use std::{
+    cmp::Ordering,
+    collections::{HashSet, VecDeque},
 };
 
+use super::{chunk::MutableChunkAccess, BlockPos};
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
-pub struct LightValue(u16);
+#[repr(transparent)]
+pub struct LightValue(pub u16);
 
 pub const SKY_LIGHT_BITS: u16 = 4;
 pub const BLOCK_LIGHT_BITS: u16 = 4;
@@ -40,25 +41,81 @@ impl LightValue {
     }
 }
 
-pub(crate) fn propagate_block_light(
-    light_updates: &HashMap<BlockPos, u16>,
-    access: &mut MutableChunkAccess,
-    rebuild: &mut HashSet<ChunkPos>,
-) {
-    let mut queue = VecDeque::new();
-    queue.extend(light_updates.iter().map(|(&k, &v)| (k, v)));
+// the basic idea for this comes from the Seed of Andromeda light update code.
+// there used to be a technical blog post about it on their site, but that has
+// since gone defunct
+//
+// it should not matter what order we tackle propagation in, since any low
+// values we set will get overwritten with a higher value later if need be.
+//
+// SoA lighting code: https://github.com/RegrowthStudios/SoACode-Public/blob/develop/SoA/VoxelLightEngine.cpp
+#[derive(Debug, Default)]
+pub struct LightUpdateQueues {
+    block_removal: VecDeque<(BlockPos, u16)>,
+    block_update: VecDeque<(BlockPos, u16)>,
+    visited: HashSet<BlockPos>,
+}
 
-    let mut visited = HashSet::new();
+impl LightUpdateQueues {
+    pub fn queue_updates<I>(&mut self, access: &mut MutableChunkAccess, iter: I)
+    where
+        I: Iterator<Item = (BlockPos, u16)>,
+    {
+        for (pos, new_light) in iter {
+            if !self.visited.insert(pos) {
+                continue;
+            }
 
-    while let Some((pos, value)) = queue.pop_front() {
-        if !visited.insert(pos) {
-            continue;
+            let prev_light = access.light(pos).unwrap().block();
+            match new_light.cmp(&prev_light) {
+                Ordering::Equal => {}
+                Ordering::Less => self.block_removal.push_back((pos, prev_light)),
+                Ordering::Greater => self.block_update.push_back((pos, new_light)),
+            }
         }
 
-        access.set_block_light(pos, value).unwrap();
-        rebuild.insert(pos.into());
+        self.visited.clear();
+    }
+}
 
-        if value == 0 {
+pub(crate) fn propagate_block_light(
+    queues: &mut LightUpdateQueues,
+    access: &mut MutableChunkAccess,
+) {
+    for &(pos, _) in queues.block_removal.iter() {
+        access.set_block_light(pos, 0).unwrap();
+    }
+
+    while let Some((pos, light)) = queues.block_removal.pop_front() {
+        let dirs = [
+            pos.offset([1, 0, 0]),
+            pos.offset([-1, 0, 0]),
+            pos.offset([0, 1, 0]),
+            pos.offset([0, -1, 0]),
+            pos.offset([0, 0, 1]),
+            pos.offset([0, 0, -1]),
+        ];
+
+        for dir in dirs.into_iter() {
+            let neighbor_light = access.light(dir).unwrap().block();
+
+            if neighbor_light > 0 && neighbor_light < light {
+                access.set_block_light(dir, 0).unwrap();
+                queues.block_removal.push_back((dir, light - 1));
+            } else if neighbor_light > 0 {
+                queues.block_update.push_back((dir, 0));
+            }
+        }
+    }
+
+    while let Some((pos, queue_light)) = queues.block_update.pop_front() {
+        let current_light = access.light(pos).unwrap().block();
+        let queue_light = u16::max(queue_light, current_light);
+        if queue_light != current_light {
+            access.set_block_light(pos, queue_light).unwrap();
+        }
+
+        if queue_light == 0 {
             continue;
         }
 
@@ -72,14 +129,15 @@ pub(crate) fn propagate_block_light(
         ];
 
         for dir in dirs.into_iter() {
-            let light = access.light(dir).unwrap().block();
+            let neighbor_light = access.light(dir).unwrap().block();
+            let new_light = u16::max(queue_light - 1, neighbor_light);
+
             let id = access.block(dir).unwrap();
-            let opaque = matches!(
-                access.registry().mesh_type(id),
-                crate::world::registry::BlockMeshType::FullCube
-            );
-            if !opaque && light < value {
-                queue.push_back((dir, value - 1));
+            let neighbor_transmissible = access.registry().light_transmissible(id);
+
+            if new_light != neighbor_light && neighbor_transmissible {
+                access.set_block_light(dir, new_light).unwrap();
+                queues.block_update.push_back((dir, new_light));
             }
         }
     }

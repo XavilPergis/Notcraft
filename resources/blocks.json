@@ -36,6 +36,7 @@
             "mesh-type": "none",
             "properties": {
                 "collision-type": "none",
+                "light-transmissible": true,
                 "liquid": false
             }
         },
@@ -44,6 +45,7 @@
             "mesh-type": "full-cube",
             "properties": {
                 "collision-type": "solid",
+                "light-transmissible": false,
                 "liquid": false
             },
             "texture-variants": [
@@ -57,6 +59,7 @@
             "mesh-type": "full-cube",
             "properties": {
                 "collision-type": "solid",
+                "light-transmissible": false,
                 "liquid": false
             },
             "texture-variants": [
@@ -70,6 +73,7 @@
             "mesh-type": "full-cube",
             "properties": {
                 "collision-type": "solid",
+                "light-transmissible": false,
                 "liquid": false
             },
             "texture-variants": [
@@ -85,6 +89,7 @@
             "mesh-type": "full-cube",
             "properties": {
                 "collision-type": "solid",
+                "light-transmissible": false,
                 "liquid": false
             },
             "texture-variants": [
@@ -98,6 +103,7 @@
             "mesh-type": "full-cube",
             "properties": {
                 "collision-type": "liquid",
+                "light-transmissible": true,
                 "liquid": true
             },
             "texture-variants": [
@@ -111,6 +117,7 @@
             "mesh-type": "cross",
             "properties": {
                 "collision-type": "none",
+                "light-transmissible": true,
                 "liquid": false
             },
             "texture-variants": [
@@ -123,8 +130,9 @@
             "name": "debug_glow_block",
             "mesh-type": "cross",
             "properties": {
-                "collision-type": "none",
+                "collision-type": "solid",
                 "liquid": false,
+                "light-transmissible": true,
                 "block-light": 15
             },
             "texture-variants": [

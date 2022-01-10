@@ -62,6 +62,8 @@ pub struct BlockProperties {
     liquid: bool,
     #[serde(default)]
     block_light: u16,
+    #[serde(default)]
+    light_transmissible: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Deserialize)]
@@ -224,6 +226,11 @@ impl BlockRegistry {
     #[inline(always)]
     pub fn block_light(&self, id: BlockId) -> u16 {
         self.entries[id.0].properties.block_light
+    }
+
+    #[inline(always)]
+    pub fn light_transmissible(&self, id: BlockId) -> bool {
+        self.entries[id.0].properties.light_transmissible
     }
 
     #[inline(always)]

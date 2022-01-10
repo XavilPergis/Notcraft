@@ -1,13 +1,16 @@
 use crate::{
     debug::send_debug_event,
-    world::{lighting::propagate_block_light, registry::BlockId},
+    world::{
+        lighting::{propagate_block_light, LightUpdateQueues},
+        registry::BlockId,
+    },
 };
 use nalgebra::Point3;
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     ops::{Index, IndexMut},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
         Arc,
     },
 };
@@ -145,7 +148,7 @@ impl Chunk {
     }
 
     pub(crate) fn was_ever_modified(&self) -> bool {
-        self.was_ever_modified.load(Ordering::Relaxed)
+        self.was_ever_modified.load(AtomicOrdering::Relaxed)
     }
 }
 
@@ -242,27 +245,14 @@ pub(crate) fn flush_chunk_writes(
 ) {
     assert!(!updates.is_empty());
 
-    chunk.was_ever_modified.store(true, Ordering::Relaxed);
+    chunk.was_ever_modified.store(true, AtomicOrdering::Relaxed);
 
     let registry = Arc::clone(access.registry());
-    let mut block_light_updates = HashMap::new();
+    let mut light_updates = LightUpdateQueues::default();
 
     {
         let inner = access.chunk(chunk.pos()).unwrap();
         write_chunk_updates(inner.blocks_mut(), chunk.pos(), rebuild, updates);
-
-        for update in updates.iter() {
-            let new_light = registry.block_light(update.id);
-            if new_light != inner.light().get(update.index).block() {
-                let [x, y, z] = update.index;
-                let block_pos = BlockPos {
-                    x: chunk.pos().x * CHUNK_LENGTH as i32 + x as i32,
-                    y: chunk.pos().y * CHUNK_LENGTH as i32 + y as i32,
-                    z: chunk.pos().z * CHUNK_LENGTH as i32 + z as i32,
-                };
-                block_light_updates.insert(block_pos, new_light);
-            }
-        }
 
         #[cfg(feature = "debug")]
         match inner.was_cloned() {
@@ -271,7 +261,23 @@ pub(crate) fn flush_chunk_writes(
         }
     }
 
-    propagate_block_light(&block_light_updates, access, rebuild);
+    light_updates.queue_updates(
+        access,
+        updates.iter().map(|update| {
+            let [x, y, z] = update.index;
+            let pos = BlockPos {
+                x: chunk.pos().x * CHUNK_LENGTH as i32 + x as i32,
+                y: chunk.pos().y * CHUNK_LENGTH as i32 + y as i32,
+                z: chunk.pos().z * CHUNK_LENGTH as i32 + z as i32,
+            };
+
+            let light = registry.block_light(update.id);
+
+            (pos, light)
+        }),
+    );
+
+    propagate_block_light(&mut light_updates, access);
 }
 
 // TODO: maybe think about splitting this into a read half and a write half, so
@@ -333,6 +339,7 @@ impl ChunkAccess {
 }
 
 pub struct MutableChunkAccess {
+    rebuild: HashSet<ChunkPos>,
     world: Arc<VoxelWorld>,
     writers: HashMap<ChunkPos, ChunkSnapshotMut>,
 }
@@ -342,6 +349,7 @@ impl MutableChunkAccess {
         Self {
             world: Arc::clone(world),
             writers: Default::default(),
+            rebuild: Default::default(),
         }
     }
 
@@ -367,7 +375,13 @@ impl MutableChunkAccess {
     #[must_use]
     pub fn set_block(&mut self, pos: BlockPos, id: BlockId) -> Option<()> {
         let (chunk_pos, chunk_index) = pos.chunk_and_offset();
-        self.chunk(chunk_pos)?.blocks_mut().set(chunk_index, id);
+        let block_data = self.chunk(chunk_pos)?.blocks_mut();
+
+        let prev = block_data.get(chunk_index);
+        if id != prev {
+            block_data.set(chunk_index, id);
+            self.rebuild.insert(pos.into());
+        }
         Some(())
     }
 
@@ -381,8 +395,13 @@ impl MutableChunkAccess {
     pub fn set_block_light(&mut self, pos: BlockPos, light: u16) -> Option<()> {
         let (chunk_pos, chunk_index) = pos.chunk_and_offset();
         let light_data = self.chunk(chunk_pos)?.light_mut();
-        let prev_sky = light_data.get(chunk_index).sky();
-        light_data.set(chunk_index, LightValue::pack(prev_sky, light));
+
+        let prev = light_data.get(chunk_index);
+        if light != prev.block() {
+            light_data.set(chunk_index, LightValue::pack(prev.sky(), light));
+            self.rebuild.insert(pos.into());
+        }
+
         Some(())
     }
 }
@@ -409,6 +428,8 @@ pub(crate) fn flush_chunk_access(access: &mut ChunkAccess, rebuild: &mut HashSet
         updates.clear();
         access.free_update_queues.push(updates);
     }
+
+    rebuild.extend(mut_access.rebuild);
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
