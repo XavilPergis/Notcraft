@@ -19,7 +19,7 @@ use super::{
     lighting::{LightValue, FULL_SKY_LIGHT},
     orphan::{Orphan, OrphanSnapshot, OrphanWriter},
     registry::BlockRegistry,
-    BlockPos, VoxelWorld,
+    BlockPos, ChunkColumnPos, VoxelWorld,
 };
 
 // The width of the chunk is `2 ^ SIZE_BITS`
@@ -530,6 +530,15 @@ pub struct ChunkPos {
     pub x: i32,
     pub y: i32,
     pub z: i32,
+}
+
+impl ChunkPos {
+    pub fn column(&self) -> ChunkColumnPos {
+        ChunkColumnPos {
+            x: self.x,
+            z: self.z,
+        }
+    }
 }
 
 impl From<ChunkPos> for Point3<i32> {

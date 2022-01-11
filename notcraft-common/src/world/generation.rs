@@ -1,7 +1,7 @@
 use super::{
     chunk::ChunkData,
     registry::{BlockId, BlockRegistry, AIR},
-    ChunkHeightmapPos, ChunkPos,
+    ChunkColumnPos, ChunkPos,
 };
 use crate::world::chunk::{CHUNK_LENGTH, CHUNK_VOLUME};
 use noise::{Fbm, NoiseFn, Perlin};
@@ -31,7 +31,7 @@ impl SurfaceHeightmap {
 #[derive(Debug)]
 pub struct SurfaceHeighmapCache {
     time_reference: Instant,
-    heightmaps: flurry::HashMap<ChunkHeightmapPos, SurfaceHeightmap>,
+    heightmaps: flurry::HashMap<ChunkColumnPos, SurfaceHeightmap>,
 }
 
 impl Default for SurfaceHeighmapCache {
@@ -43,10 +43,7 @@ impl Default for SurfaceHeighmapCache {
     }
 }
 
-fn generate_surface_heights(
-    cache: &SurfaceHeighmapCache,
-    pos: ChunkHeightmapPos,
-) -> SurfaceHeightmap {
+fn generate_surface_heights(cache: &SurfaceHeighmapCache, pos: ChunkColumnPos) -> SurfaceHeightmap {
     let mix_noise = NoiseSampler::new(Perlin::new()).with_scale(0.0001);
     let rolling_noise = NoiseSampler::new(Perlin::new()).with_scale(0.0003);
 
@@ -98,7 +95,7 @@ fn generate_surface_heights(
 }
 
 impl SurfaceHeighmapCache {
-    pub fn surface_heights(&self, pos: ChunkHeightmapPos) -> SurfaceHeightmap {
+    pub fn surface_heights(&self, pos: ChunkColumnPos) -> SurfaceHeightmap {
         if let Some(cached) = self.heightmaps.pin().get(&pos) {
             cached.timestamp.store(self.timestamp(), Ordering::SeqCst);
             return SurfaceHeightmap::clone(cached);

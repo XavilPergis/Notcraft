@@ -1,5 +1,6 @@
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::{Point3, Scalar, Vector3};
+use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     collections::{HashMap, HashSet},
@@ -16,7 +17,8 @@ use std::{
 pub use self::chunk::ArrayChunk;
 use self::{
     chunk::{Chunk, ChunkAccess, ChunkData, ChunkPos, CompactedChunk},
-    lighting::LightValue,
+    generation::SurfaceHeightmap,
+    lighting::{LightValue, SkyLightColumns, FULL_SKY_LIGHT},
     registry::{load_registry, BlockRegistry, CollisionType},
 };
 use crate::{
@@ -202,14 +204,30 @@ impl WorldPos {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct ChunkHeightmapPos {
+pub struct ChunkColumnPos {
     pub x: i32,
     pub z: i32,
 }
 
-impl From<ChunkPos> for ChunkHeightmapPos {
+impl From<ChunkPos> for ChunkColumnPos {
     fn from(pos: ChunkPos) -> Self {
         Self { x: pos.x, z: pos.z }
+    }
+}
+
+pub struct ChunkColumn {
+    heights: SurfaceHeightmap,
+    sky_light: SkyLightColumns,
+    chunks: Arc<RwLock<HashMap<i32, Arc<Chunk>>>>,
+}
+
+impl ChunkColumn {
+    pub fn new(heights: SurfaceHeightmap) -> Self {
+        Self {
+            sky_light: SkyLightColumns::initialize(&heights),
+            chunks: Default::default(),
+            heights,
+        }
     }
 }
 
@@ -218,8 +236,8 @@ pub struct VoxelWorld {
     chunk_event_tx: Sender<ChunkEvent>,
     chunk_event_rx: Receiver<ChunkEvent>,
 
-    chunks: Arc<flurry::HashMap<ChunkPos, Arc<Chunk>>>,
-    modified_chunks: Arc<flurry::HashMap<ChunkPos, CompactedChunk>>,
+    columns: Arc<RwLock<HashMap<ChunkColumnPos, Arc<ChunkColumn>>>>,
+    compacted_chunks: Arc<flurry::HashMap<ChunkPos, CompactedChunk>>,
 
     world_gen_pool: ThreadPool,
     chunk_generator: Arc<generation::ChunkGenerator>,
@@ -245,8 +263,8 @@ impl VoxelWorld {
 
         Arc::new(VoxelWorld {
             registry,
-            chunks: Default::default(),
-            modified_chunks: Default::default(),
+            columns: Default::default(),
+            compacted_chunks: Default::default(),
             chunks_in_progress: Default::default(),
 
             world_gen_pool,
@@ -258,82 +276,114 @@ impl VoxelWorld {
         })
     }
 
+    fn insert_chunk(&self, chunk: Arc<Chunk>, is_cancelled: &AtomicBool) {
+        let mut columns = self.columns.write();
+        let entry = columns.entry(chunk.pos().column());
+        let column = Arc::clone(entry.or_insert_with(|| {
+            let heights = self.surface_cache.surface_heights(chunk.pos().column());
+            Arc::new(ChunkColumn::new(heights))
+        }));
+
+        // don't let unload requests slip in and pull the metaphorical rug out from
+        // under us by removing the column we're about to insert into
+        let mut chunks = column.chunks.write();
+        let _columns = RwLockWriteGuard::downgrade(columns);
+
+        if !is_cancelled.load(Ordering::SeqCst) {
+            chunks.insert(chunk.pos().y, Arc::clone(&chunk));
+            self.chunks_in_progress.pin().remove(&chunk.pos());
+            self.chunk_event_tx
+                .send(ChunkEvent::Added(Arc::clone(&chunk)))
+                .unwrap();
+            send_debug_event(debug::WorldLoadEvent::Loaded(chunk.pos()));
+        }
+    }
+
     pub fn load_chunk(self: &Arc<Self>, pos: ChunkPos) {
-        if self.chunks_in_progress.pin().contains_key(&pos) || self.chunks.pin().contains_key(&pos)
+        // don't load the chunk if it is already being loaded.
+        if self.chunks_in_progress.pin().contains_key(&pos) {
+            return;
+        }
+
+        {
+            // don't load the chunk if its already loaded
+            let columns = self.columns.read();
+            if let Some(column) = columns.get(&pos.column()) {
+                if column.chunks.read().contains_key(&pos.y) {
+                    return;
+                }
+            }
+        }
+
+        let is_cancelled = Arc::new(AtomicBool::new(false));
+        if self
+            .chunks_in_progress
+            .pin()
+            .try_insert(pos, Arc::clone(&is_cancelled))
+            .is_err()
         {
             return;
         }
 
-        let guard = self.chunks_in_progress.guard();
-        if !self.chunks_in_progress.contains_key(&pos, &guard) {
-            let is_cancelled = Arc::new(AtomicBool::new(false));
-            self.chunks_in_progress
-                .insert(pos, Arc::clone(&is_cancelled), &guard);
+        if let Some(compacted) = self.compacted_chunks.pin().get(&pos) {
+            let chunk_data = compacted.decompact();
+            let chunk = Arc::new(Chunk::new(pos, chunk_data, &self.registry));
 
-            if let Some(compacted) = self.modified_chunks.pin().get(&pos) {
-                let chunk_data = compacted.decompact();
-                let chunk = Arc::new(Chunk::new(pos, chunk_data, &self.registry));
-
-                // insert before and remove if cancelled to prevent a user from cancelling world
-                // chunk after we check whether the chunk was cancelled
-                self.chunks.insert(pos, Arc::clone(&chunk), &guard);
-
-                if !is_cancelled.load(Ordering::SeqCst) {
-                    self.chunk_event_tx.send(ChunkEvent::Added(chunk)).unwrap();
-                    self.chunks_in_progress.pin().remove(&pos);
-                    send_debug_event(debug::WorldLoadEvent::Loaded(pos));
-                } else {
-                    self.chunks.remove(&pos, &guard);
-                }
-
-                return;
-            }
-
-            let world = Arc::clone(self);
-            self.world_gen_pool.spawn(move || {
-                if !is_cancelled.load(Ordering::SeqCst) {
-                    let heights = world.surface_cache.surface_heights(pos.into());
-                    let chunk_data = world.chunk_generator.make_chunk(pos, heights);
-
-                    let chunk = Arc::new(Chunk::new(pos, chunk_data, &world.registry));
-
-                    // insert before and remove if cancelled to prevent a user from cancelling world
-                    // chunk after we check whether the chunk was cancelled
-                    let guard = world.chunks_in_progress.guard();
-                    world.chunks.insert(pos, Arc::clone(&chunk), &guard);
-
-                    if !is_cancelled.load(Ordering::SeqCst) {
-                        world.chunk_event_tx.send(ChunkEvent::Added(chunk)).unwrap();
-                        world.chunks_in_progress.pin().remove(&pos);
-                        send_debug_event(debug::WorldLoadEvent::Loaded(pos));
-                    } else {
-                        world.chunks.remove(&pos, &guard);
-                    }
-                }
-            });
+            self.insert_chunk(chunk, &is_cancelled);
+            return;
         }
+
+        let world = Arc::clone(self);
+        self.world_gen_pool.spawn(move || {
+            if !is_cancelled.load(Ordering::SeqCst) {
+                let heights = world.surface_cache.surface_heights(pos.into());
+                let chunk_data = world.chunk_generator.make_chunk(pos, heights);
+                let chunk = Arc::new(Chunk::new(pos, chunk_data, &world.registry));
+
+                world.insert_chunk(chunk, &is_cancelled);
+            }
+        });
     }
 
     pub fn unload_chunk(&self, pos: ChunkPos) {
         if let Some(cancelled) = self.chunks_in_progress.pin().remove(&pos) {
             cancelled.store(true, Ordering::SeqCst);
-        } else if let Some(chunk) = self.chunks.pin().remove(&pos) {
-            send_debug_event(debug::WorldLoadEvent::Unloaded(pos));
-
-            // save this chunk if it differs from what was originally generated
-            if chunk.was_ever_modified() {
-                let compacted = CompactedChunk::compact(chunk.snapshot().blocks());
-                self.modified_chunks.pin().insert(pos, compacted);
-            }
-
-            self.chunk_event_tx
-                .send(ChunkEvent::Removed(Arc::clone(chunk)))
-                .unwrap();
         }
+
+        let columns = self.columns.upgradable_read();
+        let column = Arc::clone(match columns.get(&pos.column()) {
+            Some(column) => column,
+            None => return,
+        });
+
+        let mut chunks = column.chunks.write();
+        let chunk = match chunks.remove(&pos.y) {
+            Some(chunk) => chunk,
+            None => return,
+        };
+
+        if chunks.is_empty() {
+            let mut columns = RwLockUpgradableReadGuard::upgrade(columns);
+            columns.remove(&pos.column());
+        }
+
+        // save this chunk if it differs from what was originally generated
+        if chunk.was_ever_modified() {
+            let compacted = CompactedChunk::compact(chunk.snapshot().blocks());
+            self.compacted_chunks.pin().insert(pos, compacted);
+        }
+
+        self.chunk_event_tx
+            .send(ChunkEvent::Removed(chunk))
+            .unwrap();
+
+        send_debug_event(debug::WorldLoadEvent::Unloaded(pos));
     }
 
     pub fn chunk(&self, pos: ChunkPos) -> Option<Arc<Chunk>> {
-        self.chunks.pin().get(&pos).map(Arc::clone)
+        let column = Arc::clone(self.columns.read().get(&pos.column())?);
+        let chunk = Arc::clone(column.chunks.read().get(&pos.y)?);
+        Some(chunk)
     }
 }
 
