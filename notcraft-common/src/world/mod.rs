@@ -272,11 +272,7 @@ impl VoxelWorld {
 
             if let Some(compacted) = self.modified_chunks.pin().get(&pos) {
                 let chunk_data = compacted.decompact();
-                let chunk = Arc::new(Chunk::new(
-                    pos,
-                    chunk_data,
-                    ChunkData::Homogeneous(LightValue::default()),
-                ));
+                let chunk = Arc::new(Chunk::new(pos, chunk_data, &self.registry));
 
                 // insert before and remove if cancelled to prevent a user from cancelling world
                 // chunk after we check whether the chunk was cancelled
@@ -299,11 +295,7 @@ impl VoxelWorld {
                     let heights = world.surface_cache.surface_heights(pos.into());
                     let chunk_data = world.chunk_generator.make_chunk(pos, heights);
 
-                    let chunk = Arc::new(Chunk::new(
-                        pos,
-                        chunk_data,
-                        ChunkData::Homogeneous(LightValue::default()),
-                    ));
+                    let chunk = Arc::new(Chunk::new(pos, chunk_data, &world.registry));
 
                     // insert before and remove if cancelled to prevent a user from cancelling world
                     // chunk after we check whether the chunk was cancelled

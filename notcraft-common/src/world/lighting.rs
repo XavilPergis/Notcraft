@@ -3,7 +3,11 @@ use std::{
     collections::{HashSet, VecDeque},
 };
 
-use super::{chunk::MutableChunkAccess, BlockPos};
+use super::{
+    chunk::{MutableChunkAccess, CHUNK_LENGTH},
+    generation::SurfaceHeightmap,
+    BlockPos,
+};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 #[repr(transparent)]
@@ -12,7 +16,7 @@ pub struct LightValue(pub u16);
 pub const SKY_LIGHT_BITS: u16 = 4;
 pub const BLOCK_LIGHT_BITS: u16 = 4;
 
-pub const SKY_LIGHT_MASK: u16 = (1 << SKY_LIGHT_BITS) - 1;
+pub const SKY_LIGHT_MASK: u16 = ((1 << SKY_LIGHT_BITS) - 1) << BLOCK_LIGHT_BITS;
 pub const BLOCK_LIGHT_MASK: u16 = (1 << BLOCK_LIGHT_BITS) - 1;
 
 pub const FULL_SKY_LIGHT: LightValue = LightValue::pack(15, 0);
@@ -23,9 +27,10 @@ impl LightValue {
     }
 
     pub const fn pack(sky: u16, block: u16) -> Self {
-        let sky = sky & SKY_LIGHT_MASK;
-        let block = block & BLOCK_LIGHT_MASK;
-        Self(sky << BLOCK_LIGHT_BITS | block)
+        let mut val = 0;
+        val |= block & BLOCK_LIGHT_MASK;
+        val |= (sky << BLOCK_LIGHT_BITS) & SKY_LIGHT_MASK;
+        Self(val)
     }
 
     pub const fn raw(self) -> u16 {
@@ -33,7 +38,7 @@ impl LightValue {
     }
 
     pub const fn sky(self) -> u16 {
-        self.0 >> SKY_LIGHT_MASK
+        self.0 >> BLOCK_LIGHT_BITS
     }
 
     pub const fn block(self) -> u16 {
@@ -50,10 +55,7 @@ impl LightValue {
 
     pub fn combine_max(self, other: LightValue) -> LightValue {
         let block = u16::max(self.0 & BLOCK_LIGHT_MASK, other.0 & BLOCK_LIGHT_MASK);
-        let sky = u16::max(
-            self.0 & (SKY_LIGHT_MASK << BLOCK_LIGHT_BITS),
-            other.0 & (SKY_LIGHT_MASK << BLOCK_LIGHT_BITS),
-        );
+        let sky = u16::max(self.0 & SKY_LIGHT_MASK, other.0 & SKY_LIGHT_MASK);
         LightValue(sky | block)
     }
 }
@@ -163,6 +165,30 @@ pub(crate) fn propagate_block_light(
                 access.set_block_light(dir, new_light).unwrap();
                 queues.block_update.push_back((dir, new_light));
             }
+        }
+    }
+}
+
+pub struct SkyLightNode {
+    min_y: i32,
+}
+
+pub struct SkyLightColumns {
+    nodes: Box<[Vec<SkyLightNode>]>,
+}
+
+impl SkyLightColumns {
+    pub fn initialize(heightmap: &SurfaceHeightmap) -> Self {
+        let mut nodes = Vec::with_capacity(CHUNK_LENGTH * CHUNK_LENGTH);
+
+        for i in 0..nodes.capacity() {
+            nodes.push(vec![SkyLightNode {
+                min_y: heightmap.data()[i],
+            }]);
+        }
+
+        Self {
+            nodes: nodes.into_boxed_slice(),
         }
     }
 }

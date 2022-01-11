@@ -16,7 +16,7 @@ use std::{
 };
 
 use super::{
-    lighting::LightValue,
+    lighting::{LightValue, FULL_SKY_LIGHT},
     orphan::{Orphan, OrphanSnapshot, OrphanWriter},
     registry::BlockRegistry,
     BlockPos, VoxelWorld,
@@ -124,12 +124,28 @@ pub struct Chunk {
     was_ever_modified: AtomicBool,
 }
 
+fn default_light(registry: &BlockRegistry, id: BlockId) -> LightValue {
+    let sky_light = match registry.light_transmissible(id) {
+        true => 15,
+        false => 0,
+    };
+    let block_light = registry.block_light(id);
+    LightValue::pack(sky_light, block_light)
+}
+
 impl Chunk {
-    pub fn new(
-        pos: ChunkPos,
-        block_data: ChunkData<BlockId>,
-        block_light_data: ChunkData<LightValue>,
-    ) -> Self {
+    pub fn new(pos: ChunkPos, block_data: ChunkData<BlockId>, registry: &BlockRegistry) -> Self {
+        let block_light_data = match &block_data {
+            &ChunkData::Homogeneous(id) => ChunkData::Homogeneous(default_light(registry, id)),
+            ChunkData::Array(ids) => {
+                let mut light = ArrayChunk::homogeneous(FULL_SKY_LIGHT);
+                for (i, &id) in ids.data.iter().enumerate() {
+                    light.data[i] = default_light(registry, id);
+                }
+                ChunkData::Array(light)
+            }
+        };
+
         let inner = Orphan::new(ChunkInner::new(pos, block_data, block_light_data));
 
         Self {
