@@ -25,6 +25,25 @@ impl<T> OrphanInner<T> {
     }
 }
 
+impl<T: Default> Default for OrphanInner<T> {
+    fn default() -> Self {
+        Self {
+            lock: RawRwLock::INIT,
+            orphaned: AtomicBool::new(false),
+            value: Default::default(),
+        }
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for OrphanInner<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrphanInner")
+            .field("orphaned", &self.orphaned)
+            .field("value", &self.value)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone)]
 pub struct OrphanSnapshot<T> {
     inner: Arc<OrphanInner<T>>,
@@ -133,6 +152,7 @@ impl<T> std::ops::DerefMut for OrphanWriter<T> {
     }
 }
 
+#[derive(Debug, Default)]
 pub struct Orphan<T> {
     current_inner: ArcSwap<OrphanInner<T>>,
 }

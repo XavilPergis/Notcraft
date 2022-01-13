@@ -670,7 +670,7 @@ impl Plugin for HotReloadPlugin {
 pub fn file_watcher_init(mut cmd: Commands) -> Result<()> {
     use notify::{RecursiveMode, Watcher};
 
-    let channel = util::ChannelPair::new();
+    let channel = util::ChannelPair::default();
     let sender = channel.sender();
     let mut watcher = notify::recommended_watcher(move |event| {
         if sender.send(event).is_err() {

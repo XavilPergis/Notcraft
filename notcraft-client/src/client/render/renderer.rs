@@ -906,8 +906,8 @@ struct DebugLines {
 
 impl DebugLines {
     fn new() -> Self {
-        let debug_box_channel = util::ChannelPair::new();
-        let transient_debug_box_channel = util::ChannelPair::new();
+        let debug_box_channel = util::ChannelPair::default();
+        let transient_debug_box_channel = util::ChannelPair::default();
 
         *DEBUG_BOX_SENDER.write() = Some(debug_box_channel.sender());
         *TRANSIENT_DEBUG_BOX_SENDER.write() = Some(transient_debug_box_channel.sender());

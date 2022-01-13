@@ -19,7 +19,7 @@ use notcraft_common::{
     transform::Transform,
     world::{
         chunk::{Chunk, ChunkPos},
-        ChunkEvent, VoxelWorld,
+        VoxelWorld, WorldEvent,
     },
 };
 
@@ -227,17 +227,19 @@ impl MeshTracker {
 pub fn update_tracker(
     mut cmd: Commands,
     mut tracker: ResMut<MeshTracker>,
-    mut events: EventReader<ChunkEvent>,
+    mut events: EventReader<WorldEvent>,
 ) {
     for event in events.iter() {
         match event {
-            ChunkEvent::Added(chunk) => tracker.add_chunk(chunk.pos(), &mut cmd),
-            ChunkEvent::Removed(chunk) => tracker.remove_chunk(chunk.pos(), &mut cmd),
-            ChunkEvent::Modified(chunk) => {
+            WorldEvent::Loaded(chunk) => tracker.add_chunk(chunk.pos(), &mut cmd),
+            WorldEvent::Unloaded(chunk) => tracker.remove_chunk(chunk.pos(), &mut cmd),
+            WorldEvent::Modified(chunk) => {
                 // NOTE: we're choosing to keep chunk meshes for chunks that have already been
                 // meshed, but no longer have enough data to re-mesh
                 tracker.request_mesh(chunk.pos());
             }
+
+            _ => {}
         }
     }
 }

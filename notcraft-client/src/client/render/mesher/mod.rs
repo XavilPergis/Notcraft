@@ -168,7 +168,7 @@ fn queue_mesh_job(ctx: &mut MesherContext, world: &Arc<VoxelWorld>, chunk: &Chun
     // meshing the chunk would be made.
     ctx.mesher_pool.spawn(move || {
         if let Some(neighbors) = ChunkNeighbors::lock(&world, pos) {
-            let mesher = MeshCreationContext::new(pos, neighbors, &world);
+            let mesher = MeshCreationContext::new(pos, neighbors, &world.registry);
             match mode {
                 MesherMode::Simple => mesher.mesh_simple(sender),
                 MesherMode::Greedy => mesher.mesh_greedy(sender),

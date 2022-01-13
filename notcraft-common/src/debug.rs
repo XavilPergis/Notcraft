@@ -55,7 +55,7 @@ mod inner {
     pub fn enable_debug_event<E: DebugEvent>(enable: bool) {
         let id = TypeId::of::<E>();
         let channel = Box::new(DebugChannel {
-            inner: ChannelPair::<E>::new(),
+            inner: ChannelPair::<E>::default(),
             drained: AtomicBool::new(false),
         }) as Box<dyn DebugEventChannel>;
         match enable {

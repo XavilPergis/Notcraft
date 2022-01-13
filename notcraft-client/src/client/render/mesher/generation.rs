@@ -162,16 +162,16 @@ pub fn should_add_face(registry: &BlockRegistry, current: BlockId, neighbor: Blo
 }
 
 impl MeshCreationContext {
-    pub fn new(pos: ChunkPos, neighbors: ChunkNeighbors, world: &Arc<VoxelWorld>) -> Self {
+    pub fn new(pos: ChunkPos, neighbors: ChunkNeighbors, registry: &Arc<BlockRegistry>) -> Self {
         let mesh_constructor = MeshBuilder {
-            registry: Arc::clone(&world.registry),
+            registry: Arc::clone(registry),
             terrain_mesh: Default::default(),
             transparency_mesh: Default::default(),
             rng: SmallRng::from_entropy(),
         };
 
         MeshCreationContext {
-            registry: Arc::clone(&world.registry),
+            registry: Arc::clone(registry),
             chunks: neighbors,
             pos,
             slice: vec![VoxelFace::default(); notcraft_common::world::chunk::CHUNK_AREA],
