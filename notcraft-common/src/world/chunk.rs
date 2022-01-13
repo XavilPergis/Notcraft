@@ -16,10 +16,11 @@ use std::{
 };
 
 use super::{
-    lighting::{LightValue, FULL_SKY_LIGHT},
+    generation::SurfaceHeightmap,
+    lighting::{LightValue, SkyLightColumns, FULL_SKY_LIGHT},
     orphan::{Orphan, OrphanSnapshot, OrphanWriter},
     registry::BlockRegistry,
-    BlockPos, ChunkColumnPos, VoxelWorld,
+    BlockPos, ChunkPos, VoxelWorld,
 };
 
 // The width of the chunk is `2 ^ SIZE_BITS`
@@ -30,15 +31,15 @@ pub const CHUNK_AREA: usize = CHUNK_LENGTH * CHUNK_LENGTH;
 pub const CHUNK_VOLUME: usize = CHUNK_LENGTH * CHUNK_LENGTH * CHUNK_LENGTH;
 
 #[derive(Clone)]
-pub struct ChunkInner {
-    pos: ChunkPos,
+pub struct ChunkSectionInner {
+    pos: ChunkSectionPos,
     block_data: ChunkData<BlockId>,
     light_data: ChunkData<LightValue>,
 }
 
-impl ChunkInner {
+impl ChunkSectionInner {
     fn new(
-        pos: ChunkPos,
+        pos: ChunkSectionPos,
         block_data: ChunkData<BlockId>,
         block_light_data: ChunkData<LightValue>,
     ) -> Self {
@@ -51,16 +52,16 @@ impl ChunkInner {
 }
 
 #[derive(Clone)]
-pub struct ChunkSnapshot {
-    inner: OrphanSnapshot<ChunkInner>,
+pub struct ChunkSectionSnapshot {
+    inner: OrphanSnapshot<ChunkSectionInner>,
 }
 
-impl ChunkSnapshot {
-    fn new(inner: OrphanSnapshot<ChunkInner>) -> Self {
+impl ChunkSectionSnapshot {
+    fn new(inner: OrphanSnapshot<ChunkSectionInner>) -> Self {
         Self { inner }
     }
 
-    pub fn pos(&self) -> ChunkPos {
+    pub fn pos(&self) -> ChunkSectionPos {
         self.inner.pos
     }
 
@@ -78,16 +79,16 @@ impl ChunkSnapshot {
     }
 }
 
-pub struct ChunkSnapshotMut {
-    inner: OrphanWriter<ChunkInner>,
+pub struct ChunkSectionSnapshotMut {
+    inner: OrphanWriter<ChunkSectionInner>,
 }
 
-impl ChunkSnapshotMut {
-    fn new(inner: OrphanWriter<ChunkInner>) -> Self {
+impl ChunkSectionSnapshotMut {
+    fn new(inner: OrphanWriter<ChunkSectionInner>) -> Self {
         Self { inner }
     }
 
-    pub fn pos(&self) -> ChunkPos {
+    pub fn pos(&self) -> ChunkSectionPos {
         self.inner.pos
     }
 
@@ -120,7 +121,94 @@ pub struct LocalBlockUpdate {
 
 pub struct Chunk {
     pos: ChunkPos,
-    inner: Orphan<ChunkInner>,
+
+    heights: Orphan<SurfaceHeightmap>,
+    sky_light: Orphan<SkyLightColumns>,
+
+    sections: flurry::HashMap<i32, Arc<ChunkSection>>,
+    compacted_sections: flurry::HashMap<ChunkSectionPos, CompactedChunkSection>,
+}
+
+impl Chunk {
+    pub fn new(pos: ChunkPos, heights: SurfaceHeightmap) -> Self {
+        Self {
+            pos,
+            sky_light: Orphan::new(SkyLightColumns::initialize(&heights)),
+            heights: Orphan::new(heights),
+            sections: Default::default(),
+            compacted_sections: Default::default(),
+        }
+    }
+
+    pub fn heights(&self) -> OrphanSnapshot<SurfaceHeightmap> {
+        self.heights.snapshot()
+    }
+
+    pub fn sky_light(&self) -> OrphanSnapshot<SkyLightColumns> {
+        self.sky_light.snapshot()
+    }
+
+    pub fn pos(&self) -> ChunkPos {
+        self.pos
+    }
+
+    pub fn section(&self, y: i32) -> Option<Arc<ChunkSection>> {
+        self.sections.pin().get(&y).map(Arc::clone)
+    }
+
+    pub fn sections(&self) -> &flurry::HashMap<i32, Arc<ChunkSection>> {
+        &self.sections
+    }
+
+    pub fn insert(&self, y: i32, section: Arc<ChunkSection>) -> Option<Arc<ChunkSection>> {
+        self.sections.pin().insert(y, section).map(Arc::clone)
+    }
+
+    pub fn remove(&self, y: i32) -> Option<Arc<ChunkSection>> {
+        self.sections.pin().remove(&y).map(Arc::clone)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sections.pin().is_empty()
+    }
+
+    pub fn is_loaded(&self, y: i32) -> bool {
+        self.sections.pin().contains_key(&y)
+    }
+}
+
+// pub struct CompactedChunk {
+//     heights: SurfaceHeightmap,
+//     sky_light: SkyLightColumns,
+
+//     compacted_chunks: flurry::HashMap<ChunkPos, CompactedChunk>,
+// }
+
+// impl CompactedChunk {
+//     pub fn compact(column: &Arc<Chunk>) -> Self {
+//         // Self {
+//         //     sky_light: column.sky_light.clone_inner(),
+//         //     heights: column.heights.clone_inner(),
+//         //     compacted_chunks: todo!(),
+//         //     // compacted_chunks: std::mem::take(&mut
+//         // column.compacted_chunks.write()), }
+//         todo!()
+//     }
+
+//     pub fn decompact(self) -> Chunk {
+//         // Chunk {
+//         //     heights: Orphan::new(self.heights),
+//         //     sky_light: Orphan::new(self.sky_light),
+//         //     sections: Default::default(),
+//         //     compacted_chunks: self.compacted_chunks,
+//         // }
+//         todo!()
+//     }
+// }
+
+pub struct ChunkSection {
+    pos: ChunkSectionPos,
+    inner: Orphan<ChunkSectionInner>,
     was_ever_modified: AtomicBool,
 }
 
@@ -133,8 +221,12 @@ fn default_light(registry: &BlockRegistry, id: BlockId) -> LightValue {
     LightValue::pack(sky_light, block_light)
 }
 
-impl Chunk {
-    pub fn new(pos: ChunkPos, block_data: ChunkData<BlockId>, registry: &BlockRegistry) -> Self {
+impl ChunkSection {
+    pub fn new(
+        pos: ChunkSectionPos,
+        block_data: ChunkData<BlockId>,
+        registry: &BlockRegistry,
+    ) -> Self {
         let block_light_data = match &block_data {
             &ChunkData::Homogeneous(id) => ChunkData::Homogeneous(default_light(registry, id)),
             ChunkData::Array(ids) => {
@@ -146,7 +238,7 @@ impl Chunk {
             }
         };
 
-        let inner = Orphan::new(ChunkInner::new(pos, block_data, block_light_data));
+        let inner = Orphan::new(ChunkSectionInner::new(pos, block_data, block_light_data));
 
         Self {
             pos,
@@ -155,12 +247,12 @@ impl Chunk {
         }
     }
 
-    pub fn pos(&self) -> ChunkPos {
+    pub fn pos(&self) -> ChunkSectionPos {
         self.pos
     }
 
-    pub fn snapshot(&self) -> ChunkSnapshot {
-        ChunkSnapshot::new(self.inner.snapshot())
+    pub fn snapshot(&self) -> ChunkSectionSnapshot {
+        ChunkSectionSnapshot::new(self.inner.snapshot())
     }
 
     pub(crate) fn was_ever_modified(&self) -> bool {
@@ -170,8 +262,8 @@ impl Chunk {
 
 fn write_chunk_updates_array(
     data: &mut ArrayChunk<BlockId>,
-    center: ChunkPos,
-    rebuild: &mut HashSet<ChunkPos>,
+    center: ChunkSectionPos,
+    rebuild: &mut HashSet<ChunkSectionPos>,
     updates: &[LocalBlockUpdate],
 ) {
     const MAX_AXIS_INDEX: usize = CHUNK_LENGTH - 1;
@@ -226,8 +318,8 @@ fn write_chunk_updates_array(
 
 fn write_chunk_updates(
     data: &mut ChunkData<BlockId>,
-    center: ChunkPos,
-    rebuild: &mut HashSet<ChunkPos>,
+    center: ChunkSectionPos,
+    rebuild: &mut HashSet<ChunkSectionPos>,
     updates: &[LocalBlockUpdate],
 ) {
     match data {
@@ -254,10 +346,10 @@ fn write_chunk_updates(
 // NOTE: this should not be called concurrently, the only guarantee is
 // concurrent calls will not produce UB.
 pub(crate) fn flush_chunk_writes(
-    chunk: &Chunk,
+    chunk: &ChunkSection,
     updates: &[LocalBlockUpdate],
     access: &mut MutableChunkAccess,
-    rebuild: &mut HashSet<ChunkPos>,
+    rebuild: &mut HashSet<ChunkSectionPos>,
 ) {
     assert!(!updates.is_empty());
 
@@ -301,10 +393,10 @@ pub(crate) fn flush_chunk_writes(
 /// a cache for multiple unaligned world accesses over a short period of time.
 pub struct ChunkAccess {
     pub world: Arc<VoxelWorld>,
-    chunks: HashMap<ChunkPos, ChunkSnapshot>,
+    chunks: HashMap<ChunkSectionPos, ChunkSectionSnapshot>,
 
     free_update_queues: Vec<Vec<LocalBlockUpdate>>,
-    update_queues: HashMap<ChunkPos, Vec<LocalBlockUpdate>>,
+    update_queues: HashMap<ChunkSectionPos, Vec<LocalBlockUpdate>>,
 }
 
 impl ChunkAccess {
@@ -321,10 +413,10 @@ impl ChunkAccess {
         &self.world.registry
     }
 
-    pub fn chunk(&mut self, pos: ChunkPos) -> Option<&ChunkSnapshot> {
+    pub fn chunk(&mut self, pos: ChunkSectionPos) -> Option<&ChunkSectionSnapshot> {
         Some(match self.chunks.entry(pos) {
             Entry::Occupied(entry) => &*entry.into_mut(),
-            Entry::Vacant(entry) => &*entry.insert(self.world.chunk(pos)?.snapshot()),
+            Entry::Vacant(entry) => &*entry.insert(self.world.section(pos)?.snapshot()),
         })
     }
 
@@ -355,9 +447,9 @@ impl ChunkAccess {
 }
 
 pub struct MutableChunkAccess {
-    rebuild: HashSet<ChunkPos>,
+    rebuild: HashSet<ChunkSectionPos>,
     world: Arc<VoxelWorld>,
-    writers: HashMap<ChunkPos, ChunkSnapshotMut>,
+    writers: HashMap<ChunkSectionPos, ChunkSectionSnapshotMut>,
 }
 
 impl MutableChunkAccess {
@@ -373,11 +465,11 @@ impl MutableChunkAccess {
         &self.world.registry
     }
 
-    fn chunk(&mut self, pos: ChunkPos) -> Option<&mut ChunkSnapshotMut> {
+    fn chunk(&mut self, pos: ChunkSectionPos) -> Option<&mut ChunkSectionSnapshotMut> {
         Some(match self.writers.entry(pos) {
             Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(ChunkSnapshotMut::new(
-                self.world.chunk(pos)?.inner.orphan_readers(),
+            Entry::Vacant(entry) => entry.insert(ChunkSectionSnapshotMut::new(
+                self.world.section(pos)?.inner.orphan_readers(),
             )),
         })
     }
@@ -422,7 +514,7 @@ impl MutableChunkAccess {
     }
 }
 
-pub(crate) fn flush_chunk_access(access: &mut ChunkAccess, rebuild: &mut HashSet<ChunkPos>) {
+pub(crate) fn flush_chunk_access(access: &mut ChunkAccess, rebuild: &mut HashSet<ChunkSectionPos>) {
     #[cfg(feature = "debug")]
     for &pos in access.chunks.keys() {
         send_debug_event(super::debug::WorldAccessEvent::Read(pos));
@@ -435,7 +527,7 @@ pub(crate) fn flush_chunk_access(access: &mut ChunkAccess, rebuild: &mut HashSet
     let mut mut_access = MutableChunkAccess::new(&access.world);
 
     for (pos, mut updates) in access.update_queues.drain() {
-        match access.world.chunk(pos) {
+        match access.world.section(pos) {
             Some(chunk) => flush_chunk_writes(&chunk, &updates, &mut mut_access, rebuild),
             None => todo!("unloaded chunk write"),
         }
@@ -526,23 +618,23 @@ impl<T, I: Into<[usize; 3]>> IndexMut<I> for ArrayChunk<T> {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct ChunkPos {
+pub struct ChunkSectionPos {
     pub x: i32,
     pub y: i32,
     pub z: i32,
 }
 
-impl ChunkPos {
-    pub fn column(&self) -> ChunkColumnPos {
-        ChunkColumnPos {
+impl ChunkSectionPos {
+    pub fn column(&self) -> ChunkPos {
+        ChunkPos {
             x: self.x,
             z: self.z,
         }
     }
 }
 
-impl From<ChunkPos> for Point3<i32> {
-    fn from(ChunkPos { x, y, z }: ChunkPos) -> Self {
+impl From<ChunkSectionPos> for Point3<i32> {
+    fn from(ChunkSectionPos { x, y, z }: ChunkSectionPos) -> Self {
         nalgebra::point![x, y, z]
     }
 }
@@ -593,11 +685,11 @@ impl<T> TryFrom<Box<[T]>> for ArrayChunk<T> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct CompactedChunk {
+pub struct CompactedChunkSection {
     runs: Vec<(usize, BlockId)>,
 }
 
-impl CompactedChunk {
+impl CompactedChunkSection {
     pub fn compact(data: &ChunkData<BlockId>) -> Self {
         match data {
             &ChunkData::Homogeneous(id) => Self {

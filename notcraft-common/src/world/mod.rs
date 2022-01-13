@@ -1,5 +1,5 @@
 use nalgebra::{Point3, Scalar, Vector3};
-use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
+use parking_lot::{Mutex, RwLock};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     borrow::Borrow,
@@ -7,19 +7,13 @@ use std::{
     hash::Hash,
     ops::{Index, IndexMut},
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::Arc,
     time::Duration,
 };
 
 pub use self::chunk::ArrayChunk;
 use self::{
-    chunk::{Chunk, ChunkAccess, ChunkPos, CompactedChunk},
-    generation::SurfaceHeightmap,
-    lighting::SkyLightColumns,
-    orphan::Orphan,
+    chunk::{Chunk, ChunkAccess, ChunkSection, ChunkSectionPos, CompactedChunkSection},
     registry::{load_registry, BlockRegistry, CollisionType},
 };
 use crate::{
@@ -34,18 +28,21 @@ pub mod orphan;
 pub mod registry;
 
 pub mod debug {
-    use super::chunk::ChunkPos;
+    use super::{chunk::ChunkSectionPos, ChunkPos};
     use crate::debug_events;
 
     pub enum WorldLoadEvent {
         Loaded(ChunkPos),
         Unloaded(ChunkPos),
         Modified(ChunkPos),
+        LoadedSection(ChunkSectionPos),
+        UnloadedSection(ChunkSectionPos),
+        ModifiedSection(ChunkSectionPos),
     }
     pub enum WorldAccessEvent {
-        Read(ChunkPos),
-        Written(ChunkPos),
-        Orphaned(ChunkPos),
+        Read(ChunkSectionPos),
+        Written(ChunkSectionPos),
+        Orphaned(ChunkSectionPos),
     }
 
     debug_events! {
@@ -103,16 +100,16 @@ impl From<WorldPos> for Point3<f32> {
     }
 }
 
-impl From<BlockPos> for ChunkPos {
+impl From<BlockPos> for ChunkSectionPos {
     fn from(pos: BlockPos) -> Self {
         let x = crate::util::floor_div(pos.x, CHUNK_LENGTH as i32);
         let y = crate::util::floor_div(pos.y, CHUNK_LENGTH as i32);
         let z = crate::util::floor_div(pos.z, CHUNK_LENGTH as i32);
-        ChunkPos { x, y, z }
+        ChunkSectionPos { x, y, z }
     }
 }
 
-impl From<WorldPos> for ChunkPos {
+impl From<WorldPos> for ChunkSectionPos {
     fn from(pos: WorldPos) -> Self {
         BlockPos::from(pos).into()
     }
@@ -128,7 +125,7 @@ impl From<WorldPos> for BlockPos {
     }
 }
 
-impl ChunkPos {
+impl ChunkSectionPos {
     pub fn new<I: Into<[i32; 3]>>(pos: I) -> Self {
         let [x, y, z] = pos.into();
         Self { x, y, z }
@@ -175,8 +172,8 @@ impl BlockPos {
         }
     }
 
-    pub fn chunk_and_offset(self) -> (ChunkPos, [usize; 3]) {
-        let chunk_pos = ChunkPos::from(self);
+    pub fn chunk_and_offset(self) -> (ChunkSectionPos, [usize; 3]) {
+        let chunk_pos = ChunkSectionPos::from(self);
         let block_base = chunk_pos.origin();
         let offset = [
             (self.x - block_base.x) as usize,
@@ -205,66 +202,33 @@ impl WorldPos {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct ChunkColumnPos {
+pub struct ChunkPos {
     pub x: i32,
     pub z: i32,
 }
 
-impl From<ChunkPos> for ChunkColumnPos {
-    fn from(pos: ChunkPos) -> Self {
+impl ChunkPos {
+    pub fn section(&self, y: i32) -> ChunkSectionPos {
+        ChunkSectionPos {
+            x: self.x,
+            y,
+            z: self.z,
+        }
+    }
+}
+
+impl From<ChunkSectionPos> for ChunkPos {
+    fn from(pos: ChunkSectionPos) -> Self {
         Self { x: pos.x, z: pos.z }
     }
 }
 
-pub struct ChunkColumn {
-    heights: Orphan<SurfaceHeightmap>,
-    sky_light: Orphan<SkyLightColumns>,
-
-    chunks: ConcurrentHashMap<i32, Arc<Chunk>>,
-    compacted_chunks: ConcurrentHashMap<ChunkPos, CompactedChunk>,
-}
-
-impl ChunkColumn {
-    pub fn new(heights: SurfaceHeightmap) -> Self {
-        Self {
-            sky_light: Orphan::new(SkyLightColumns::initialize(&heights)),
-            heights: Orphan::new(heights),
-            chunks: Default::default(),
-            compacted_chunks: Default::default(),
-        }
-    }
-}
-
-pub struct CompactedChunkColumn {
-    heights: SurfaceHeightmap,
-    sky_light: SkyLightColumns,
-
-    compacted_chunks: ConcurrentHashMap<ChunkPos, CompactedChunk>,
-}
-
-impl CompactedChunkColumn {
-    pub fn compact(column: &Arc<ChunkColumn>) -> Self {
-        Self {
-            sky_light: column.sky_light.clone_inner(),
-            heights: column.heights.clone_inner(),
-            compacted_chunks: todo!(),
-            // compacted_chunks: std::mem::take(&mut column.compacted_chunks.write()),
-        }
-    }
-
-    pub fn decompact(self) -> ChunkColumn {
-        ChunkColumn {
-            heights: Orphan::new(self.heights),
-            sky_light: Orphan::new(self.sky_light),
-            chunks: Default::default(),
-            compacted_chunks: self.compacted_chunks,
-        }
-    }
-}
-
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 enum LoadEvent {
     Load(ChunkPos),
     Unload(ChunkPos),
+    LoadSection(ChunkSectionPos),
+    UnloadSection(ChunkSectionPos),
 }
 
 type ConcurrentHashMap<K, V> = flurry::HashMap<K, V>;
@@ -275,8 +239,8 @@ pub struct VoxelWorld {
 
     updating_mutex: Mutex<()>,
 
-    columns: ConcurrentHashMap<ChunkColumnPos, Arc<ChunkColumn>>,
-    compacted_columns: ConcurrentHashMap<ChunkColumnPos, CompactedChunkColumn>,
+    chunks: ConcurrentHashMap<ChunkPos, Arc<Chunk>>,
+    compacted_columns: ConcurrentHashMap<ChunkPos, CompactedChunkSection>,
 }
 
 struct WorldGenerator {
@@ -284,11 +248,12 @@ struct WorldGenerator {
     generator: Arc<generation::ChunkGenerator>,
     surface_cache: Arc<generation::SurfaceHeighmapCache>,
     finished_chunks: ChannelPair<Chunk>,
-    // finished_columns: ChannelPair<ChunkColumn>,
+    finished_sections: ChannelPair<ChunkSection>,
 }
 
 impl WorldGenerator {
     pub fn new(registry: &BlockRegistry) -> Self {
+        // TODO: make configurable
         let pool = ThreadPoolBuilder::new().build().unwrap();
         let generator = Arc::new(generation::ChunkGenerator::new_default(&registry));
 
@@ -297,23 +262,19 @@ impl WorldGenerator {
             generator,
             surface_cache: Default::default(),
             finished_chunks: Default::default(),
-            // finished_columns: Default::default(),
+            finished_sections: Default::default(),
         }
     }
 }
 
 #[derive(Clone)]
 pub enum WorldEvent {
-    LoadedColumn(Arc<ChunkColumn>),
-    UnloadedColumn(Arc<ChunkColumn>),
-
     Loaded(Arc<Chunk>),
     Unloaded(Arc<Chunk>),
-    Modified(Arc<Chunk>),
-    // LoadingColumn(ChunkPos),
-    // CancelledColumn(ChunkPos),
-    // Loading(ChunkPos),
-    // Cancelled(ChunkPos),
+
+    LoadedSection(Arc<ChunkSection>),
+    UnloadedSection(Arc<ChunkSection>),
+    ModifiedSection(Arc<ChunkSection>),
 }
 
 impl VoxelWorld {
@@ -321,22 +282,26 @@ impl VoxelWorld {
         Arc::new(VoxelWorld {
             registry: Arc::clone(registry),
             updating_mutex: Default::default(),
-            columns: Default::default(),
+            chunks: Default::default(),
             compacted_columns: Default::default(),
         })
     }
 
     pub fn is_loaded(&self, pos: ChunkPos) -> bool {
-        match self.columns.pin().get(&pos.column()) {
-            Some(column) => column.chunks.pin().contains_key(&pos.y),
-            None => false,
-        }
+        self.chunks.pin().contains_key(&pos)
+    }
+
+    pub fn is_section_loaded(&self, pos: ChunkSectionPos) -> bool {
+        self.chunk(pos.column())
+            .map_or(false, |chunk| chunk.is_loaded(pos.y))
     }
 
     pub fn chunk(&self, pos: ChunkPos) -> Option<Arc<Chunk>> {
-        let column = Arc::clone(self.columns.pin().get(&pos.column())?);
-        let chunk = Arc::clone(column.chunks.pin().get(&pos.y)?);
-        Some(chunk)
+        self.chunks.pin().get(&pos).map(Arc::clone)
+    }
+
+    pub fn section(&self, pos: ChunkSectionPos) -> Option<Arc<ChunkSection>> {
+        Some(self.chunk(pos.column())?.section(pos.y)?)
     }
 }
 
@@ -392,6 +357,16 @@ impl LoadQueue {
     pub fn unload(&self, pos: ChunkPos) {
         let events = &mut self.inner.write().events;
         events.push_back(LoadEvent::Unload(pos));
+    }
+
+    pub fn load_section(&self, pos: ChunkSectionPos) {
+        let events = &mut self.inner.write().events;
+        events.push_back(LoadEvent::LoadSection(pos));
+    }
+
+    pub fn unload_section(&self, pos: ChunkSectionPos) {
+        let events = &mut self.inner.write().events;
+        events.push_back(LoadEvent::UnloadSection(pos));
     }
 }
 
@@ -463,42 +438,54 @@ impl<T: Hash + Eq> DedupQueue<T> {
 struct MutableLoadQueue {
     load: DedupQueue<ChunkPos>,
     unload: DedupQueue<ChunkPos>,
+    load_sections: DedupQueue<ChunkSectionPos>,
+    unload_sections: DedupQueue<ChunkSectionPos>,
 
-    loaded: HashSet<ChunkPos>,
-
-    // finished_columns: HashSet<ChunkColumnPos>,
-    // waiting_on_column: HashMap<ChunkColumnPos, i32>,
     events: VecDeque<LoadEvent>,
 }
 
 fn process_load_events(world: &VoxelWorld, queues: &mut MutableLoadQueue) {
+    assert!(world.updating_mutex.is_locked());
+
     for event in queues.events.drain(..) {
         match event {
             LoadEvent::Load(pos) => {
-                queues.loaded.insert(pos);
                 queues.unload.remove(&pos);
                 if !world.is_loaded(pos) {
                     queues.load.push_back(pos);
                 }
             }
-
             LoadEvent::Unload(pos) => {
-                queues.loaded.remove(&pos);
                 queues.load.remove(&pos);
                 if world.is_loaded(pos) {
                     queues.unload.push_back(pos);
+                }
+            }
+            LoadEvent::LoadSection(pos) => {
+                assert!(
+                    world.is_loaded(pos.column()),
+                    "tried loading section for unloaded chunk"
+                );
+                queues.unload_sections.remove(&pos);
+                if !world.is_section_loaded(pos) {
+                    queues.load_sections.push_back(pos);
+                }
+            }
+            LoadEvent::UnloadSection(pos) => {
+                assert!(
+                    world.is_loaded(pos.column()),
+                    "tried unloading section for unloaded chunk"
+                );
+                queues.load_sections.remove(&pos);
+                if world.is_section_loaded(pos) {
+                    queues.unload_sections.push_back(pos);
                 }
             }
         }
     }
 }
 
-fn run_chunk_generation_task(
-    world: Arc<VoxelWorld>,
-    generator: Arc<WorldGenerator>,
-    registry: Arc<BlockRegistry>,
-    pos: ChunkPos,
-) {
+fn run_chunk_generation_task(generator: Arc<WorldGenerator>, pos: ChunkPos) {
     // if let Some(compacted) = self.compacted_chunks.pin().get(&pos) {
     //     let chunk_data = compacted.decompact();
     //     let chunk = Arc::new(Chunk::new(pos, chunk_data, &self.registry));
@@ -508,10 +495,30 @@ fn run_chunk_generation_task(
     // }
 
     let heights = generator.surface_cache.surface_heights(pos.into());
-    let chunk_data = generator.generator.make_chunk(pos, heights);
-    let chunk = Chunk::new(pos, chunk_data, &registry);
+    let chunk = Chunk::new(pos, heights);
 
     let _ = generator.finished_chunks.tx.send(chunk);
+}
+
+fn run_chunk_section_generation_task(
+    chunk: Arc<Chunk>,
+    pos: i32,
+    generator: Arc<WorldGenerator>,
+    registry: Arc<BlockRegistry>,
+) {
+    // if let Some(compacted) = self.compacted_chunks.pin().get(&pos) {
+    //     let chunk_data = compacted.decompact();
+    //     let chunk = Arc::new(Chunk::new(pos, chunk_data, &self.registry));
+
+    //     self.insert_chunk(chunk, &is_cancelled);
+    //     return;
+    // }
+
+    let pos = chunk.pos().section(pos);
+    let chunk_data = generator.generator.make_chunk(pos, &chunk.heights());
+    let chunk = ChunkSection::new(pos, chunk_data, &registry);
+
+    let _ = generator.finished_sections.tx.send(chunk);
 }
 
 fn apply_chunk_updates(
@@ -520,12 +527,15 @@ fn apply_chunk_updates(
     mut chunk_events: EventWriter<WorldEvent>,
 ) {
     let mut rebuild_set = HashSet::new();
+
+    // TODO: think about what section updates might do to the chunk's data, like
+    // updating heightmaps and such
     chunk::flush_chunk_access(&mut access, &mut rebuild_set);
 
     for &pos in rebuild_set.iter() {
-        if let Some(chunk) = world.chunk(pos) {
-            chunk_events.send(WorldEvent::Modified(chunk));
-            send_debug_event(debug::WorldLoadEvent::Modified(pos));
+        if let Some(chunk) = world.section(pos) {
+            chunk_events.send(WorldEvent::ModifiedSection(chunk));
+            send_debug_event(debug::WorldLoadEvent::ModifiedSection(pos));
         }
     }
 }
@@ -548,49 +558,68 @@ fn generate_world(
     let mut queues = load_queue.inner.write();
     process_load_events(&world, &mut queues);
 
-    for pos in queues.load.pop_iter().take(4) {
+    for pos in queues.load.pop_iter().take(1) {
         // TODO: assert that we arent loading already-loaded chunks
 
-        let world_ref = Arc::clone(&world);
         let generator_ref = Arc::clone(&generator);
-        let registry_ref = Arc::clone(&registry);
-        generator
-            .pool
-            .spawn(move || run_chunk_generation_task(world_ref, generator_ref, registry_ref, pos));
+        generator.pool.spawn(move || {
+            run_chunk_generation_task(generator_ref, pos);
+        });
     }
 
-    // TODO: offload column generation!!! for now, this is likely fine as we're
-    // caching surface heights, which are very likely to be re-used here, but its
-    // kinda gross and i dont like it lol
+    for pos in queues.load_sections.pop_iter().take(8) {
+        // TODO: assert that we arent loading already-loaded chunks
+
+        let chunk = world.chunk(pos.column()).unwrap();
+        let generator_ref = Arc::clone(&generator);
+        let registry_ref = Arc::clone(&registry);
+
+        generator.pool.spawn(move || {
+            run_chunk_section_generation_task(chunk, pos.y, generator_ref, registry_ref);
+        });
+    }
+
     for finished in generator.finished_chunks.rx.try_iter() {
         let chunk = Arc::new(finished);
 
         // FIXME: drop generated chunks that have since been unloaded
-        if !world.columns.pin().contains_key(&chunk.pos().column()) {
-            let heights = generator
-                .surface_cache
-                .surface_heights(chunk.pos().column());
-            let column = Arc::new(ChunkColumn::new(heights));
-            world.columns.pin().insert(chunk.pos().column(), column);
-        }
-
-        let column = Arc::clone(world.columns.pin().get(&chunk.pos().column()).unwrap());
-        column
-            .chunks
-            .pin()
-            .insert(chunk.pos().y, Arc::clone(&chunk));
+        assert!(!world.chunks.pin().contains_key(&chunk.pos()));
+        world.chunks.pin().insert(chunk.pos(), Arc::clone(&chunk));
 
         send_debug_event(debug::WorldLoadEvent::Loaded(chunk.pos()));
         chunk_events.send(WorldEvent::Loaded(chunk));
     }
 
-    for pos in queues.unload.pop_iter().take(16) {
-        let column = Arc::clone(world.columns.pin().get(&pos.column()).unwrap());
-        let chunk = Arc::clone(column.chunks.pin().remove(&pos.y).unwrap());
+    for finished in generator.finished_sections.rx.try_iter() {
+        if let Some(chunk) = world.chunk(finished.pos().column()) {
+            let section = Arc::new(finished);
 
-        if column.chunks.pin().is_empty() {
-            world.columns.pin().remove(&pos.column());
-            chunk_events.send(WorldEvent::UnloadedColumn(Arc::clone(&column)));
+            // FIXME: drop generated chunks that have since been unloaded
+            assert!(!chunk.is_loaded(section.pos().y));
+            chunk.insert(section.pos().y, Arc::clone(&section));
+
+            send_debug_event(debug::WorldLoadEvent::LoadedSection(section.pos()));
+            chunk_events.send(WorldEvent::LoadedSection(section));
+        }
+    }
+
+    for pos in queues.unload_sections.pop_iter() {
+        if let Some(chunk) = world.chunk(pos.column()) {
+            let section = chunk.remove(pos.y).unwrap();
+
+            send_debug_event(debug::WorldLoadEvent::UnloadedSection(pos));
+            chunk_events.send(WorldEvent::UnloadedSection(section));
+        }
+    }
+
+    for pos in queues.unload.pop_iter() {
+        let chunk = Arc::clone(world.chunks.pin().remove(&pos).unwrap());
+
+        for section in chunk.sections().pin().values() {
+            let section = chunk.remove(section.pos().y).unwrap();
+
+            send_debug_event(debug::WorldLoadEvent::UnloadedSection(section.pos()));
+            chunk_events.send(WorldEvent::UnloadedSection(section));
         }
 
         send_debug_event(debug::WorldLoadEvent::Unloaded(pos));
@@ -598,7 +627,7 @@ fn generate_world(
     }
 }
 
-pub fn chunk_aabb(pos: ChunkPos) -> Aabb {
+pub fn chunk_section_aabb(pos: ChunkSectionPos) -> Aabb {
     let len = chunk::CHUNK_LENGTH as f32;
     let pos = len * nalgebra::point![pos.x as f32, pos.y as f32, pos.z as f32];
     Aabb {
@@ -615,68 +644,65 @@ pub struct DynamicChunkLoader {
 
 #[derive(Debug, Default)]
 pub struct ChunkLoaderContext {
-    loaders: HashMap<Entity, (DynamicChunkLoader, ChunkPos)>,
-    loaded_set: HashSet<ChunkPos>,
+    prev_loaders: HashMap<Entity, (DynamicChunkLoader, ChunkSectionPos)>,
+    loaded_chunk_set: HashSet<ChunkPos>,
+    waiting_sections: HashMap<ChunkPos, HashSet<i32>>,
 }
 
-fn neighborhood(center: ChunkPos, radius: usize, mut func: impl FnMut(ChunkPos)) {
-    let radius = radius as i32;
-    for x in center.x - radius..=center.x + radius {
-        for y in center.y - radius..=center.y + radius {
-            for z in center.z - radius..=center.z + radius {
-                func(ChunkPos { x, y, z });
-            }
-        }
-    }
-}
-
-fn recheck_loaded(ctx: &mut ChunkLoaderContext, load_queue: &LoadQueue) {
+fn recheck_loaded_chunks(ctx: &mut ChunkLoaderContext, load_queue: &LoadQueue) {
     let mut should_be_loaded = HashSet::new();
     let mut should_keep_loaded = HashSet::new();
 
-    for &(loader, pos) in ctx.loaders.values() {
-        neighborhood(pos, loader.load_radius, |pos| {
-            should_be_loaded.insert(pos);
-        });
+    for &(loader, pos) in ctx.prev_loaders.values() {
+        for x in pos.x - loader.load_radius as i32..=pos.x + loader.load_radius as i32 {
+            for z in pos.z - loader.load_radius as i32..=pos.z + loader.load_radius as i32 {
+                let chunk_pos = ChunkPos { x, z };
+                should_be_loaded.insert(chunk_pos);
+                for y in pos.y - loader.load_radius as i32..=pos.y + loader.load_radius as i32 {
+                    ctx.waiting_sections.entry(chunk_pos).or_default().insert(y);
+                }
+            }
+        }
     }
 
-    for &(loader, pos) in ctx.loaders.values() {
-        neighborhood(pos, loader.unload_radius, |pos| {
-            should_keep_loaded.insert(pos);
-        });
+    for &(loader, pos) in ctx.prev_loaders.values() {
+        for x in pos.x - loader.unload_radius as i32..=pos.x + loader.unload_radius as i32 {
+            for z in pos.z - loader.unload_radius as i32..=pos.z + loader.unload_radius as i32 {
+                let chunk_pos = ChunkPos { x, z };
+                should_keep_loaded.insert(chunk_pos);
+            }
+        }
     }
 
     let to_unload: Vec<_> = ctx
-        .loaded_set
+        .loaded_chunk_set
         .difference(&should_keep_loaded)
         .copied()
         .collect();
 
     let mut to_load: Vec<_> = should_be_loaded
-        .difference(&ctx.loaded_set)
+        .difference(&ctx.loaded_chunk_set)
         .copied()
         .collect();
 
     // TODO: sort by distance to closest loader
-    // group all positions that only differ in their vertical position, so that
-    // world gen tasks are ordered in a way that should hit the generator's surface
-    // height cache more often.
     to_load.sort_unstable_by_key(|pos| (pos.x, pos.z));
 
     for pos in to_load {
         load_queue.load(pos);
-        ctx.loaded_set.insert(pos);
+        ctx.loaded_chunk_set.insert(pos);
     }
 
     for pos in to_unload {
         load_queue.unload(pos);
-        ctx.loaded_set.remove(&pos);
+        ctx.loaded_chunk_set.remove(&pos);
+        ctx.waiting_sections.remove(&pos);
     }
 }
 
 fn remove_loader(ctx: &mut ChunkLoaderContext, load_queue: &LoadQueue, entity: Entity) {
-    ctx.loaders.remove(&entity);
-    recheck_loaded(ctx, load_queue);
+    ctx.prev_loaders.remove(&entity);
+    recheck_loaded_chunks(ctx, load_queue);
 }
 
 fn update_loader(
@@ -684,16 +710,16 @@ fn update_loader(
     load_queue: &LoadQueue,
     entity: Entity,
     loader: &DynamicChunkLoader,
-    pos: ChunkPos,
+    pos: ChunkSectionPos,
 ) {
-    if let Some(&(_, previous_pos)) = ctx.loaders.get(&entity) {
+    if let Some(&(_, previous_pos)) = ctx.prev_loaders.get(&entity) {
         if previous_pos != pos {
-            ctx.loaders.get_mut(&entity).unwrap().1 = pos;
-            recheck_loaded(ctx, load_queue);
+            ctx.prev_loaders.get_mut(&entity).unwrap().1 = pos;
+            recheck_loaded_chunks(ctx, load_queue);
         }
     } else {
-        ctx.loaders.insert(entity, (*loader, pos));
-        recheck_loaded(ctx, load_queue);
+        ctx.prev_loaders.insert(entity, (*loader, pos));
+        recheck_loaded_chunks(ctx, load_queue);
     }
 }
 
@@ -702,6 +728,7 @@ pub fn load_chunks(
     load_queue: Res<LoadQueue>,
     query: Query<(Entity, &DynamicChunkLoader, &Transform), Changed<Transform>>,
     removed: RemovedComponents<DynamicChunkLoader>,
+    mut chunk_events: EventReader<WorldEvent>,
 ) {
     removed
         .iter()
@@ -711,6 +738,20 @@ pub fn load_chunks(
         let pos = WorldPos::new(transform.translation.vector).into();
         update_loader(&mut *ctx, &load_queue, entity, loader, pos);
     });
+
+    for event in chunk_events.iter() {
+        match event {
+            WorldEvent::Loaded(chunk) => {
+                if let Some(waiting) = ctx.waiting_sections.remove(&chunk.pos()) {
+                    for &waiting in waiting.iter() {
+                        let pos = chunk.pos().section(waiting);
+                        load_queue.load_section(pos);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn block_distance_sq(a: BlockPos, b: BlockPos) -> f32 {

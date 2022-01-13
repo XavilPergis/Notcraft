@@ -18,19 +18,19 @@ use notcraft_common::{
     prelude::*,
     transform::Transform,
     world::{
-        chunk::{Chunk, ChunkPos},
+        chunk::{ChunkSection, ChunkSectionPos},
         VoxelWorld, WorldEvent,
     },
 };
 
-fn neighbors<F>(pos: ChunkPos, mut func: F)
+fn neighbors<F>(pos: ChunkSectionPos, mut func: F)
 where
-    F: FnMut(ChunkPos),
+    F: FnMut(ChunkSectionPos),
 {
     for x in pos.x - 1..=pos.x + 1 {
         for y in pos.y - 1..=pos.y + 1 {
             for z in pos.z - 1..=pos.z + 1 {
-                let neighbor = ChunkPos { x, y, z };
+                let neighbor = ChunkSectionPos { x, y, z };
                 if neighbor != pos {
                     func(neighbor);
                 }
@@ -41,13 +41,13 @@ where
 
 #[derive(Debug, Default)]
 pub struct MeshTracker {
-    constraining: HashMap<ChunkPos, HashSet<ChunkPos>>,
-    constrained_by: HashMap<ChunkPos, HashSet<ChunkPos>>,
+    constraining: HashMap<ChunkSectionPos, HashSet<ChunkSectionPos>>,
+    constrained_by: HashMap<ChunkSectionPos, HashSet<ChunkSectionPos>>,
 
-    needs_mesh: HashSet<ChunkPos>,
+    needs_mesh: HashSet<ChunkSectionPos>,
 
-    loaded: HashSet<ChunkPos>,
-    terrain_entities: HashMap<ChunkPos, Entity>,
+    loaded: HashSet<ChunkSectionPos>,
+    terrain_entities: HashMap<ChunkSectionPos, Entity>,
 }
 
 impl MeshTracker {
@@ -59,7 +59,7 @@ impl MeshTracker {
     // INVARIANT: for a chunk X and each value Y of `constraining[X]`,
     // `constrained_by[Y]` must contain X
 
-    fn constrain_self(&mut self, center: ChunkPos) {
+    fn constrain_self(&mut self, center: ChunkSectionPos) {
         neighbors(center, |neighbor| {
             if !self.loaded.contains(&neighbor) {
                 self.constraining
@@ -74,7 +74,7 @@ impl MeshTracker {
         });
     }
 
-    fn constrain_neighbors(&mut self, center: ChunkPos) {
+    fn constrain_neighbors(&mut self, center: ChunkSectionPos) {
         neighbors(center, |neighbor| {
             if self.loaded.contains(&neighbor) {
                 self.constraining
@@ -91,7 +91,7 @@ impl MeshTracker {
         });
     }
 
-    fn unconstrain_self(&mut self, center: ChunkPos) {
+    fn unconstrain_self(&mut self, center: ChunkSectionPos) {
         let constrainers = match self.constrained_by.remove(&center) {
             Some(constrainers) => constrainers,
             None => return,
@@ -110,7 +110,7 @@ impl MeshTracker {
         }
     }
 
-    fn unconstrain_neighbors(&mut self, center: ChunkPos) {
+    fn unconstrain_neighbors(&mut self, center: ChunkSectionPos) {
         let constraining = match self.constraining.remove(&center) {
             Some(constraining) => constraining,
             None => return,
@@ -130,7 +130,7 @@ impl MeshTracker {
         }
     }
 
-    pub fn chunk_mesh_failed(&mut self, chunk: ChunkPos) {
+    pub fn chunk_mesh_failed(&mut self, chunk: ChunkSectionPos) {
         // by the time it gets here, the failed chunk might have been unloaded itself,
         // or might have had its neighbors been unloaded. if it was unloaded itself,
         // there is nothing to do because of the `have_data` invariants.
@@ -146,7 +146,7 @@ impl MeshTracker {
         self.request_mesh(chunk);
     }
 
-    pub fn add_chunk(&mut self, chunk: ChunkPos, cmd: &mut Commands) {
+    pub fn add_chunk(&mut self, chunk: ChunkSectionPos, cmd: &mut Commands) {
         let success = self.loaded.insert(chunk);
         assert!(
             success,
@@ -172,7 +172,7 @@ impl MeshTracker {
         assert!(!self.constraining.contains_key(&chunk));
     }
 
-    pub fn remove_chunk(&mut self, chunk: ChunkPos, cmd: &mut Commands) {
+    pub fn remove_chunk(&mut self, chunk: ChunkSectionPos, cmd: &mut Commands) {
         let success = self.loaded.remove(&chunk);
         assert!(
             success,
@@ -193,7 +193,7 @@ impl MeshTracker {
         assert!(!self.constrained_by.contains_key(&chunk));
     }
 
-    pub fn request_mesh(&mut self, chunk: ChunkPos) {
+    pub fn request_mesh(&mut self, chunk: ChunkSectionPos) {
         let is_unconstrained = !self.constrained_by.contains_key(&chunk);
         let is_loaded = self.loaded.contains(&chunk);
         if is_unconstrained && is_loaded {
@@ -201,9 +201,9 @@ impl MeshTracker {
         }
     }
 
-    pub fn next(&mut self, world: &Arc<VoxelWorld>) -> Option<Arc<Chunk>> {
+    pub fn next(&mut self, world: &Arc<VoxelWorld>) -> Option<Arc<ChunkSection>> {
         let &pos = self.needs_mesh.iter().next()?;
-        let chunk = world.chunk(pos);
+        let chunk = world.section(pos);
         assert!(
             chunk.is_some(),
             "chunk {:?} was tracked for meshing but didnt exist in the world",
@@ -219,7 +219,7 @@ impl MeshTracker {
         chunk
     }
 
-    pub fn terrain_entity(&self, pos: ChunkPos) -> Option<Entity> {
+    pub fn terrain_entity(&self, pos: ChunkSectionPos) -> Option<Entity> {
         self.terrain_entities.get(&pos).cloned()
     }
 }
@@ -231,9 +231,9 @@ pub fn update_tracker(
 ) {
     for event in events.iter() {
         match event {
-            WorldEvent::Loaded(chunk) => tracker.add_chunk(chunk.pos(), &mut cmd),
-            WorldEvent::Unloaded(chunk) => tracker.remove_chunk(chunk.pos(), &mut cmd),
-            WorldEvent::Modified(chunk) => {
+            WorldEvent::LoadedSection(chunk) => tracker.add_chunk(chunk.pos(), &mut cmd),
+            WorldEvent::UnloadedSection(chunk) => tracker.remove_chunk(chunk.pos(), &mut cmd),
+            WorldEvent::ModifiedSection(chunk) => {
                 // NOTE: we're choosing to keep chunk meshes for chunks that have already been
                 // meshed, but no longer have enough data to re-mesh
                 tracker.request_mesh(chunk.pos());

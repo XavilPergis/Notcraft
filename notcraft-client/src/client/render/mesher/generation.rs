@@ -14,7 +14,7 @@ use rand::{prelude::SliceRandom, rngs::SmallRng, FromEntropy};
 use notcraft_common::{
     prelude::*,
     world::{
-        chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
+        chunk::{ChunkData, ChunkSectionPos, ChunkSectionSnapshot, CHUNK_LENGTH},
         lighting::LightValue,
         registry::{BlockId, BlockMeshType, BlockRegistry, TextureId},
         VoxelWorld,
@@ -25,17 +25,17 @@ use notcraft_common::{
 use super::{TerrainMesh, TerrainTransparencyMesh, TerrainVertex};
 
 pub struct ChunkNeighbors {
-    chunks: Vec<ChunkSnapshot>,
+    chunks: Vec<ChunkSectionSnapshot>,
 }
 
 impl ChunkNeighbors {
-    pub fn lock(world: &Arc<VoxelWorld>, pos: ChunkPos) -> Option<Self> {
+    pub fn lock(world: &Arc<VoxelWorld>, pos: ChunkSectionPos) -> Option<Self> {
         let mut chunks = Vec::with_capacity(27);
 
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    chunks.push(world.chunk(pos.offset([dx, dy, dz]))?.snapshot());
+                    chunks.push(world.section(pos.offset([dx, dy, dz]))?.snapshot());
                 }
             }
         }
@@ -131,7 +131,7 @@ pub struct MeshCreationContext {
     registry: Arc<BlockRegistry>,
     chunks: ChunkNeighbors,
     mesh_constructor: MeshBuilder,
-    pos: ChunkPos,
+    pos: ChunkSectionPos,
     slice: Vec<VoxelFace>,
 }
 
@@ -162,7 +162,11 @@ pub fn should_add_face(registry: &BlockRegistry, current: BlockId, neighbor: Blo
 }
 
 impl MeshCreationContext {
-    pub fn new(pos: ChunkPos, neighbors: ChunkNeighbors, registry: &Arc<BlockRegistry>) -> Self {
+    pub fn new(
+        pos: ChunkSectionPos,
+        neighbors: ChunkNeighbors,
+        registry: &Arc<BlockRegistry>,
+    ) -> Self {
         let mesh_constructor = MeshBuilder {
             registry: Arc::clone(registry),
             terrain_mesh: Default::default(),
@@ -438,8 +442,13 @@ impl MeshCreationContext {
 
 #[derive(Debug)]
 pub enum CompletedMesh {
-    Completed { pos: ChunkPos, terrain: TerrainMesh },
-    Failed { pos: ChunkPos },
+    Completed {
+        pos: ChunkSectionPos,
+        terrain: TerrainMesh,
+    },
+    Failed {
+        pos: ChunkSectionPos,
+    },
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]

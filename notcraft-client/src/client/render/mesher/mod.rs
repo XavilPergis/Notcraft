@@ -10,7 +10,7 @@ use notcraft_common::{
     debug::send_debug_event,
     prelude::*,
     world::{
-        chunk::{ChunkData, ChunkPos, ChunkSnapshot, CHUNK_LENGTH},
+        chunk::{ChunkData, ChunkSectionPos, ChunkSectionSnapshot, CHUNK_LENGTH},
         lighting::LightValue,
         registry::BlockId,
         VoxelWorld,
@@ -30,7 +30,7 @@ pub mod tracker;
 
 #[derive(Debug)]
 pub struct MesherContext {
-    completed_meshes: HashSet<ChunkPos>,
+    completed_meshes: HashSet<ChunkSectionPos>,
 
     mesher_pool: ThreadPool,
     mesh_tx: Sender<CompletedMesh>,
@@ -115,7 +115,7 @@ fn update_completed_meshes(
         match completed {
             CompletedMesh::Completed { pos, terrain } => {
                 if let Some(entity) = tracker.terrain_entity(pos) {
-                    if voxel_world.chunk(pos).is_some() {
+                    if voxel_world.section(pos).is_some() {
                         let mesh_handle = mesh_context.upload(terrain);
                         cmd.entity(entity)
                             .insert(RenderMeshComponent::new(mesh_handle));
@@ -127,29 +127,33 @@ fn update_completed_meshes(
     }
 }
 
-fn homogenous_should_mesh(world: &Arc<VoxelWorld>, id: BlockId, pos: ChunkPos) -> Option<bool> {
+fn homogenous_should_mesh(
+    world: &Arc<VoxelWorld>,
+    id: BlockId,
+    pos: ChunkSectionPos,
+) -> Option<bool> {
     let faces = Faces {
-        top: match world.chunk(pos.offset([0, 1, 0]))?.snapshot().blocks() {
+        top: match world.section(pos.offset([0, 1, 0]))?.snapshot().blocks() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
-        bottom: match world.chunk(pos.offset([0, -1, 0]))?.snapshot().blocks() {
+        bottom: match world.section(pos.offset([0, -1, 0]))?.snapshot().blocks() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
-        right: match world.chunk(pos.offset([1, 0, 0]))?.snapshot().blocks() {
+        right: match world.section(pos.offset([1, 0, 0]))?.snapshot().blocks() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
-        left: match world.chunk(pos.offset([-1, 0, 0]))?.snapshot().blocks() {
+        left: match world.section(pos.offset([-1, 0, 0]))?.snapshot().blocks() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
-        front: match world.chunk(pos.offset([0, 0, 1]))?.snapshot().blocks() {
+        front: match world.section(pos.offset([0, 0, 1]))?.snapshot().blocks() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
-        back: match world.chunk(pos.offset([0, 0, -1]))?.snapshot().blocks() {
+        back: match world.section(pos.offset([0, 0, -1]))?.snapshot().blocks() {
             &ChunkData::Homogeneous(nid) => should_add_face(&world.registry, id, nid),
             _ => true,
         },
@@ -157,7 +161,7 @@ fn homogenous_should_mesh(world: &Arc<VoxelWorld>, id: BlockId, pos: ChunkPos) -
     Some(faces.any(|&face| face))
 }
 
-fn queue_mesh_job(ctx: &mut MesherContext, world: &Arc<VoxelWorld>, chunk: &ChunkSnapshot) {
+fn queue_mesh_job(ctx: &mut MesherContext, world: &Arc<VoxelWorld>, chunk: &ChunkSectionSnapshot) {
     let world = Arc::clone(world);
     let sender = ctx.mesh_tx.clone();
     let pos = chunk.pos();
@@ -185,7 +189,11 @@ fn queue_mesh_job(ctx: &mut MesherContext, world: &Arc<VoxelWorld>, chunk: &Chun
 
 // returns true if this mesh job was "cheap", meaning that this job shoudln't
 // count towards the number of meshed chunks this frame.
-fn mesh_one(ctx: &mut MesherContext, world: &Arc<VoxelWorld>, chunk: &ChunkSnapshot) -> bool {
+fn mesh_one(
+    ctx: &mut MesherContext,
+    world: &Arc<VoxelWorld>,
+    chunk: &ChunkSectionSnapshot,
+) -> bool {
     let pos = chunk.pos();
     match chunk.blocks() {
         &ChunkData::Homogeneous(id) => match homogenous_should_mesh(world, id, pos) {
