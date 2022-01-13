@@ -169,10 +169,12 @@ pub(crate) fn propagate_block_light(
     }
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct SkyLightNode {
     min_y: i32,
 }
 
+#[derive(Clone, Debug)]
 pub struct SkyLightColumns {
     nodes: Box<[Vec<SkyLightNode>]>,
 }

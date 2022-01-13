@@ -1,8 +1,8 @@
-use crossbeam_channel::{Receiver, Sender};
 use nalgebra::{Point3, Scalar, Vector3};
-use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
+use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
+    borrow::Borrow,
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     hash::Hash,
     ops::{Index, IndexMut},
@@ -16,9 +16,9 @@ use std::{
 
 pub use self::chunk::ArrayChunk;
 use self::{
-    chunk::{Chunk, ChunkAccess, ChunkData, ChunkPos, CompactedChunk},
+    chunk::{Chunk, ChunkAccess, ChunkPos, CompactedChunk},
     generation::SurfaceHeightmap,
-    lighting::{LightValue, SkyLightColumns, FULL_SKY_LIGHT},
+    lighting::SkyLightColumns,
     orphan::Orphan,
     registry::{load_registry, BlockRegistry, CollisionType},
 };
@@ -217,20 +217,47 @@ impl From<ChunkPos> for ChunkColumnPos {
 }
 
 pub struct ChunkColumn {
-    heights: SurfaceHeightmap,
-    sky_light: SkyLightColumns,
+    heights: Orphan<SurfaceHeightmap>,
+    sky_light: Orphan<SkyLightColumns>,
 
-    chunks: Arc<RwLock<HashMap<i32, Arc<Chunk>>>>,
-    compacted_chunks: Arc<RwLock<HashMap<ChunkPos, CompactedChunk>>>,
+    chunks: ConcurrentHashMap<i32, Arc<Chunk>>,
+    compacted_chunks: ConcurrentHashMap<ChunkPos, CompactedChunk>,
 }
 
 impl ChunkColumn {
     pub fn new(heights: SurfaceHeightmap) -> Self {
         Self {
-            sky_light: SkyLightColumns::initialize(&heights),
+            sky_light: Orphan::new(SkyLightColumns::initialize(&heights)),
+            heights: Orphan::new(heights),
             chunks: Default::default(),
             compacted_chunks: Default::default(),
-            heights,
+        }
+    }
+}
+
+pub struct CompactedChunkColumn {
+    heights: SurfaceHeightmap,
+    sky_light: SkyLightColumns,
+
+    compacted_chunks: ConcurrentHashMap<ChunkPos, CompactedChunk>,
+}
+
+impl CompactedChunkColumn {
+    pub fn compact(column: &Arc<ChunkColumn>) -> Self {
+        Self {
+            sky_light: column.sky_light.clone_inner(),
+            heights: column.heights.clone_inner(),
+            compacted_chunks: todo!(),
+            // compacted_chunks: std::mem::take(&mut column.compacted_chunks.write()),
+        }
+    }
+
+    pub fn decompact(self) -> ChunkColumn {
+        ChunkColumn {
+            heights: Orphan::new(self.heights),
+            sky_light: Orphan::new(self.sky_light),
+            chunks: Default::default(),
+            compacted_chunks: self.compacted_chunks,
         }
     }
 }
@@ -240,14 +267,16 @@ enum LoadEvent {
     Unload(ChunkPos),
 }
 
+type ConcurrentHashMap<K, V> = flurry::HashMap<K, V>;
+
 pub struct VoxelWorld {
+    // TODO: probably a good idea to remove this
     pub registry: Arc<BlockRegistry>,
 
-    columns: RwLock<HashMap<ChunkColumnPos, Arc<ChunkColumn>>>,
-    modified_columns: Arc<RwLock<HashMap<ChunkColumnPos, Arc<ChunkColumn>>>>,
+    updating_mutex: Mutex<()>,
 
-    // map of active keys to a cancellation key
-    chunks_in_progress: Arc<flurry::HashMap<ChunkPos, Arc<AtomicBool>>>,
+    columns: ConcurrentHashMap<ChunkColumnPos, Arc<ChunkColumn>>,
+    compacted_columns: ConcurrentHashMap<ChunkColumnPos, CompactedChunkColumn>,
 }
 
 struct WorldGenerator {
@@ -255,7 +284,7 @@ struct WorldGenerator {
     generator: Arc<generation::ChunkGenerator>,
     surface_cache: Arc<generation::SurfaceHeighmapCache>,
     finished_chunks: ChannelPair<Chunk>,
-    finished_columns: ChannelPair<ChunkColumn>,
+    // finished_columns: ChannelPair<ChunkColumn>,
 }
 
 impl WorldGenerator {
@@ -268,7 +297,7 @@ impl WorldGenerator {
             generator,
             surface_cache: Default::default(),
             finished_chunks: Default::default(),
-            finished_columns: Default::default(),
+            // finished_columns: Default::default(),
         }
     }
 }
@@ -291,23 +320,22 @@ impl VoxelWorld {
     pub fn new(registry: &Arc<BlockRegistry>) -> Arc<Self> {
         Arc::new(VoxelWorld {
             registry: Arc::clone(registry),
-
+            updating_mutex: Default::default(),
             columns: Default::default(),
-            modified_columns: Default::default(),
-            chunks_in_progress: Default::default(),
+            compacted_columns: Default::default(),
         })
     }
 
     pub fn is_loaded(&self, pos: ChunkPos) -> bool {
-        match self.columns.read().get(&pos.column()) {
-            Some(column) => column.chunks.read().contains_key(&pos.y),
+        match self.columns.pin().get(&pos.column()) {
+            Some(column) => column.chunks.pin().contains_key(&pos.y),
             None => false,
         }
     }
 
     pub fn chunk(&self, pos: ChunkPos) -> Option<Arc<Chunk>> {
-        let column = Arc::clone(self.columns.read().get(&pos.column())?);
-        let chunk = Arc::clone(column.chunks.read().get(&pos.y)?);
+        let column = Arc::clone(self.columns.pin().get(&pos.column())?);
+        let chunk = Arc::clone(column.chunks.pin().get(&pos.y)?);
         Some(chunk)
     }
 }
@@ -367,15 +395,74 @@ impl LoadQueue {
     }
 }
 
+// `btree.pop_front()` isnt stable yet :(
+fn btree_pop_front<K: Ord + Copy, V>(btree: &mut BTreeMap<K, V>) -> Option<V> {
+    let &key = btree.keys().next()?;
+    btree.remove(&key)
+}
+
+// a queue that discards insertions if that element is already in the queue
+#[derive(Clone, Debug)]
+pub struct DedupQueue<T> {
+    head: usize,
+    queue: BTreeMap<usize, T>,
+    dedup_map: HashMap<T, usize>,
+}
+
+impl<T> Default for DedupQueue<T> {
+    fn default() -> Self {
+        Self {
+            head: Default::default(),
+            queue: Default::default(),
+            dedup_map: Default::default(),
+        }
+    }
+}
+
+impl<T: Hash + Eq> DedupQueue<T> {
+    pub fn push_back(&mut self, value: T) -> bool
+    where
+        T: Copy,
+    {
+        if self.dedup_map.contains_key(&value) {
+            return false;
+        }
+
+        self.queue.insert(self.head, value);
+        self.dedup_map.insert(value, self.head);
+        self.head += 1;
+        true
+    }
+
+    pub fn pop_front(&mut self) -> Option<T> {
+        let value = btree_pop_front(&mut self.queue)?;
+        self.dedup_map.remove(&value);
+        if self.queue.is_empty() {
+            self.head = 0;
+            self.dedup_map.clear();
+        }
+        Some(value)
+    }
+
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<T>
+    where
+        T: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.dedup_map
+            .remove(key)
+            .map(|id| self.queue.remove(&id).unwrap())
+    }
+
+    pub fn pop_iter(&mut self) -> impl Iterator<Item = T> + '_ {
+        std::iter::from_fn(|| self.pop_front())
+    }
+}
+
 #[derive(Default)]
 struct MutableLoadQueue {
-    load_head: usize,
-    load_queue: BTreeMap<usize, ChunkPos>,
-    load_dedup_map: BTreeMap<ChunkPos, usize>,
-
-    unload_head: usize,
-    unload_queue: BTreeMap<usize, ChunkPos>,
-    unload_dedup_map: BTreeMap<ChunkPos, usize>,
+    load: DedupQueue<ChunkPos>,
+    unload: DedupQueue<ChunkPos>,
 
     loaded: HashSet<ChunkPos>,
 
@@ -388,61 +475,26 @@ fn process_load_events(world: &VoxelWorld, queues: &mut MutableLoadQueue) {
     for event in queues.events.drain(..) {
         match event {
             LoadEvent::Load(pos) => {
-                if let Some(idx) = queues.unload_dedup_map.remove(&pos) {
-                    queues.unload_queue.remove(&idx);
-                } else if !queues.load_dedup_map.contains_key(&pos) && !world.is_loaded(pos) {
-                    queues.load_queue.insert(queues.load_head, pos);
-                    queues.load_dedup_map.insert(pos, queues.load_head);
-                    queues.load_head += 1;
-                }
-
                 queues.loaded.insert(pos);
+                queues.unload.remove(&pos);
+                if !world.is_loaded(pos) {
+                    queues.load.push_back(pos);
+                }
             }
 
             LoadEvent::Unload(pos) => {
-                if let Some(idx) = queues.load_dedup_map.remove(&pos) {
-                    queues.load_queue.remove(&idx);
-                } else if !queues.unload_dedup_map.contains_key(&pos) && world.is_loaded(pos) {
-                    queues.unload_queue.insert(queues.unload_head, pos);
-                    queues.unload_dedup_map.insert(pos, queues.unload_head);
-                    queues.unload_head += 1;
-                }
-
                 queues.loaded.remove(&pos);
+                queues.load.remove(&pos);
+                if world.is_loaded(pos) {
+                    queues.unload.push_back(pos);
+                }
             }
         }
     }
-
-    if queues.load_queue.is_empty() {
-        queues.load_head = 0;
-        queues.load_dedup_map.clear();
-    }
-
-    if queues.unload_queue.is_empty() {
-        queues.unload_head = 0;
-        queues.unload_dedup_map.clear();
-    }
-}
-
-fn btree_pop_front<K: Ord + Copy, V>(btree: &mut BTreeMap<K, V>) -> Option<V> {
-    let &key = btree.keys().next()?;
-    btree.remove(&key)
-}
-
-fn btree_iter_remove<'a, K: Ord + Copy, V>(
-    btree: &'a mut BTreeMap<K, V>,
-) -> impl Iterator<Item = V> + 'a {
-    std::iter::from_fn(|| btree_pop_front(btree))
-}
-
-fn run_column_generation_task(generator: Arc<WorldGenerator>, pos: ChunkColumnPos) {
-    let heights = generator.surface_cache.surface_heights(pos.into());
-    let column = ChunkColumn::new(heights);
-
-    let _ = generator.finished_columns.tx.send(column);
 }
 
 fn run_chunk_generation_task(
+    world: Arc<VoxelWorld>,
     generator: Arc<WorldGenerator>,
     registry: Arc<BlockRegistry>,
     pos: ChunkPos,
@@ -487,52 +539,57 @@ fn generate_world(
 ) {
     generator.surface_cache.evict_after(Duration::from_secs(10));
 
+    // because im paranoid lol.
+    let _guard = match world.updating_mutex.try_lock() {
+        Some(it) => it,
+        None => return,
+    };
+
     let mut queues = load_queue.inner.write();
     process_load_events(&world, &mut queues);
 
-    let mut columns = world.columns.write();
-    for pos in btree_iter_remove(&mut queues.load_queue).take(16) {
+    for pos in queues.load.pop_iter().take(4) {
         // TODO: assert that we arent loading already-loaded chunks
 
+        let world_ref = Arc::clone(&world);
         let generator_ref = Arc::clone(&generator);
         let registry_ref = Arc::clone(&registry);
         generator
             .pool
-            .spawn(move || run_chunk_generation_task(generator_ref, registry_ref, pos));
+            .spawn(move || run_chunk_generation_task(world_ref, generator_ref, registry_ref, pos));
     }
 
-    // FIXME: offload column generation!!! for now, this is likely fine as we're
+    // TODO: offload column generation!!! for now, this is likely fine as we're
     // caching surface heights, which are very likely to be re-used here, but its
     // kinda gross and i dont like it lol
     for finished in generator.finished_chunks.rx.try_iter() {
+        let chunk = Arc::new(finished);
+
         // FIXME: drop generated chunks that have since been unloaded
-        let column = Arc::clone(columns.entry(finished.pos().column()).or_insert_with(|| {
+        if !world.columns.pin().contains_key(&chunk.pos().column()) {
             let heights = generator
                 .surface_cache
-                .surface_heights(finished.pos().column());
+                .surface_heights(chunk.pos().column());
             let column = Arc::new(ChunkColumn::new(heights));
-            chunk_events.send(WorldEvent::LoadedColumn(Arc::clone(&column)));
-            column
-        }));
+            world.columns.pin().insert(chunk.pos().column(), column);
+        }
 
-        let chunk = Arc::new(finished);
+        let column = Arc::clone(world.columns.pin().get(&chunk.pos().column()).unwrap());
         column
             .chunks
-            .write()
+            .pin()
             .insert(chunk.pos().y, Arc::clone(&chunk));
 
         send_debug_event(debug::WorldLoadEvent::Loaded(chunk.pos()));
         chunk_events.send(WorldEvent::Loaded(chunk));
     }
 
-    for pos in btree_iter_remove(&mut queues.unload_queue).take(16) {
-        let column = Arc::clone(columns.get(&pos.column()).unwrap());
+    for pos in queues.unload.pop_iter().take(16) {
+        let column = Arc::clone(world.columns.pin().get(&pos.column()).unwrap());
+        let chunk = Arc::clone(column.chunks.pin().remove(&pos.y).unwrap());
 
-        let mut chunks = column.chunks.write();
-        let chunk = chunks.remove(&pos.y).unwrap();
-
-        if chunks.is_empty() {
-            columns.remove(&pos.column());
+        if column.chunks.pin().is_empty() {
+            world.columns.pin().remove(&pos.column());
             chunk_events.send(WorldEvent::UnloadedColumn(Arc::clone(&column)));
         }
 

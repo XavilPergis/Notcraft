@@ -176,6 +176,10 @@ impl<T: Clone> Orphan<T> {
     pub fn snapshot(&self) -> OrphanSnapshot<T> {
         OrphanSnapshot::acquire(self, true).unwrap()
     }
+
+    pub fn clone_inner(&self) -> T {
+        T::clone(&self.snapshot())
+    }
 }
 
 impl<T> Orphan<T> {
