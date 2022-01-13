@@ -390,9 +390,7 @@ fn process_load_events(world: &VoxelWorld, queues: &mut MutableLoadQueue) {
             LoadEvent::Load(pos) => {
                 if let Some(idx) = queues.unload_dedup_map.remove(&pos) {
                     queues.unload_queue.remove(&idx);
-                }
-
-                if !queues.load_dedup_map.contains_key(&pos) && !world.is_loaded(pos) {
+                } else if !queues.load_dedup_map.contains_key(&pos) && !world.is_loaded(pos) {
                     queues.load_queue.insert(queues.load_head, pos);
                     queues.load_dedup_map.insert(pos, queues.load_head);
                     queues.load_head += 1;
@@ -404,11 +402,9 @@ fn process_load_events(world: &VoxelWorld, queues: &mut MutableLoadQueue) {
             LoadEvent::Unload(pos) => {
                 if let Some(idx) = queues.load_dedup_map.remove(&pos) {
                     queues.load_queue.remove(&idx);
-                }
-
-                if !queues.unload_dedup_map.contains_key(&pos) && world.is_loaded(pos) {
-                    queues.unload_queue.insert(queues.load_head, pos);
-                    queues.unload_dedup_map.insert(pos, queues.load_head);
+                } else if !queues.unload_dedup_map.contains_key(&pos) && world.is_loaded(pos) {
+                    queues.unload_queue.insert(queues.unload_head, pos);
+                    queues.unload_dedup_map.insert(pos, queues.unload_head);
                     queues.unload_head += 1;
                 }
 
@@ -505,14 +501,18 @@ fn generate_world(
             .spawn(move || run_chunk_generation_task(generator_ref, registry_ref, pos));
     }
 
-    // FIXME: offload column generation!!!
+    // FIXME: offload column generation!!! for now, this is likely fine as we're
+    // caching surface heights, which are very likely to be re-used here, but its
+    // kinda gross and i dont like it lol
     for finished in generator.finished_chunks.rx.try_iter() {
         // FIXME: drop generated chunks that have since been unloaded
         let column = Arc::clone(columns.entry(finished.pos().column()).or_insert_with(|| {
             let heights = generator
                 .surface_cache
                 .surface_heights(finished.pos().column());
-            Arc::new(ChunkColumn::new(heights))
+            let column = Arc::new(ChunkColumn::new(heights));
+            chunk_events.send(WorldEvent::LoadedColumn(Arc::clone(&column)));
+            column
         }));
 
         let chunk = Arc::new(finished);
@@ -521,10 +521,24 @@ fn generate_world(
             .write()
             .insert(chunk.pos().y, Arc::clone(&chunk));
 
+        send_debug_event(debug::WorldLoadEvent::Loaded(chunk.pos()));
         chunk_events.send(WorldEvent::Loaded(chunk));
     }
 
-    for pos in btree_iter_remove(&mut queues.unload_queue).take(16) {}
+    for pos in btree_iter_remove(&mut queues.unload_queue).take(16) {
+        let column = Arc::clone(columns.get(&pos.column()).unwrap());
+
+        let mut chunks = column.chunks.write();
+        let chunk = chunks.remove(&pos.y).unwrap();
+
+        if chunks.is_empty() {
+            columns.remove(&pos.column());
+            chunk_events.send(WorldEvent::UnloadedColumn(Arc::clone(&column)));
+        }
+
+        send_debug_event(debug::WorldLoadEvent::Unloaded(pos));
+        chunk_events.send(WorldEvent::Unloaded(chunk));
+    }
 }
 
 pub fn chunk_aabb(pos: ChunkPos) -> Aabb {
