@@ -172,16 +172,16 @@ impl BlockPos {
         }
     }
 
-    pub fn chunk_and_offset(self) -> (ChunkSectionPos, [usize; 3]) {
-        let chunk_pos = ChunkSectionPos::from(self);
-        let block_base = chunk_pos.origin();
+    pub fn section_and_offset(self) -> (ChunkSectionPos, [usize; 3]) {
+        let section_pos = ChunkSectionPos::from(self);
+        let block_base = section_pos.origin();
         let offset = [
             (self.x - block_base.x) as usize,
             (self.y - block_base.y) as usize,
             (self.z - block_base.z) as usize,
         ];
 
-        (chunk_pos, offset)
+        (section_pos, offset)
     }
 }
 

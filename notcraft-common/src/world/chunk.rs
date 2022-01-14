@@ -1,7 +1,7 @@
 use crate::{
     debug::send_debug_event,
     world::{
-        lighting::{propagate_block_light, LightUpdateQueues},
+        lighting::{propagate_block_light, propagate_sky_light, LightUpdateQueues},
         registry::BlockId,
     },
 };
@@ -114,8 +114,8 @@ impl ChunkSectionSnapshotMut {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct LocalBlockUpdate {
-    pub index: ChunkIndex,
+pub struct ChunkSectionUpdate {
+    pub index: ChunkSectionIndex,
     pub id: BlockId,
 }
 
@@ -260,11 +260,19 @@ impl ChunkSection {
     }
 }
 
+struct ChunkUpdateContext<'a> {
+    pub rebuild: &'a mut HashSet<ChunkSectionPos>,
+    pub solid_updates: &'a mut HashMap<ChunkIndex, HashMap<i32, bool>>,
+    pub light_queues: &'a mut LightUpdateQueues,
+    pub registry: &'a BlockRegistry,
+    pub chunk: ChunkPos,
+}
+
 fn write_chunk_updates_array(
     data: &mut ArrayChunk<BlockId>,
-    center: ChunkSectionPos,
-    rebuild: &mut HashSet<ChunkSectionPos>,
-    updates: &[LocalBlockUpdate],
+    ctx: &mut ChunkUpdateContext,
+    y: i32,
+    updates: &[ChunkSectionUpdate],
 ) {
     const MAX_AXIS_INDEX: usize = CHUNK_LENGTH - 1;
 
@@ -278,6 +286,17 @@ fn write_chunk_updates_array(
 
     for update in updates.iter() {
         let slot = &mut data[update.index];
+
+        let new_solid = !ctx.registry.light_transmissible(update.id);
+        if !ctx.registry.light_transmissible(*slot) != new_solid {
+            let [x, yi, z] = update.index;
+            let y = CHUNK_LENGTH as i32 * y + yi as i32;
+            ctx.solid_updates
+                .entry([x, z])
+                .or_default()
+                .insert(y, new_solid);
+        }
+
         if *slot != update.id {
             c = true;
             nx |= update.index[0] == 0;
@@ -290,37 +309,38 @@ fn write_chunk_updates_array(
         }
     }
 
+    let pos = ctx.chunk.section(y);
     if c {
-        rebuild.insert(center);
+        ctx.rebuild.insert(pos);
     }
 
     if nx {
-        rebuild.insert(center.offset([-1, 0, 0]));
+        ctx.rebuild.insert(pos.offset([-1, 0, 0]));
     }
     if px {
-        rebuild.insert(center.offset([1, 0, 0]));
+        ctx.rebuild.insert(pos.offset([1, 0, 0]));
     }
 
     if ny {
-        rebuild.insert(center.offset([0, -1, 0]));
+        ctx.rebuild.insert(pos.offset([0, -1, 0]));
     }
     if py {
-        rebuild.insert(center.offset([0, 1, 0]));
+        ctx.rebuild.insert(pos.offset([0, 1, 0]));
     }
 
     if nz {
-        rebuild.insert(center.offset([0, 0, -1]));
+        ctx.rebuild.insert(pos.offset([0, 0, -1]));
     }
     if pz {
-        rebuild.insert(center.offset([0, 0, 1]));
+        ctx.rebuild.insert(pos.offset([0, 0, 1]));
     }
 }
 
 fn write_chunk_updates(
     data: &mut ChunkData<BlockId>,
-    center: ChunkSectionPos,
-    rebuild: &mut HashSet<ChunkSectionPos>,
-    updates: &[LocalBlockUpdate],
+    ctx: &mut ChunkUpdateContext,
+    y: i32,
+    updates: &[ChunkSectionUpdate],
 ) {
     match data {
         &mut ChunkData::Homogeneous(id) => {
@@ -330,11 +350,11 @@ fn write_chunk_updates(
             };
 
             let mut chunk = ArrayChunk::homogeneous(id);
-            write_chunk_updates_array(&mut chunk, center, rebuild, &updates[differing..]);
+            write_chunk_updates_array(&mut chunk, ctx, y, &updates[differing..]);
 
             *data = ChunkData::Array(chunk);
         }
-        ChunkData::Array(data) => write_chunk_updates_array(data, center, rebuild, updates),
+        ChunkData::Array(data) => write_chunk_updates_array(data, ctx, y, updates),
     }
 }
 
@@ -345,22 +365,21 @@ fn write_chunk_updates(
 //
 // NOTE: this should not be called concurrently, the only guarantee is
 // concurrent calls will not produce UB.
-pub(crate) fn flush_chunk_writes(
+fn flush_chunk_section_writes(
     chunk: &ChunkSection,
-    updates: &[LocalBlockUpdate],
+    updates: &[ChunkSectionUpdate],
     access: &mut MutableChunkAccess,
-    rebuild: &mut HashSet<ChunkSectionPos>,
+    ctx: &mut ChunkUpdateContext,
 ) {
     assert!(!updates.is_empty());
 
     chunk.was_ever_modified.store(true, AtomicOrdering::Relaxed);
 
     let registry = Arc::clone(access.registry());
-    let mut light_updates = LightUpdateQueues::default();
 
     {
-        let inner = access.chunk(chunk.pos()).unwrap();
-        write_chunk_updates(inner.blocks_mut(), chunk.pos(), rebuild, updates);
+        let inner = access.section(chunk.pos()).unwrap();
+        write_chunk_updates(inner.blocks_mut(), ctx, chunk.pos().y, updates);
 
         #[cfg(feature = "debug")]
         match inner.was_cloned() {
@@ -369,7 +388,7 @@ pub(crate) fn flush_chunk_writes(
         }
     }
 
-    light_updates.queue_updates(
+    ctx.light_queues.queue_blocklight_updates(
         access,
         updates.iter().map(|update| {
             let [x, y, z] = update.index;
@@ -384,8 +403,60 @@ pub(crate) fn flush_chunk_writes(
             (pos, light)
         }),
     );
+}
 
-    propagate_block_light(&mut light_updates, access);
+fn flush_chunk_writes(
+    chunk: &Chunk,
+    updates: &HashMap<i32, Vec<ChunkSectionUpdate>>,
+    access: &mut MutableChunkAccess,
+    rebuild: &mut HashSet<ChunkSectionPos>,
+) {
+    assert!(!updates.is_empty());
+
+    let mut solid_updates = HashMap::new();
+    let mut light_queues = LightUpdateQueues::default();
+
+    let registry = Arc::clone(access.registry());
+    let mut ctx = ChunkUpdateContext {
+        rebuild,
+        solid_updates: &mut solid_updates,
+        light_queues: &mut light_queues,
+        registry: &registry,
+        chunk: chunk.pos(),
+    };
+
+    for (&y, updates) in updates.iter() {
+        match chunk.section(y) {
+            Some(section) => flush_chunk_section_writes(&section, updates, access, &mut ctx),
+            None => todo!("update of unloaded section"),
+        }
+    }
+
+    let mut sky_nodes = chunk.sky_light.orphan_readers();
+    for (&[x, z], updates) in ctx.solid_updates.iter() {
+        let prev_top = sky_nodes.node(x, z).top();
+        for (&y, &solid) in updates.iter() {
+            sky_nodes.node_mut(x, z).update(y, solid);
+        }
+        let new_top = sky_nodes.node(x, z).top();
+
+        if prev_top != new_top {
+            let x = CHUNK_LENGTH as i32 * ctx.chunk.x + x as i32;
+            let z = CHUNK_LENGTH as i32 * ctx.chunk.z + z as i32;
+            // log::info!("prev top = {prev_top}, new_top = {new_top}");
+            let min_y = i32::min(prev_top, new_top);
+            let max_y = i32::max(prev_top, new_top);
+            let light = match new_top > prev_top {
+                true => 0,
+                false => 15,
+            };
+            ctx.light_queues
+                .queue_skylight_updates(access, x, z, min_y, max_y, light);
+        }
+    }
+
+    propagate_block_light(&mut ctx.light_queues, access);
+    propagate_sky_light(&mut ctx.light_queues, access);
 }
 
 // TODO: maybe think about splitting this into a read half and a write half, so
@@ -393,19 +464,19 @@ pub(crate) fn flush_chunk_writes(
 /// a cache for multiple unaligned world accesses over a short period of time.
 pub struct ChunkAccess {
     pub world: Arc<VoxelWorld>,
-    chunks: HashMap<ChunkSectionPos, ChunkSectionSnapshot>,
+    sections: HashMap<ChunkSectionPos, ChunkSectionSnapshot>,
 
-    free_update_queues: Vec<Vec<LocalBlockUpdate>>,
-    update_queues: HashMap<ChunkSectionPos, Vec<LocalBlockUpdate>>,
+    free_update_queues: Vec<Vec<ChunkSectionUpdate>>,
+    chunk_updates: HashMap<ChunkPos, HashMap<i32, Vec<ChunkSectionUpdate>>>,
 }
 
 impl ChunkAccess {
     pub fn new(world: &Arc<VoxelWorld>) -> Self {
         Self {
             world: Arc::clone(world),
-            chunks: Default::default(),
+            sections: Default::default(),
             free_update_queues: Default::default(),
-            update_queues: Default::default(),
+            chunk_updates: Default::default(),
         }
     }
 
@@ -413,8 +484,8 @@ impl ChunkAccess {
         &self.world.registry
     }
 
-    pub fn chunk(&mut self, pos: ChunkSectionPos) -> Option<&ChunkSectionSnapshot> {
-        Some(match self.chunks.entry(pos) {
+    pub fn section(&mut self, pos: ChunkSectionPos) -> Option<&ChunkSectionSnapshot> {
+        Some(match self.sections.entry(pos) {
             Entry::Occupied(entry) => &*entry.into_mut(),
             Entry::Vacant(entry) => &*entry.insert(self.world.section(pos)?.snapshot()),
         })
@@ -422,24 +493,27 @@ impl ChunkAccess {
 
     #[must_use]
     pub fn block(&mut self, pos: BlockPos) -> Option<BlockId> {
-        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
-        Some(self.chunk(chunk_pos)?.blocks().get(chunk_index))
+        let (section_pos, chunk_index) = pos.section_and_offset();
+        Some(self.section(section_pos)?.blocks().get(chunk_index))
     }
 
     #[must_use]
     pub fn light(&mut self, pos: BlockPos) -> Option<LightValue> {
-        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
-        Some(self.chunk(chunk_pos)?.light().get(chunk_index))
+        let (section_pos, chunk_index) = pos.section_and_offset();
+        Some(self.section(section_pos)?.light().get(chunk_index))
     }
 
-    // TODO: what do we do about updates of chunks that don't exist in the world??
+    // TODO: what do we do about updates of chunk sections that don't exist in the
+    // world??
     pub fn set_block(&mut self, pos: BlockPos, id: BlockId) {
-        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
+        let (section_pos, chunk_index) = pos.section_and_offset();
         let queue = self
-            .update_queues
-            .entry(chunk_pos)
+            .chunk_updates
+            .entry(section_pos.column())
+            .or_default()
+            .entry(section_pos.y)
             .or_insert_with(|| self.free_update_queues.pop().unwrap_or_default());
-        queue.push(LocalBlockUpdate {
+        queue.push(ChunkSectionUpdate {
             index: chunk_index,
             id,
         });
@@ -465,7 +539,7 @@ impl MutableChunkAccess {
         &self.world.registry
     }
 
-    fn chunk(&mut self, pos: ChunkSectionPos) -> Option<&mut ChunkSectionSnapshotMut> {
+    fn section(&mut self, pos: ChunkSectionPos) -> Option<&mut ChunkSectionSnapshotMut> {
         Some(match self.writers.entry(pos) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => entry.insert(ChunkSectionSnapshotMut::new(
@@ -476,14 +550,14 @@ impl MutableChunkAccess {
 
     #[must_use]
     pub fn block(&mut self, pos: BlockPos) -> Option<BlockId> {
-        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
-        Some(self.chunk(chunk_pos)?.blocks().get(chunk_index))
+        let (section_pos, chunk_index) = pos.section_and_offset();
+        Some(self.section(section_pos)?.blocks().get(chunk_index))
     }
 
     #[must_use]
     pub fn set_block(&mut self, pos: BlockPos, id: BlockId) -> Option<()> {
-        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
-        let block_data = self.chunk(chunk_pos)?.blocks_mut();
+        let (section_pos, chunk_index) = pos.section_and_offset();
+        let block_data = self.section(section_pos)?.blocks_mut();
 
         let prev = block_data.get(chunk_index);
         if id != prev {
@@ -495,14 +569,28 @@ impl MutableChunkAccess {
 
     #[must_use]
     pub fn light(&mut self, pos: BlockPos) -> Option<LightValue> {
-        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
-        Some(self.chunk(chunk_pos)?.light().get(chunk_index))
+        let (section_pos, chunk_index) = pos.section_and_offset();
+        Some(self.section(section_pos)?.light().get(chunk_index))
+    }
+
+    #[must_use]
+    pub fn set_sky_light(&mut self, pos: BlockPos, light: u16) -> Option<()> {
+        let (section_pos, chunk_index) = pos.section_and_offset();
+        let light_data = self.section(section_pos)?.light_mut();
+
+        let prev = light_data.get(chunk_index);
+        if light != prev.sky() {
+            light_data.set(chunk_index, LightValue::pack(light, prev.block()));
+            self.rebuild.insert(pos.into());
+        }
+
+        Some(())
     }
 
     #[must_use]
     pub fn set_block_light(&mut self, pos: BlockPos, light: u16) -> Option<()> {
-        let (chunk_pos, chunk_index) = pos.chunk_and_offset();
-        let light_data = self.chunk(chunk_pos)?.light_mut();
+        let (section_pos, chunk_index) = pos.section_and_offset();
+        let light_data = self.section(section_pos)?.light_mut();
 
         let prev = light_data.get(chunk_index);
         if light != prev.block() {
@@ -516,25 +604,25 @@ impl MutableChunkAccess {
 
 pub(crate) fn flush_chunk_access(access: &mut ChunkAccess, rebuild: &mut HashSet<ChunkSectionPos>) {
     #[cfg(feature = "debug")]
-    for &pos in access.chunks.keys() {
+    for &pos in access.sections.keys() {
         send_debug_event(super::debug::WorldAccessEvent::Read(pos));
     }
 
     // let go of our snapshots before we flush chunk updates so that we don't force
     // an orphan of every updated chunk because we still have readers here.
-    access.chunks.clear();
+    access.sections.clear();
 
     let mut mut_access = MutableChunkAccess::new(&access.world);
 
-    for (pos, mut updates) in access.update_queues.drain() {
-        match access.world.section(pos) {
+    for (pos, mut updates) in access.chunk_updates.drain() {
+        match access.world.chunk(pos) {
             Some(chunk) => flush_chunk_writes(&chunk, &updates, &mut mut_access, rebuild),
             None => todo!("unloaded chunk write"),
         }
 
-        // recycle old queues to amortize alloocation cost
-        updates.clear();
-        access.free_update_queues.push(updates);
+        // recycle old queues to amortize allocation cost
+        updates.values_mut().for_each(Vec::clear);
+        access.free_update_queues.extend(updates.into_values());
     }
 
     rebuild.extend(mut_access.rebuild);
@@ -547,14 +635,14 @@ pub enum ChunkData<T> {
 }
 
 impl<T: Copy + Eq> ChunkData<T> {
-    pub fn get(&self, index: ChunkIndex) -> T {
+    pub fn get(&self, index: ChunkSectionIndex) -> T {
         match self {
             &ChunkData::Homogeneous(value) => value,
             ChunkData::Array(data) => data[index],
         }
     }
 
-    pub fn set(&mut self, index: ChunkIndex, new_value: T) {
+    pub fn set(&mut self, index: ChunkSectionIndex, new_value: T) {
         match self {
             &mut ChunkData::Homogeneous(value) if value == new_value => {}
             &mut ChunkData::Homogeneous(value) => {
@@ -601,7 +689,14 @@ impl<T, I: Into<[usize; 3]>> Index<I> for ArrayChunk<T> {
     }
 }
 
-pub type ChunkIndex = [usize; 3];
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct LocalChunkPos {
+    pub xz: ChunkIndex,
+    pub y: i32,
+}
+
+pub type ChunkIndex = [usize; 2];
+pub type ChunkSectionIndex = [usize; 3];
 
 impl<T, I: Into<[usize; 3]>> IndexMut<I> for ArrayChunk<T> {
     fn index_mut(&mut self, index: I) -> &mut Self::Output {

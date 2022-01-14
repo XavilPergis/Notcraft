@@ -127,12 +127,19 @@ impl VoxelFace {
     }
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum LightingType {
+    Smooth,
+    Simple,
+}
+
 pub struct MeshCreationContext {
     registry: Arc<BlockRegistry>,
     chunks: ChunkNeighbors,
     mesh_constructor: MeshBuilder,
     pos: ChunkSectionPos,
     slice: Vec<VoxelFace>,
+    lighting_type: LightingType,
 }
 
 // index into the flat voxel face slice using a 2D coordinate
@@ -180,6 +187,7 @@ impl MeshCreationContext {
             pos,
             slice: vec![VoxelFace::default(); notcraft_common::world::chunk::CHUNK_AREA],
             mesh_constructor,
+            lighting_type: LightingType::Simple,
         }
     }
 
@@ -214,41 +222,57 @@ impl MeshCreationContext {
     }
 
     fn face_light(&self, pos: Point3<ChunkAxis>, side: Side) -> FaceLight {
-        let pos = pos.cast::<ChunkAxisOffset>();
-        let light = |pos| self.chunks.light(pos);
+        match self.lighting_type {
+            LightingType::Smooth => {
+                let pos = pos.cast::<ChunkAxisOffset>();
+                let light = |pos| self.chunks.light(pos);
 
-        let nn = light(pos + side.uvl_to_xyz(-1, -1, 1));
-        let nc = light(pos + side.uvl_to_xyz(-1, 0, 1));
-        let np = light(pos + side.uvl_to_xyz(-1, 1, 1));
-        let cn = light(pos + side.uvl_to_xyz(0, -1, 1));
-        let cc = light(pos + side.uvl_to_xyz(0, 0, 1));
-        let cp = light(pos + side.uvl_to_xyz(0, 1, 1));
-        let pn = light(pos + side.uvl_to_xyz(1, -1, 1));
-        let pc = light(pos + side.uvl_to_xyz(1, 0, 1));
-        let pp = light(pos + side.uvl_to_xyz(1, 1, 1));
+                let nn = light(pos + side.uvl_to_xyz(-1, -1, 1));
+                let nc = light(pos + side.uvl_to_xyz(-1, 0, 1));
+                let np = light(pos + side.uvl_to_xyz(-1, 1, 1));
+                let cn = light(pos + side.uvl_to_xyz(0, -1, 1));
+                let cc = light(pos + side.uvl_to_xyz(0, 0, 1));
+                let cp = light(pos + side.uvl_to_xyz(0, 1, 1));
+                let pn = light(pos + side.uvl_to_xyz(1, -1, 1));
+                let pc = light(pos + side.uvl_to_xyz(1, 0, 1));
+                let pp = light(pos + side.uvl_to_xyz(1, 1, 1));
 
-        let neg_neg = LightValue::combine_max(
-            LightValue::combine_max(nn, nc),
-            LightValue::combine_max(cn, cc),
-        );
-        let neg_pos = LightValue::combine_max(
-            LightValue::combine_max(np, nc),
-            LightValue::combine_max(cp, cc),
-        );
-        let pos_neg = LightValue::combine_max(
-            LightValue::combine_max(pn, pc),
-            LightValue::combine_max(cn, cc),
-        );
-        let pos_pos = LightValue::combine_max(
-            LightValue::combine_max(pp, pc),
-            LightValue::combine_max(cp, cc),
-        );
+                let neg_neg = LightValue::combine_max(
+                    LightValue::combine_max(nn, nc),
+                    LightValue::combine_max(cn, cc),
+                );
+                let neg_pos = LightValue::combine_max(
+                    LightValue::combine_max(np, nc),
+                    LightValue::combine_max(cp, cc),
+                );
+                let pos_neg = LightValue::combine_max(
+                    LightValue::combine_max(pn, pc),
+                    LightValue::combine_max(cn, cc),
+                );
+                let pos_pos = LightValue::combine_max(
+                    LightValue::combine_max(pp, pc),
+                    LightValue::combine_max(cp, cc),
+                );
 
-        FaceLight {
-            neg_neg,
-            neg_pos,
-            pos_neg,
-            pos_pos,
+                FaceLight {
+                    neg_neg,
+                    neg_pos,
+                    pos_neg,
+                    pos_pos,
+                }
+            }
+
+            LightingType::Simple => {
+                let light = self
+                    .chunks
+                    .light(pos.cast::<ChunkAxisOffset>() + side.normal());
+                FaceLight {
+                    neg_neg: light,
+                    neg_pos: light,
+                    pos_neg: light,
+                    pos_pos: light,
+                }
+            }
         }
     }
 

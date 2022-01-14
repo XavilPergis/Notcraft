@@ -1,6 +1,7 @@
 use std::{
     cmp::Ordering,
-    collections::{HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
+    ops::Bound,
 };
 
 use super::{
@@ -72,11 +73,13 @@ impl LightValue {
 pub struct LightUpdateQueues {
     block_removal: VecDeque<(BlockPos, u16)>,
     block_update: VecDeque<(BlockPos, u16)>,
+    sky_removal: VecDeque<(BlockPos, u16)>,
+    sky_update: VecDeque<(BlockPos, u16)>,
     visited: HashSet<BlockPos>,
 }
 
 impl LightUpdateQueues {
-    pub fn queue_updates<I>(&mut self, access: &mut MutableChunkAccess, iter: I)
+    pub fn queue_blocklight_updates<I>(&mut self, access: &mut MutableChunkAccess, iter: I)
     where
         I: Iterator<Item = (BlockPos, u16)>,
     {
@@ -85,22 +88,47 @@ impl LightUpdateQueues {
                 continue;
             }
 
-            let prev_light = access.light(pos).unwrap().block();
+            let prev_light = access.light(pos).unwrap();
 
             let id = access.block(pos).unwrap();
             if access.registry().light_transmissible(id) {
-                self.block_removal.push_back((pos, prev_light));
-                access.set_block_light(pos, 0).unwrap();
+                self.sky_removal.push_back((pos, prev_light.sky()));
+                self.block_removal.push_back((pos, prev_light.block()));
             }
 
-            match new_light.cmp(&prev_light) {
+            match new_light.cmp(&prev_light.block()) {
                 Ordering::Equal => {}
-                Ordering::Less => self.block_removal.push_back((pos, prev_light)),
+                Ordering::Less => self.block_removal.push_back((pos, prev_light.block())),
                 Ordering::Greater => self.block_update.push_back((pos, new_light)),
             }
         }
 
         self.visited.clear();
+    }
+
+    pub fn queue_skylight_updates(
+        &mut self,
+        access: &mut MutableChunkAccess,
+        x: i32,
+        z: i32,
+        min_y: i32,
+        max_y: i32, // exclusive bound
+        light: u16,
+    ) {
+        // log::debug!(
+        //     "queued skylight updates: ({x},{z}) -> min={min_y}, max={max_y},
+        // light={light}" );
+        for y in min_y..max_y {
+            let pos = BlockPos { x, y, z };
+
+            let prev_light = access.light(pos).unwrap().sky();
+
+            match light.cmp(&prev_light) {
+                Ordering::Equal => {}
+                Ordering::Less => self.sky_removal.push_back((pos, prev_light)),
+                Ordering::Greater => self.sky_update.push_back((pos, light)),
+            }
+        }
     }
 }
 
@@ -169,14 +197,138 @@ pub(crate) fn propagate_block_light(
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub(crate) fn propagate_sky_light(queues: &mut LightUpdateQueues, access: &mut MutableChunkAccess) {
+    for &(pos, _) in queues.sky_removal.iter() {
+        access.set_sky_light(pos, 0).unwrap();
+    }
+
+    while let Some((pos, light)) = queues.sky_removal.pop_front() {
+        let dirs = [
+            pos.offset([1, 0, 0]),
+            pos.offset([-1, 0, 0]),
+            pos.offset([0, 1, 0]),
+            pos.offset([0, -1, 0]),
+            pos.offset([0, 0, 1]),
+            pos.offset([0, 0, -1]),
+        ];
+
+        for dir in dirs.into_iter() {
+            let neighbor_light = access.light(dir).unwrap().sky();
+
+            if neighbor_light > 0 && neighbor_light < light {
+                access.set_sky_light(dir, 0).unwrap();
+                queues.sky_removal.push_back((dir, light - 1));
+            } else if neighbor_light > 0 {
+                queues.sky_update.push_back((dir, 0));
+            }
+        }
+    }
+
+    while let Some((pos, queue_light)) = queues.sky_update.pop_front() {
+        let current_light = access.light(pos).unwrap().sky();
+        let queue_light = u16::max(queue_light, current_light);
+        if queue_light != current_light {
+            access.set_sky_light(pos, queue_light).unwrap();
+        }
+
+        if queue_light == 0 {
+            continue;
+        }
+
+        let dirs = [
+            pos.offset([1, 0, 0]),
+            pos.offset([-1, 0, 0]),
+            pos.offset([0, 1, 0]),
+            pos.offset([0, -1, 0]),
+            pos.offset([0, 0, 1]),
+            pos.offset([0, 0, -1]),
+        ];
+
+        for dir in dirs.into_iter() {
+            let neighbor_light = access.light(dir).unwrap().sky();
+            let new_light = u16::max(queue_light - 1, neighbor_light);
+
+            let id = access.block(dir).unwrap();
+            let neighbor_transmissible = access.registry().light_transmissible(id);
+
+            if new_light != neighbor_light && neighbor_transmissible {
+                access.set_sky_light(dir, new_light).unwrap();
+                queues.sky_update.push_back((dir, new_light));
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct SkyLightNode {
-    min_y: i32,
+    // each entry in this map represents a range that starts at a height specified by the key, and
+    // ends at the next entry's key (exclusive)
+    //
+    // INVARIANT: for a node N, len(N) must be odd.
+    // INVARIANT: for a node N, solid(N[a]) must not equal solid(N[a + 1])
+    intervals: BTreeMap<i32, bool>,
+}
+
+impl SkyLightNode {
+    fn init(y: i32, solid: bool) -> Self {
+        let mut intervals = BTreeMap::new();
+        intervals.insert(y, solid);
+        Self { intervals }
+    }
+
+    fn lookup(&self, y: i32) -> (i32, i32, bool) {
+        let (min, solid) = match self
+            .intervals
+            .range((Bound::Unbounded, Bound::Included(y)))
+            .rev()
+            .next()
+        {
+            Some((&min, &solid)) => (min, solid),
+            // TODO: what if the bottom-most node is not solid?
+            None => (i32::MIN, true),
+        };
+
+        let max = match self
+            .intervals
+            .range((Bound::Excluded(y), Bound::Unbounded))
+            .next()
+        {
+            Some((&max, _)) => max,
+            None => i32::MAX,
+        };
+
+        (min, max, solid)
+    }
+
+    pub fn update(&mut self, y: i32, solid: bool) {
+        let (min, max, interval_solid) = self.lookup(y);
+
+        if solid != interval_solid {
+            match y == min {
+                true => drop(self.intervals.remove(&min)),
+                false => drop(self.intervals.insert(y, solid)),
+            }
+
+            match y + 1 == max {
+                true => drop(self.intervals.remove(&max)),
+                false => drop(self.intervals.insert(y + 1, !solid)),
+            }
+        }
+    }
+
+    pub fn top(&self) -> i32 {
+        self.intervals
+            .keys()
+            .rev()
+            .next()
+            .copied()
+            .unwrap_or(i32::MIN)
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct SkyLightColumns {
-    nodes: Box<[Vec<SkyLightNode>]>,
+    node_lists: Box<[SkyLightNode]>,
 }
 
 impl SkyLightColumns {
@@ -184,13 +336,19 @@ impl SkyLightColumns {
         let mut nodes = Vec::with_capacity(CHUNK_LENGTH * CHUNK_LENGTH);
 
         for i in 0..nodes.capacity() {
-            nodes.push(vec![SkyLightNode {
-                min_y: heightmap.data()[i],
-            }]);
+            nodes.push(SkyLightNode::init(heightmap.data()[i], false));
         }
 
         Self {
-            nodes: nodes.into_boxed_slice(),
+            node_lists: nodes.into_boxed_slice(),
         }
+    }
+
+    pub fn node(&self, x: usize, z: usize) -> &SkyLightNode {
+        &self.node_lists[CHUNK_LENGTH * x + z]
+    }
+
+    pub fn node_mut(&mut self, x: usize, z: usize) -> &mut SkyLightNode {
+        &mut self.node_lists[CHUNK_LENGTH * x + z]
     }
 }
