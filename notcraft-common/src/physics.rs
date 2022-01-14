@@ -51,30 +51,19 @@ fn make_collision_range(min: f32, max: f32) -> RangeInclusive<i32> {
 }
 
 struct CollisionContext<'a> {
-    cache: &'a mut ChunkAccess,
-    registry: &'a BlockRegistry,
+    access: &'a mut ChunkAccess,
+    registry: Arc<BlockRegistry>,
     current: Aabb,
     previous: Aabb,
-
-    resolution: Vector3<f32>,
-    in_liquid: bool,
 }
 
 impl<'a> CollisionContext<'a> {
-    fn new(
-        cache: &'a mut ChunkAccess,
-        registry: &'a BlockRegistry,
-        current: Aabb,
-        previous: Aabb,
-    ) -> Self {
+    fn new(access: &'a mut ChunkAccess, current: Aabb, previous: Aabb) -> Self {
         Self {
-            cache,
-            registry,
+            registry: Arc::clone(access.registry()),
+            access,
             current,
             previous,
-
-            resolution: vector![0.0, 0.0, 0.0],
-            in_liquid: false,
         }
     }
 }
@@ -85,26 +74,16 @@ fn does_block_collide(ctx: &mut CollisionContext, block_pos: BlockPos) -> Option
         max: ctx.previous.max.map(f32::ceil),
     });
 
-    match ctx.registry.collision_type(ctx.cache.block(block_pos)?) {
+    match ctx.registry.collision_type(ctx.access.block(block_pos)?) {
         CollisionType::Solid => Some(!prev_intersects),
         _ => Some(false),
     }
 }
 
-fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
+fn detect_terrain_collisions(ctx: &mut CollisionContext) -> Option<Vector3<f32>> {
     let delta = ctx.current.center() - ctx.previous.center();
 
-    for x in make_collision_range(ctx.previous.min.x, ctx.previous.max.x) {
-        for y in make_collision_range(ctx.previous.min.y, ctx.previous.max.y) {
-            for z in make_collision_range(ctx.previous.min.z, ctx.previous.max.z) {
-                let block_pos = BlockPos { x, y, z };
-                ctx.in_liquid |= ctx
-                    .registry
-                    .collision_type(ctx.cache.block(block_pos)?)
-                    .is_liquid();
-            }
-        }
-    }
+    let mut resolution = vector![0.0, 0.0, 0.0];
 
     // let proj_x = ctx.previous.translated(delta.x * Vector3::x());
     // let proj_y = ctx.previous.translated(delta.y * Vector3::y());
@@ -142,7 +121,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
                     //     rgba: [1.0, 0.2, 0.2, 0.6],
                     //     kind: DebugBoxKind::Solid,
                     // });
-                    ctx.resolution.x = match delta.x < 0.0 {
+                    resolution.x = match delta.x < 0.0 {
                         true => x as f32 + 1.0 - ctx.current.min.x,
                         false => x as f32 - ctx.current.max.x,
                     };
@@ -165,7 +144,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
                     //     rgba: [0.2, 1.0, 0.2, 0.6],
                     //     kind: DebugBoxKind::Solid,
                     // });
-                    ctx.resolution.y = match delta.y < 0.0 {
+                    resolution.y = match delta.y < 0.0 {
                         true => y as f32 + 1.0 - ctx.current.min.y,
                         false => y as f32 - ctx.current.max.y,
                     };
@@ -188,7 +167,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
                     //     rgba: [0.2, 0.2, 1.0, 0.6],
                     //     kind: DebugBoxKind::Solid,
                     // });
-                    ctx.resolution.z = match delta.z < 0.0 {
+                    resolution.z = match delta.z < 0.0 {
                         true => z as f32 + 1.0 - ctx.current.min.z,
                         false => z as f32 - ctx.current.max.z,
                     };
@@ -214,8 +193,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
     let xz = dotx > doty || dotz > doty;
     let xy = dotx > dotz || doty > dotz;
 
-    if xz && delta.x != 0.0 && delta.z != 0.0 && ctx.resolution.x == 0.0 && ctx.resolution.z == 0.0
-    {
+    if xz && delta.x != 0.0 && delta.z != 0.0 && resolution.x == 0.0 && resolution.z == 0.0 {
         let x = match delta.x > 0.0 {
             true => make_collision_bound(ctx.current.max.x),
             false => ctx.current.min.x.floor() as i32,
@@ -228,12 +206,12 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
             let block_pos = BlockPos { x, y, z };
             if does_block_collide(ctx, block_pos)? {
                 if dotx > dotz {
-                    ctx.resolution.z = match delta.z < 0.0 {
+                    resolution.z = match delta.z < 0.0 {
                         true => z as f32 + 1.0 - ctx.current.min.z,
                         false => z as f32 - ctx.current.max.z,
                     };
                 } else {
-                    ctx.resolution.x = match delta.x < 0.0 {
+                    resolution.x = match delta.x < 0.0 {
                         true => x as f32 + 1.0 - ctx.current.min.x,
                         false => x as f32 - ctx.current.max.x,
                     };
@@ -242,8 +220,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
         }
     }
 
-    if yz && delta.y != 0.0 && delta.z != 0.0 && ctx.resolution.y == 0.0 && ctx.resolution.z == 0.0
-    {
+    if yz && delta.y != 0.0 && delta.z != 0.0 && resolution.y == 0.0 && resolution.z == 0.0 {
         let y = match delta.y > 0.0 {
             true => make_collision_bound(ctx.current.max.y),
             false => ctx.current.min.y.floor() as i32,
@@ -256,12 +233,12 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
             let block_pos = BlockPos { x, y, z };
             if does_block_collide(ctx, block_pos)? {
                 if doty > dotz {
-                    ctx.resolution.z = match delta.z < 0.0 {
+                    resolution.z = match delta.z < 0.0 {
                         true => z as f32 + 1.0 - ctx.current.min.z,
                         false => z as f32 - ctx.current.max.z,
                     };
                 } else {
-                    ctx.resolution.y = match delta.y < 0.0 {
+                    resolution.y = match delta.y < 0.0 {
                         true => y as f32 + 1.0 - ctx.current.min.y,
                         false => y as f32 - ctx.current.max.y,
                     };
@@ -270,8 +247,7 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
         }
     }
 
-    if xy && delta.x != 0.0 && delta.y != 0.0 && ctx.resolution.x == 0.0 && ctx.resolution.y == 0.0
-    {
+    if xy && delta.x != 0.0 && delta.y != 0.0 && resolution.x == 0.0 && resolution.y == 0.0 {
         let x = match delta.x > 0.0 {
             true => make_collision_bound(ctx.current.max.x),
             false => ctx.current.min.x.floor() as i32,
@@ -284,12 +260,12 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
             let block_pos = BlockPos { x, y, z };
             if does_block_collide(ctx, block_pos)? {
                 if dotx > doty {
-                    ctx.resolution.y = match delta.y < 0.0 {
+                    resolution.y = match delta.y < 0.0 {
                         true => y as f32 + 1.0 - ctx.current.min.y,
                         false => y as f32 - ctx.current.max.y,
                     };
                 } else {
-                    ctx.resolution.x = match delta.x < 0.0 {
+                    resolution.x = match delta.x < 0.0 {
                         true => x as f32 + 1.0 - ctx.current.min.x,
                         false => x as f32 - ctx.current.max.x,
                     };
@@ -298,39 +274,123 @@ fn resolve_terrain_collisions(ctx: &mut CollisionContext) -> Option<()> {
         }
     }
 
+    Some(resolution)
+}
+
+fn detect_liquid_collisions(access: &mut ChunkAccess, prev: &Aabb) -> Option<bool> {
+    let registry = Arc::clone(access.registry());
+    for x in make_collision_range(prev.min.x, prev.max.x) {
+        for y in make_collision_range(prev.min.y, prev.max.y) {
+            for z in make_collision_range(prev.min.z, prev.max.z) {
+                let block_pos = BlockPos { x, y, z };
+                if registry
+                    .collision_type(access.block(block_pos)?)
+                    .is_liquid()
+                {
+                    return Some(true);
+                }
+            }
+        }
+    }
+
+    Some(false)
+}
+
+fn do_terrain_collision(
+    access: &mut ChunkAccess,
+    collider: &mut AabbCollider,
+    prev_collider: &PreviousCollider,
+    rigidbody: &mut RigidBody,
+    transform: &mut Transform,
+) -> Option<()> {
+    let original_aabb = prev_collider.aabb_world;
+    let target_aabb = collider.aabb.transformed(transform);
+
+    let original_pos =
+        transform.translation.vector + (original_aabb.center() - target_aabb.center());
+    let end_pos = transform.translation.vector;
+
+    collider.in_liquid = detect_liquid_collisions(access, &original_aabb)?;
+
+    // we set the entity's position back to the previous position, and then step
+    // through in increments. if there are no collisions, we usually reach the final
+    // position just as if we didn't modify the translation at all.
+    transform.translation.vector = original_pos;
+
+    const MAX_COLLISION_STEPS: usize = 32;
+    const MAX_STEP_DISTANCE: f32 = 0.5;
+
+    let desired_num_steps = {
+        let len_x = (original_pos.x - end_pos.x).abs();
+        let len_y = (original_pos.y - end_pos.y).abs();
+        let len_z = (original_pos.z - end_pos.z).abs();
+
+        let max_axis_length = f32::max(len_x, f32::max(len_y, len_z));
+        (max_axis_length / MAX_STEP_DISTANCE) as usize
+    };
+
+    // for perf reasons, we probably want to limit the number of steps we take. note
+    // that this means that for very large deltas, we will not end up moving the
+    // full distance!
+    // TODO: do we actually want to limit steps, or do we want to increase the size
+    // of each step instead? or do we just want to skip steps after a certain point?
+    let num_steps = usize::max(1, usize::min(desired_num_steps, MAX_COLLISION_STEPS));
+    let step = (end_pos - original_pos) / (num_steps as f32);
+
+    if desired_num_steps > MAX_COLLISION_STEPS {
+        log::debug!(
+            "desired number of collision detection steps ({desired_num_steps}) was limited"
+        );
+    }
+
+    collider.on_ground = false;
+
+    for _ in 0..num_steps {
+        let prev_aabb = collider.aabb.transformed(transform);
+        transform.translation.vector += step;
+        let cur_aabb = collider.aabb.transformed(transform);
+
+        let mut ctx = CollisionContext::new(access, cur_aabb, prev_aabb);
+        let resolution = detect_terrain_collisions(&mut ctx)?;
+
+        if resolution.magnitude_squared() > 0.0 {
+            if resolution.x != 0.0 {
+                rigidbody.velocity.x = 0.0;
+                rigidbody.acceleration.x = 0.0;
+            }
+            if resolution.y != 0.0 {
+                rigidbody.velocity.y = 0.0;
+                rigidbody.acceleration.y = 0.0;
+            }
+            if resolution.z != 0.0 {
+                rigidbody.velocity.z = 0.0;
+                rigidbody.acceleration.z = 0.0;
+            }
+
+            collider.on_ground = resolution.y > 0.0;
+            transform.translation.vector += resolution;
+
+            break;
+        }
+    }
+
     Some(())
 }
 
-fn resolve_terrain_collisions_main(
-    ctx: &mut CollisionContext,
+fn do_terrain_collision_wrapper(
+    access: &mut ChunkAccess,
     collider: &mut AabbCollider,
+    prev_collider: &PreviousCollider,
     rigidbody: &mut RigidBody,
     transform: &mut Transform,
 ) {
-    if resolve_terrain_collisions(ctx).is_none() {
-        let reverse = ctx.previous.center() - ctx.current.center();
-        transform.translation.vector += reverse;
+    let reverse = prev_collider.aabb_world.center() - collider.aabb.transformed(transform).center();
+    let prev_pos = transform.translation.vector + reverse;
+    if do_terrain_collision(access, collider, prev_collider, rigidbody, transform).is_none() {
+        // revert movement to previous state if we didn't resolve the collision;
+        // probably because of an unloaded chunk.
+        transform.translation.vector = prev_pos;
     }
-
-    // revert movement to previous state if we didn't resolve the collision;
-    // probably because of an unloaded chunk.
-    if ctx.resolution.x != 0.0 {
-        rigidbody.velocity.x = 0.0;
-        rigidbody.acceleration.x = 0.0;
-    }
-    if ctx.resolution.y != 0.0 {
-        rigidbody.velocity.y = 0.0;
-        rigidbody.acceleration.y = 0.0;
-    }
-    if ctx.resolution.z != 0.0 {
-        rigidbody.velocity.z = 0.0;
-        rigidbody.acceleration.z = 0.0;
-    }
-
-    collider.on_ground = ctx.resolution.y > 0.0;
-    collider.in_liquid = ctx.in_liquid;
-
-    transform.translation.vector += ctx.resolution;
 }
 
 pub struct PreviousCollider {
@@ -356,7 +416,7 @@ pub fn update_previous_colliders(query: Query<(&AabbCollider, &Transform, &mut P
 
 // should happen after most code that deals with transforms happens.
 pub fn terrain_collision(
-    voxel_world: Res<Arc<VoxelWorld>>,
+    mut access: ResMut<ChunkAccess>,
     query: Query<(
         &mut AabbCollider,
         &PreviousCollider,
@@ -364,20 +424,12 @@ pub fn terrain_collision(
         &mut Transform,
     )>,
 ) {
-    let mut cache = ChunkAccess::new(&voxel_world);
     query.for_each_mut(
         |(mut collider, previous_collider, mut rigidbody, mut transform)| {
-            let prev_aabb = collider.aabb.transformed(&transform);
-            let mut ctx = CollisionContext::new(
-                &mut cache,
-                &voxel_world.registry,
-                prev_aabb,
-                previous_collider.aabb_world,
-            );
-
-            resolve_terrain_collisions_main(
-                &mut ctx,
+            do_terrain_collision_wrapper(
+                &mut access,
                 &mut collider,
+                &previous_collider,
                 &mut rigidbody,
                 &mut transform,
             );
