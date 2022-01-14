@@ -57,6 +57,8 @@ pub struct InputState {
     cursor_should_be_grabbed: AtomicBool,
     cursor_currently_hidden: bool,
     cursor_should_be_hidden: AtomicBool,
+
+    focused: bool,
 }
 
 impl Default for InputState {
@@ -80,6 +82,8 @@ impl Default for InputState {
             cursor_should_be_grabbed: false.into(),
             cursor_currently_hidden: false,
             cursor_should_be_hidden: false.into(),
+
+            focused: true,
         }
     }
 }
@@ -214,29 +218,7 @@ pub mod keys {
     pub const ARROW_RIGHT: VirtualKeyCode = VirtualKeyCode::Right;
 }
 
-fn maintain_input_state(state: &mut InputState, window: &Window) {
-    let should_grab = state.cursor_should_be_grabbed.load(Ordering::SeqCst);
-    let should_hide = state.cursor_should_be_hidden.load(Ordering::SeqCst);
-
-    if state.cursor_currently_grabbed != should_grab {
-        state.cursor_currently_grabbed = should_grab;
-        window.set_cursor_grab(should_grab).unwrap();
-    }
-
-    if state.cursor_currently_hidden != should_hide {
-        state.cursor_currently_hidden = should_hide;
-        window.set_cursor_visible(!should_hide);
-    }
-
-    state.rising_keys.clear();
-    state.falling_keys.clear();
-
-    state.rising_buttons.clear();
-    state.falling_buttons.clear();
-
-    state.cursor_dx = 0.0;
-    state.cursor_dy = 0.0;
-}
+fn maintain_input_state(state: &mut InputState, window: &Window) {}
 
 fn notify_keyboard_input(state: &mut InputState, input: KeyboardInput) {
     // update tracked modifier state
@@ -284,14 +266,38 @@ fn notify_mouse_click(state: &mut InputState, button: ButtonId, elem_state: Elem
     }
 }
 
+fn notify_focus(state: &mut InputState, focus: bool) {
+    state.focused = focus;
+    if !focus {
+        state.grab_cursor(false);
+        state.hide_cursor(false);
+    }
+}
+
 pub fn input_compiler(
     mut ctx: ResMut<InputState>,
     mut device_events: EventReader<RawInputEvent>,
     display: NonSendMut<Rc<Display>>,
 ) {
-    maintain_input_state(&mut ctx, display.gl_window().window());
+    ctx.rising_keys.clear();
+    ctx.falling_keys.clear();
+
+    ctx.rising_buttons.clear();
+    ctx.falling_buttons.clear();
+
+    ctx.cursor_dx = 0.0;
+    ctx.cursor_dy = 0.0;
 
     for event in device_events.iter() {
+        // do this before we discard events so we can refocus the window
+        if let &RawInputEvent::Window(_, WindowEvent::Focused(focused)) = event {
+            notify_focus(&mut ctx, focused)
+        }
+
+        if !ctx.focused {
+            continue;
+        }
+
         match event {
             &RawInputEvent::Device(_, DeviceEvent::MouseMotion { delta }) => {
                 notify_mouse_motion(&mut ctx, delta.0, delta.1)
@@ -306,10 +312,22 @@ pub fn input_compiler(
                 notify_mouse_click(&mut ctx, button, state)
             }
 
-            // &RawInputEvent::Device(_, DeviceEvent::Motion { axis, value }) => todo!(),
-            // &RawInputEvent::Device(_, DeviceEvent::Text { codepoint }) => todo!(),
             _ => {}
         }
+    }
+
+    let window = display.gl_window();
+    let should_grab = ctx.cursor_should_be_grabbed.load(Ordering::SeqCst);
+    let should_hide = ctx.cursor_should_be_hidden.load(Ordering::SeqCst);
+
+    if ctx.cursor_currently_grabbed != should_grab {
+        ctx.cursor_currently_grabbed = should_grab;
+        window.window().set_cursor_grab(should_grab).unwrap();
+    }
+
+    if ctx.cursor_currently_hidden != should_hide {
+        ctx.cursor_currently_hidden = should_hide;
+        window.window().set_cursor_visible(!should_hide);
     }
 }
 
