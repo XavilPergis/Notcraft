@@ -527,10 +527,11 @@ fn apply_chunk_updates(
     mut chunk_events: EventWriter<WorldEvent>,
 ) {
     let mut rebuild_set = HashSet::new();
+    let mut block_updates = HashMap::default();
 
     // TODO: think about what section updates might do to the chunk's data, like
     // updating heightmaps and such
-    chunk::flush_chunk_access(&mut access, &mut rebuild_set);
+    chunk::write_all_chunk_updates(&mut access, &mut rebuild_set, &mut block_updates);
 
     for &pos in rebuild_set.iter() {
         if let Some(chunk) = world.section(pos) {
