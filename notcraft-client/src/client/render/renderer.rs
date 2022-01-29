@@ -282,6 +282,38 @@ pub enum RenderTargetTextureUniform<'a> {
     DepthMulti(Sampler<'a, DepthTexture2dMultisample>),
 }
 
+impl<'a> RenderTargetTextureUniform<'a> {
+    pub fn magnify_filter(self, filter: MagnifySamplerFilter) -> Self {
+        match self {
+            Self::Float(sampler) => Self::Float(sampler.magnify_filter(filter)),
+            Self::Integral(sampler) => Self::Integral(sampler.magnify_filter(filter)),
+            Self::Unsigned(sampler) => Self::Unsigned(sampler.magnify_filter(filter)),
+            Self::Srgb(sampler) => Self::Srgb(sampler.magnify_filter(filter)),
+            Self::Depth(sampler) => Self::Depth(sampler.magnify_filter(filter)),
+            Self::FloatMulti(sampler) => Self::FloatMulti(sampler.magnify_filter(filter)),
+            Self::IntegralMulti(sampler) => Self::IntegralMulti(sampler.magnify_filter(filter)),
+            Self::UnsignedMulti(sampler) => Self::UnsignedMulti(sampler.magnify_filter(filter)),
+            Self::SrgbMulti(sampler) => Self::SrgbMulti(sampler.magnify_filter(filter)),
+            Self::DepthMulti(sampler) => Self::DepthMulti(sampler.magnify_filter(filter)),
+        }
+    }
+
+    pub fn anisotropy(self, anisotropy: u16) -> Self {
+        match self {
+            Self::Float(sampler) => Self::Float(sampler.anisotropy(anisotropy)),
+            Self::Integral(sampler) => Self::Integral(sampler.anisotropy(anisotropy)),
+            Self::Unsigned(sampler) => Self::Unsigned(sampler.anisotropy(anisotropy)),
+            Self::Srgb(sampler) => Self::Srgb(sampler.anisotropy(anisotropy)),
+            Self::Depth(sampler) => Self::Depth(sampler.anisotropy(anisotropy)),
+            Self::FloatMulti(sampler) => Self::FloatMulti(sampler.anisotropy(anisotropy)),
+            Self::IntegralMulti(sampler) => Self::IntegralMulti(sampler.anisotropy(anisotropy)),
+            Self::UnsignedMulti(sampler) => Self::UnsignedMulti(sampler.anisotropy(anisotropy)),
+            Self::SrgbMulti(sampler) => Self::SrgbMulti(sampler.anisotropy(anisotropy)),
+            Self::DepthMulti(sampler) => Self::DepthMulti(sampler.anisotropy(anisotropy)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum ColorTextureFormat {
     UncompressedFloat(UncompressedFloatFormat),
@@ -656,9 +688,8 @@ fn declare_targets(mut targets: NonSendMut<RenderTargets>) -> Result<()> {
             clear_color: None, // completely filled in with sky pass
             clear_depth: Some(1.0),
         },
-        samples: Some(4),
+        samples: None,
     })?;
-    targets.declare_resolve_target("world.resolved", "world")?;
 
     targets.declare_target("final", RenderTargetDesc {
         size: RenderTargetSize::WindowExact,
@@ -1058,31 +1089,25 @@ fn render_post(
 ) -> anyhow::Result<()> {
     let program = ctx.shaders.get("post")?;
 
-    let world_buffer = ctx.targets.get("world")?.framebuffer(ctx.display())?;
-    let resolve_buffer = ctx
-        .targets
-        .get("world.resolved")?
-        .framebuffer(ctx.display())?;
-    world_buffer.fill(&resolve_buffer, MagnifySamplerFilter::Linear);
+    let world_buffer = ctx.targets.get("world")?;
+    let color = world_buffer
+        .color()
+        .unwrap()
+        .uniform()?
+        .magnify_filter(MagnifySamplerFilter::Nearest)
+        .anisotropy(4);
+    let depth = world_buffer
+        .depth()
+        .unwrap()
+        .uniform()?
+        .magnify_filter(MagnifySamplerFilter::Nearest)
+        .anisotropy(4);
 
     let mut final_buffer = ctx.targets.get("final")?.framebuffer(ctx.display())?;
+    final_buffer.clear_color(0.0, 0.0, 0.0, 0.0);
 
     let proj = camera.projection(ctx.display.get_framebuffer_dimensions());
 
-    let color = ctx
-        .targets
-        .get("world.resolved")?
-        .color()
-        .unwrap()
-        .uniform()?;
-    let depth = ctx
-        .targets
-        .get("world.resolved")?
-        .depth()
-        .unwrap()
-        .uniform()?;
-
-    final_buffer.clear_color(0.0, 0.0, 0.0, 0.0);
     final_buffer.draw(
         &misc.fullscreen_quad,
         glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
@@ -1148,8 +1173,19 @@ fn render_terrain(
     mesh_query: Query<(&Transform, &RenderMeshComponent<TerrainMesh>)>,
     mut terrain_meshes: NonSendMut<LocalMeshContext<TerrainMesh>>,
     misc: NonSend<RendererMisc>,
+    time: Res<Time>,
+    mut time_counters: Local<(u32, f32)>,
 ) -> anyhow::Result<()> {
     terrain_meshes.update(ctx.display())?;
+
+    let (elapsed_seconds, subseconds) = &mut *time_counters;
+    {
+        *subseconds += time.delta_seconds();
+        while *subseconds >= 1.0 {
+            *elapsed_seconds += 1;
+            *subseconds -= 1.0;
+        }
+    }
 
     let mut target = ctx.targets.get("world")?.framebuffer(ctx.display())?;
     let program = ctx.shaders.get("terrain")?;
@@ -1182,6 +1218,8 @@ fn render_terrain(
                 albedo_maps: misc.block_textures.sampled()
                     .wrap_function(glium::uniforms::SamplerWrapFunction::Repeat)
                     .magnify_filter(MagnifySamplerFilter::Nearest),
+                elapsed_seconds: *elapsed_seconds,
+                subseconds: *subseconds,
             },
             &glium::DrawParameters {
                 depth: glium::Depth {
