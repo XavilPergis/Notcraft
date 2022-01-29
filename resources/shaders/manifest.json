@@ -1,9 +1,9 @@
 {
     "paths": {
-        "debug": "debug.glsl",
+        "terrain": "terrain/main.glsl",
         "post": "post.glsl",
-        "terrain": "simple.glsl",
         "sky": "sky.glsl",
+        "debug": "debug.glsl",
         "crosshair": "crosshair.glsl"
     }
 }

@@ -18,15 +18,15 @@ out vec4 b_color;
 
 #define RGB(r, g, b) (vec3(r.0 / 255.0, g.0 / 255.0, b.0 / 255.0))
 
-#define SKY_COLOR_BASE RGB(55, 147, 252)
+#define SKY_COLOR_BASE RGB(55, 127, 252)
 #define SKY_COLOR_BRIGHT RGB(148, 197, 252)
 
 void main() {
     vec3 into_screen =  -vec3(-v_uv, 1.0);
     vec4 ray_dir_world = inverse(view_matrix) * normalize(vec4(into_screen, 0.0));
 
-    float down_closeness = pow(dot(ray_dir_world.xyz, -UP), 0.6);
-    vec3 color = mix(SKY_COLOR_BASE, SKY_COLOR_BRIGHT, max(0.0, down_closeness));
+    float down_closeness = pow(dot(ray_dir_world.xyz, UP), 0.5);
+    vec3 color = mix(SKY_COLOR_BRIGHT, SKY_COLOR_BASE, max(0.0, down_closeness));
 
     b_color = vec4(color, 1.0);
     // b_color = vec4(0.0, 0.0, 0.0, 1.0);
