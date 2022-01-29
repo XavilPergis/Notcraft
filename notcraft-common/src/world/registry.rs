@@ -1,6 +1,12 @@
+use crate::{
+    codec::{
+        encode::{Encode, Encoder},
+        NodeKind,
+    },
+    prelude::*,
+    Faces,
+};
 use serde::Deserialize;
-
-use crate::{prelude::*, Faces};
 use std::{
     collections::HashMap,
     fs::File,
@@ -61,6 +67,8 @@ pub struct BlockProperties {
     #[serde(default)]
     liquid: bool,
     #[serde(default)]
+    wind_sway: bool,
+    #[serde(default)]
     block_light: u16,
     #[serde(default)]
     light_transmissible: bool,
@@ -107,6 +115,14 @@ pub struct BlockRegistryEntry {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct BlockId(pub(crate) usize);
+
+impl<W: std::io::Write> Encode<W> for BlockId {
+    const KIND: NodeKind = NodeKind::UnsignedVarInt;
+
+    fn encode(&self, encoder: Encoder<W>) -> Result<()> {
+        encoder.encode(&self.0)
+    }
+}
 
 fn add_texture_to_pool(reg: &mut BlockRegistry, pool: TexturePoolId, path: &Path) -> TextureId {
     let pool = &mut reg.texture_pools[pool.0];
@@ -221,6 +237,11 @@ impl BlockRegistry {
     #[inline(always)]
     pub fn liquid(&self, id: BlockId) -> bool {
         self.entries[id.0].properties.liquid
+    }
+
+    #[inline(always)]
+    pub fn wind_sway(&self, id: BlockId) -> bool {
+        self.entries[id.0].properties.wind_sway
     }
 
     #[inline(always)]
