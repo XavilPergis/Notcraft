@@ -3,7 +3,14 @@ use super::{
     registry::{BlockId, BlockRegistry, AIR},
     ChunkPos, ChunkSectionPos,
 };
-use crate::world::chunk::{CHUNK_LENGTH, CHUNK_VOLUME};
+use crate::{
+    codec::{
+        encode::{Encode, Encoder},
+        NodeKind,
+    },
+    prelude::*,
+    world::chunk::{CHUNK_LENGTH, CHUNK_LENGTH_2, CHUNK_LENGTH_3},
+};
 use noise::{Fbm, NoiseFn, Perlin};
 use rand::{rngs::SmallRng, FromEntropy, Rng};
 use std::{
@@ -59,7 +66,7 @@ fn generate_surface_heights(cache: &SurfaceHeighmapCache, pos: ChunkPos) -> Surf
     let mut min = i32::MAX;
     let mut max = i32::MIN;
 
-    let mut heights = Vec::with_capacity(CHUNK_LENGTH * CHUNK_LENGTH);
+    let mut heights = Vec::with_capacity(CHUNK_LENGTH_2);
     for dx in 0..CHUNK_LENGTH {
         for dz in 0..CHUNK_LENGTH {
             let (x, z) = (
@@ -221,8 +228,8 @@ impl ChunkGenerator {
             return ChunkData::Homogeneous(self.stone_id);
         }
 
-        let mut chunk_data = Vec::with_capacity(CHUNK_VOLUME);
-        for xz in 0..CHUNK_LENGTH * CHUNK_LENGTH {
+        let mut chunk_data = Vec::with_capacity(CHUNK_LENGTH_3);
+        for xz in 0..CHUNK_LENGTH_2 {
             let surface_height = heights.data[xz];
             chunk_data.extend(
                 (0..CHUNK_LENGTH)
@@ -232,5 +239,13 @@ impl ChunkGenerator {
 
         assert!(!chunk_data.is_empty());
         ChunkData::Array(chunk_data.into_boxed_slice().try_into().unwrap())
+    }
+}
+
+impl<W: std::io::Write> Encode<W> for SurfaceHeightmap {
+    const KIND: NodeKind = NodeKind::List;
+
+    fn encode(&self, encoder: Encoder<W>) -> Result<()> {
+        encoder.encode_rle_list(self.data.iter().copied())
     }
 }

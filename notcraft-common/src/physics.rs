@@ -8,7 +8,7 @@ use super::{
     world::{
         chunk::ChunkAccess,
         registry::{BlockRegistry, CollisionType},
-        BlockPos, VoxelWorld,
+        BlockPos,
     },
 };
 

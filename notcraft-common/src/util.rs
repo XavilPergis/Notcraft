@@ -82,16 +82,6 @@ pub fn modulo(a: f32, b: f32) -> f32 {
     (a % b + b) % b
 }
 
-pub fn read_file<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<String> {
-    use std::{fs::File, io::Read};
-
-    let mut file = File::open(path)?;
-    let mut buffer = String::new();
-    file.read_to_string(&mut buffer)?;
-
-    Ok(buffer)
-}
-
 pub struct Defer<F: FnOnce()>(pub Option<F>);
 impl<F: FnOnce()> Drop for Defer<F> {
     fn drop(&mut self) {

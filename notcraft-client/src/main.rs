@@ -459,7 +459,7 @@ fn terrain_manipulation(
     });
 }
 
-fn player_look_controller(
+fn player_look_first_person(
     input: Res<InputState>,
     player_controller: ResMut<PlayerController>,
     mut query: Query<&mut Transform>,
@@ -700,7 +700,7 @@ fn main() {
         .add_startup_system(setup_player.system())
         // .add_system(intermittent_music.system())
         .add_system(
-            player_look_controller
+            player_look_first_person
                 .system()
                 .label(PlayerControllerUpdate),
         )

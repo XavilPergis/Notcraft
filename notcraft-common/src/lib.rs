@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::ops::Neg;
 
 pub mod aabb;
+pub mod codec;
 pub mod physics;
 pub mod transform;
 pub mod util;

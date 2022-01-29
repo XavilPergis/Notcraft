@@ -1,19 +1,23 @@
+use bevy_ecs::system::SystemParam;
 use nalgebra::{Point3, Scalar, Vector3};
 use parking_lot::{Mutex, RwLock};
-use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     borrow::Borrow,
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     hash::Hash,
     ops::{Index, IndexMut},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
 pub use self::chunk::ArrayChunk;
 use self::{
     chunk::{Chunk, ChunkAccess, ChunkSection, ChunkSectionPos, CompactedChunkSection},
+    persistence::{update_persistence, WorldPersistence},
     registry::{load_registry, BlockRegistry, CollisionType},
 };
 use crate::{
@@ -25,6 +29,7 @@ pub mod chunk;
 pub mod generation;
 pub mod lighting;
 pub mod orphan;
+pub mod persistence;
 pub mod registry;
 
 pub mod debug {
@@ -244,7 +249,7 @@ pub struct VoxelWorld {
 }
 
 struct WorldGenerator {
-    pool: ThreadPool,
+    // pool: ThreadPool,
     generator: Arc<generation::ChunkGenerator>,
     surface_cache: Arc<generation::SurfaceHeighmapCache>,
     finished_chunks: ChannelPair<Chunk>,
@@ -254,11 +259,11 @@ struct WorldGenerator {
 impl WorldGenerator {
     pub fn new(registry: &BlockRegistry) -> Self {
         // TODO: make configurable
-        let pool = ThreadPoolBuilder::new().build().unwrap();
+        // let pool = ThreadPoolBuilder::new().build().unwrap();
         let generator = Arc::new(generation::ChunkGenerator::new_default(&registry));
 
         Self {
-            pool,
+            // pool,
             generator,
             surface_cache: Default::default(),
             finished_chunks: Default::default(),
@@ -334,14 +339,35 @@ impl Plugin for WorldPlugin {
         app.insert_resource(registry);
 
         app.insert_resource(LoadQueue::default());
+        app.insert_resource(WorldPersistence::new());
 
         app.add_event::<WorldEvent>();
+        app.add_event::<Handleable<ChunkLoadEvent>>();
+        app.add_event::<Handleable<ChunkSectionLoadEvent>>();
+        app.add_event::<Handleable<ChunkUnloadEvent>>();
+        app.add_event::<Handleable<ChunkSectionUnloadEvent>>();
 
+        app.add_system(load_chunks.system());
+        app.add_system(emit_load_events.system().label(WorldLabel("load_events")));
+        app.add_system(
+            update_persistence
+                .system()
+                .label(WorldLabel("persistence"))
+                .after(WorldLabel("load_events")),
+        );
+        app.add_system(
+            generate_world
+                .system()
+                .label(WorldLabel("generate"))
+                .after(WorldLabel("persistence"))
+                .after(WorldLabel("load_events")),
+        );
         app.add_system_to_stage(CoreStage::PostUpdate, apply_chunk_updates.system());
-        app.add_system_to_stage(CoreStage::PostUpdate, generate_world.system());
-        app.add_system_to_stage(CoreStage::PostUpdate, load_chunks.system());
     }
 }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, SystemLabel)]
+pub struct WorldLabel(&'static str);
 
 #[derive(Default)]
 pub struct LoadQueue {
@@ -486,16 +512,8 @@ fn process_load_events(world: &VoxelWorld, queues: &mut MutableLoadQueue) {
 }
 
 fn run_chunk_generation_task(generator: Arc<WorldGenerator>, pos: ChunkPos) {
-    // if let Some(compacted) = self.compacted_chunks.pin().get(&pos) {
-    //     let chunk_data = compacted.decompact();
-    //     let chunk = Arc::new(Chunk::new(pos, chunk_data, &self.registry));
-
-    //     self.insert_chunk(chunk, &is_cancelled);
-    //     return;
-    // }
-
     let heights = generator.surface_cache.surface_heights(pos.into());
-    let chunk = Chunk::new(pos, heights);
+    let chunk = Chunk::initialize(pos, heights);
 
     let _ = generator.finished_chunks.tx.send(chunk);
 }
@@ -506,17 +524,9 @@ fn run_chunk_section_generation_task(
     generator: Arc<WorldGenerator>,
     registry: Arc<BlockRegistry>,
 ) {
-    // if let Some(compacted) = self.compacted_chunks.pin().get(&pos) {
-    //     let chunk_data = compacted.decompact();
-    //     let chunk = Arc::new(Chunk::new(pos, chunk_data, &self.registry));
-
-    //     self.insert_chunk(chunk, &is_cancelled);
-    //     return;
-    // }
-
     let pos = chunk.pos().section(pos);
     let chunk_data = generator.generator.make_chunk(pos, &chunk.heights());
-    let chunk = ChunkSection::new(pos, chunk_data, &registry);
+    let chunk = ChunkSection::initialize(pos, chunk_data, &registry);
 
     let _ = generator.finished_sections.tx.send(chunk);
 }
@@ -541,12 +551,93 @@ fn apply_chunk_updates(
     }
 }
 
+#[derive(Debug)]
+pub struct Handleable<T> {
+    value: T,
+    handled: AtomicBool,
+}
+
+// could remove the Clone bound with some unsafe, but like, ehh
+impl<T: Clone> Handleable<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            value,
+            handled: AtomicBool::new(false),
+        }
+    }
+
+    pub fn handle(&self) -> Option<T> {
+        match self.handled.swap(true, Ordering::Relaxed) {
+            false => Some(self.value.clone()),
+            true => None,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ChunkLoadEvent(pub ChunkPos);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ChunkSectionLoadEvent(pub ChunkSectionPos);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ChunkUnloadEvent(pub ChunkPos);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ChunkSectionUnloadEvent(pub ChunkSectionPos);
+
+#[derive(SystemParam)]
+pub struct LoadEvents<'a> {
+    pub chunk_load: EventReader<'a, Handleable<ChunkLoadEvent>>,
+    pub chunk_unload: EventReader<'a, Handleable<ChunkUnloadEvent>>,
+    pub section_load: EventReader<'a, Handleable<ChunkSectionLoadEvent>>,
+    pub section_unload: EventReader<'a, Handleable<ChunkSectionUnloadEvent>>,
+}
+
+fn emit_load_events(
+    world: Res<Arc<VoxelWorld>>,
+    load_queue: Res<LoadQueue>,
+    mut chunk_load_events: EventWriter<Handleable<ChunkLoadEvent>>,
+    mut chunk_unload_events: EventWriter<Handleable<ChunkUnloadEvent>>,
+    mut section_load_events: EventWriter<Handleable<ChunkSectionLoadEvent>>,
+    mut section_unload_events: EventWriter<Handleable<ChunkSectionUnloadEvent>>,
+) {
+    let _guard = match world.updating_mutex.try_lock() {
+        Some(it) => it,
+        None => return,
+    };
+
+    let mut queues = load_queue.inner.write();
+    process_load_events(&world, &mut queues);
+
+    // TODO: it might be nice if the load and unload rates were configurable
+
+    for pos in queues.load.pop_iter().take(1) {
+        assert!(world.chunk(pos).is_none());
+        chunk_load_events.send(Handleable::new(ChunkLoadEvent(pos)));
+    }
+
+    for pos in queues.load_sections.pop_iter().take(8) {
+        assert!(world.section(pos).is_none());
+        section_load_events.send(Handleable::new(ChunkSectionLoadEvent(pos)));
+    }
+
+    for pos in queues.unload.pop_iter().take(1) {
+        chunk_unload_events.send(Handleable::new(ChunkUnloadEvent(pos)));
+    }
+
+    for pos in queues.unload_sections.pop_iter().take(8) {
+        section_unload_events.send(Handleable::new(ChunkSectionUnloadEvent(pos)));
+    }
+}
+
 fn generate_world(
     world: Res<Arc<VoxelWorld>>,
     registry: Res<Arc<BlockRegistry>>,
     load_queue: Res<LoadQueue>,
     generator: Res<Arc<WorldGenerator>>,
     mut chunk_events: EventWriter<WorldEvent>,
+    mut load_events: LoadEvents,
 ) {
     generator.surface_cache.evict_after(Duration::from_secs(10));
 
@@ -559,25 +650,36 @@ fn generate_world(
     let mut queues = load_queue.inner.write();
     process_load_events(&world, &mut queues);
 
-    for pos in queues.load.pop_iter().take(1) {
-        // TODO: assert that we arent loading already-loaded chunks
+    for event in load_events.chunk_load.iter() {
+        if let Some(ChunkLoadEvent(pos)) = event.handle() {
+            // TODO: assert that we arent loading already-loaded chunks
 
-        let generator_ref = Arc::clone(&generator);
-        generator.pool.spawn(move || {
-            run_chunk_generation_task(generator_ref, pos);
-        });
+            let generator_ref = Arc::clone(&generator);
+            rayon::spawn(move || {
+                run_chunk_generation_task(generator_ref, pos);
+            });
+        }
     }
 
-    for pos in queues.load_sections.pop_iter().take(8) {
-        // TODO: assert that we arent loading already-loaded chunks
+    for event in load_events.section_load.iter() {
+        if let Some(ChunkSectionLoadEvent(pos)) = event.handle() {
+            // TODO: assert that we arent loading already-loaded chunks
+            if !world.is_loaded(pos.column()) {
+                log::error!(
+                    "tried loading section {pos:?} for unloaded chunk {column:?}, skipping",
+                    column = pos.column()
+                );
+                continue;
+            }
 
-        let chunk = world.chunk(pos.column()).unwrap();
-        let generator_ref = Arc::clone(&generator);
-        let registry_ref = Arc::clone(&registry);
+            let chunk = world.chunk(pos.column()).unwrap();
+            let generator_ref = Arc::clone(&generator);
+            let registry_ref = Arc::clone(&registry);
 
-        generator.pool.spawn(move || {
-            run_chunk_section_generation_task(chunk, pos.y, generator_ref, registry_ref);
-        });
+            rayon::spawn(move || {
+                run_chunk_section_generation_task(chunk, pos.y, generator_ref, registry_ref);
+            });
+        }
     }
 
     for finished in generator.finished_chunks.rx.try_iter() {
@@ -597,34 +699,38 @@ fn generate_world(
 
             // FIXME: drop generated chunks that have since been unloaded
             assert!(!chunk.is_loaded(section.pos().y));
-            chunk.insert(section.pos().y, Arc::clone(&section));
+            chunk
+                .sections_mut()
+                .insert(section.pos().y, Arc::clone(&section));
 
             send_debug_event(debug::WorldLoadEvent::LoadedSection(section.pos()));
             chunk_events.send(WorldEvent::LoadedSection(section));
         }
     }
 
-    for pos in queues.unload_sections.pop_iter() {
-        if let Some(chunk) = world.chunk(pos.column()) {
-            let section = chunk.remove(pos.y).unwrap();
+    for event in load_events.section_unload.iter() {
+        if let Some(ChunkSectionUnloadEvent(pos)) = event.handle() {
+            if let Some(chunk) = world.chunk(pos.column()) {
+                let section = chunk.sections_mut().remove(&pos.y).unwrap();
 
-            send_debug_event(debug::WorldLoadEvent::UnloadedSection(pos));
-            chunk_events.send(WorldEvent::UnloadedSection(section));
+                send_debug_event(debug::WorldLoadEvent::UnloadedSection(pos));
+                chunk_events.send(WorldEvent::UnloadedSection(section));
+            }
         }
     }
 
-    for pos in queues.unload.pop_iter() {
-        let chunk = Arc::clone(world.chunks.pin().remove(&pos).unwrap());
+    for event in load_events.chunk_unload.iter() {
+        if let Some(ChunkUnloadEvent(pos)) = event.handle() {
+            let chunk = Arc::clone(world.chunks.pin().remove(&pos).unwrap());
 
-        for section in chunk.sections().pin().values() {
-            let section = chunk.remove(section.pos().y).unwrap();
+            for section in chunk.sections().values() {
+                send_debug_event(debug::WorldLoadEvent::UnloadedSection(section.pos()));
+                chunk_events.send(WorldEvent::UnloadedSection(Arc::clone(section)));
+            }
 
-            send_debug_event(debug::WorldLoadEvent::UnloadedSection(section.pos()));
-            chunk_events.send(WorldEvent::UnloadedSection(section));
+            send_debug_event(debug::WorldLoadEvent::Unloaded(pos));
+            chunk_events.send(WorldEvent::Unloaded(chunk));
         }
-
-        send_debug_event(debug::WorldLoadEvent::Unloaded(pos));
-        chunk_events.send(WorldEvent::Unloaded(chunk));
     }
 }
 

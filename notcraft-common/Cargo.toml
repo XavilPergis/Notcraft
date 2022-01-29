@@ -32,6 +32,8 @@ bevy_app = "0.5"
 arc-swap = "1.5"
 notify = { version = "5.0.0-pre.13", optional = true }
 
+bumpalo = "3.9.1"
+
 # NOTE: the `send_guard` feature is important because we use raw rwlocks in chunk management code,
 # where it is very possible that locked chunks get send across thread boundaries, such that a raw
 # unlock happens on a different thread than the raw lock.

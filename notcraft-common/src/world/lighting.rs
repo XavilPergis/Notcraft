@@ -1,18 +1,33 @@
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     ops::Bound,
 };
 
 use super::{
-    chunk::{MutableChunkAccess, CHUNK_LENGTH},
+    chunk::{MutableChunkAccess, CHUNK_LENGTH, CHUNK_LENGTH_2},
     generation::SurfaceHeightmap,
     BlockPos,
+};
+use crate::{
+    codec::{
+        encode::{Encode, Encoder},
+        NodeKind,
+    },
+    prelude::*,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 #[repr(transparent)]
 pub struct LightValue(pub u16);
+
+impl<W: std::io::Write> Encode<W> for LightValue {
+    const KIND: NodeKind = NodeKind::UnsignedVarInt;
+
+    fn encode(&self, encoder: Encoder<W>) -> Result<()> {
+        encoder.encode(&self.0)
+    }
+}
 
 pub const SKY_LIGHT_BITS: u16 = 4;
 pub const BLOCK_LIGHT_BITS: u16 = 4;
@@ -328,27 +343,65 @@ impl SkyLightNode {
 
 #[derive(Clone, Debug)]
 pub struct SkyLightColumns {
-    node_lists: Box<[SkyLightNode]>,
+    nodes: Box<[SkyLightNode]>,
 }
 
 impl SkyLightColumns {
     pub fn initialize(heightmap: &SurfaceHeightmap) -> Self {
-        let mut nodes = Vec::with_capacity(CHUNK_LENGTH * CHUNK_LENGTH);
+        let mut nodes = Vec::with_capacity(CHUNK_LENGTH_2);
 
         for i in 0..nodes.capacity() {
             nodes.push(SkyLightNode::init(heightmap.data()[i], false));
         }
 
         Self {
-            node_lists: nodes.into_boxed_slice(),
+            nodes: nodes.into_boxed_slice(),
         }
     }
 
     pub fn node(&self, x: usize, z: usize) -> &SkyLightNode {
-        &self.node_lists[CHUNK_LENGTH * x + z]
+        &self.nodes[CHUNK_LENGTH * x + z]
     }
 
     pub fn node_mut(&mut self, x: usize, z: usize) -> &mut SkyLightNode {
-        &mut self.node_lists[CHUNK_LENGTH * x + z]
+        &mut self.nodes[CHUNK_LENGTH * x + z]
     }
 }
+
+impl<W: std::io::Write> Encode<W> for SkyLightColumns {
+    const KIND: NodeKind = NodeKind::List;
+
+    fn encode(&self, mut encoder: Encoder<W>) -> Result<()> {
+        // encoder.encode_rle_list(self.nodes)
+        todo!()
+    }
+}
+
+// TODO: compress! could likely both palletize and run-length encode here
+// impl Codec for SkyLightColumns {
+//     fn encode<W: std::io::Write>(&self, writer: &mut W) -> Result<()> {
+//         for node in self.nodes.iter() {
+//             node.intervals.len().encode(writer)?;
+//             for height in node.intervals.keys() {
+//                 height.encode(writer)?;
+//             }
+//         }
+//         Ok(())
+//     }
+
+//     fn decode<R: std::io::Read>(reader: &mut R) -> Result<Self> {
+//         let mut nodes = Vec::with_capacity(CHUNK_LENGTH_2);
+//         for _ in 0..nodes.capacity() {
+//             let intervals_size = usize::decode(reader)?;
+//             let mut intervals = BTreeMap::new();
+//             for i in 0..intervals_size {
+//                 intervals.insert(i32::decode(reader)?, i % 2 == 1);
+//             }
+//             nodes.push(SkyLightNode { intervals });
+//         }
+
+//         Ok(SkyLightColumns {
+//             nodes: nodes.into_boxed_slice(),
+//         })
+//     }
+// }

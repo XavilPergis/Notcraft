@@ -22,7 +22,7 @@ use notcraft_common::{
     Side,
 };
 
-use super::{TerrainMesh, TerrainTransparencyMesh, TerrainVertex};
+use super::{TerrainMesh, TerrainVertex};
 
 pub struct ChunkNeighbors {
     chunks: Vec<ChunkSectionSnapshot>,
@@ -177,7 +177,7 @@ impl MeshCreationContext {
         let mesh_constructor = MeshBuilder {
             registry: Arc::clone(registry),
             terrain_mesh: Default::default(),
-            transparency_mesh: Default::default(),
+            // transparency_mesh: Default::default(),
             rng: SmallRng::from_entropy(),
         };
 
@@ -185,7 +185,7 @@ impl MeshCreationContext {
             registry: Arc::clone(registry),
             chunks: neighbors,
             pos,
-            slice: vec![VoxelFace::default(); notcraft_common::world::chunk::CHUNK_AREA],
+            slice: vec![VoxelFace::default(); notcraft_common::world::chunk::CHUNK_LENGTH_2],
             mesh_constructor,
             lighting_type: LightingType::Simple,
         }
@@ -506,13 +506,14 @@ const NORMAL_QUAD_CCW: &'static [u32] = &[0, 2, 3, 3, 1, 0];
 pub struct MeshBuilder {
     // liquid_mesh: LiquidMesh,
     terrain_mesh: TerrainMesh,
-    transparency_mesh: TerrainTransparencyMesh,
+    // transparency_mesh: TerrainTransparencyMesh,
     registry: Arc<BlockRegistry>,
     rng: SmallRng,
 }
 
 pub fn mesh_cross(ctx: &mut MeshBuilder, id: BlockId, pos: Point3<ChunkAxis>, light: LightValue) {
     let tex_id = choose_face_texture(ctx, id, Side::Right).0 as u16;
+    let wind_sway = ctx.registry.wind_sway(id);
 
     {
         #[rustfmt::skip]
@@ -527,10 +528,11 @@ pub fn mesh_cross(ctx: &mut MeshBuilder, id: BlockId, pos: Point3<ChunkAxis>, li
             .extend(CROSS_INDICES.iter().copied().map(|idx| idx_start + idx));
     }
 
-    let mut vert = |offset: Vector3<_>| {
+    let mut vert = |sway, offset: Vector3<_>| {
         let pos = (16 * pos) + offset;
         ctx.terrain_mesh.vertices.push(TerrainVertex::pack(
             pos.into(),
+            sway,
             Side::Right,
             light,
             tex_id,
@@ -543,15 +545,15 @@ pub fn mesh_cross(ctx: &mut MeshBuilder, id: BlockId, pos: Point3<ChunkAxis>, li
     let l = 1;
     let h = 15;
 
-    vert(vector![l, 0, l]);
-    vert(vector![l, h, l]);
-    vert(vector![h, h, h]);
-    vert(vector![h, 0, h]);
+    vert(false, vector![l, 0, l]);
+    vert(wind_sway, vector![l, h, l]);
+    vert(wind_sway, vector![h, h, h]);
+    vert(false, vector![h, 0, h]);
 
-    vert(vector![l, 0, h]);
-    vert(vector![l, h, h]);
-    vert(vector![h, h, l]);
-    vert(vector![h, 0, l]);
+    vert(false, vector![l, 0, h]);
+    vert(wind_sway, vector![l, h, h]);
+    vert(wind_sway, vector![h, h, l]);
+    vert(false, vector![h, 0, l]);
 }
 
 pub fn mesh_full_cube_side(
@@ -596,12 +598,18 @@ pub fn mesh_full_cube_side(
         .extend(indices.iter().copied().map(|idx| idx_start + idx));
 
     let tex_id = choose_face_texture(ctx, quad.id, side).0 as u16;
+    let wind_sway = ctx.registry.wind_sway(quad.id);
 
     let mut vert = |offset: Vector3<_>, ao, light| {
         let pos: Point3<u16> = (16 * pos) + (16 * offset);
-        ctx.terrain_mesh
-            .vertices
-            .push(TerrainVertex::pack(pos.into(), side, light, tex_id, ao));
+        ctx.terrain_mesh.vertices.push(TerrainVertex::pack(
+            pos.into(),
+            wind_sway,
+            side,
+            light,
+            tex_id,
+            ao,
+        ));
     };
 
     let h = if side.facing_positive() { 1 } else { 0 };

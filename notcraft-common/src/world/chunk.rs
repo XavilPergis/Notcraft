@@ -1,10 +1,16 @@
 use crate::{
+    codec::{
+        encode::{Encode, Encoder},
+        NodeKind,
+    },
     debug::send_debug_event,
+    prelude::*,
     world::{
         lighting::{propagate_block_light, propagate_sky_light, LightUpdateQueues},
         registry::BlockId,
     },
 };
+
 use nalgebra::Point3;
 use parking_lot::Mutex;
 use std::{
@@ -28,8 +34,8 @@ use super::{
 pub const CHUNK_LENGTH_BITS: usize = 5;
 
 pub const CHUNK_LENGTH: usize = 1 << CHUNK_LENGTH_BITS;
-pub const CHUNK_AREA: usize = CHUNK_LENGTH * CHUNK_LENGTH;
-pub const CHUNK_VOLUME: usize = CHUNK_LENGTH * CHUNK_LENGTH * CHUNK_LENGTH;
+pub const CHUNK_LENGTH_2: usize = CHUNK_LENGTH * CHUNK_LENGTH;
+pub const CHUNK_LENGTH_3: usize = CHUNK_LENGTH * CHUNK_LENGTH * CHUNK_LENGTH;
 
 #[derive(Clone)]
 pub struct ChunkSectionInner {
@@ -103,24 +109,32 @@ impl ChunkSectionSnapshotMut {
 pub struct Chunk {
     pos: ChunkPos,
 
-    updating: Mutex<()>,
-
     heights: Orphan<SurfaceHeightmap>,
     sky_light: Orphan<SkyLightColumns>,
     needs_persistence: AtomicBool,
 
-    sections: flurry::HashMap<i32, Arc<ChunkSection>>,
+    sections: Orphan<HashMap<i32, Arc<ChunkSection>>>,
     compacted_sections: flurry::HashMap<ChunkSectionPos, CompactedChunkSection>,
 }
 
 impl Chunk {
-    pub fn new(pos: ChunkPos, heights: SurfaceHeightmap) -> Self {
+    pub fn initialize(pos: ChunkPos, heights: SurfaceHeightmap) -> Self {
         Self {
             pos,
             sky_light: Orphan::new(SkyLightColumns::initialize(&heights)),
             heights: Orphan::new(heights),
             needs_persistence: AtomicBool::new(false),
-            updating: Default::default(),
+            sections: Default::default(),
+            compacted_sections: Default::default(),
+        }
+    }
+
+    pub fn new(pos: ChunkPos, heights: SurfaceHeightmap, sky_light: SkyLightColumns) -> Self {
+        Self {
+            pos,
+            sky_light: Orphan::new(sky_light),
+            heights: Orphan::new(heights),
+            needs_persistence: AtomicBool::new(false),
             sections: Default::default(),
             compacted_sections: Default::default(),
         }
@@ -139,27 +153,23 @@ impl Chunk {
     }
 
     pub fn section(&self, y: i32) -> Option<Arc<ChunkSection>> {
-        self.sections.pin().get(&y).map(Arc::clone)
+        self.sections.snapshot().get(&y).map(Arc::clone)
     }
 
-    pub fn sections(&self) -> &flurry::HashMap<i32, Arc<ChunkSection>> {
-        &self.sections
+    pub fn sections(&self) -> OrphanSnapshot<HashMap<i32, Arc<ChunkSection>>> {
+        self.sections.snapshot()
     }
 
-    pub fn insert(&self, y: i32, section: Arc<ChunkSection>) -> Option<Arc<ChunkSection>> {
-        self.sections.pin().insert(y, section).map(Arc::clone)
-    }
-
-    pub fn remove(&self, y: i32) -> Option<Arc<ChunkSection>> {
-        self.sections.pin().remove(&y).map(Arc::clone)
+    pub fn sections_mut(&self) -> OrphanWriter<HashMap<i32, Arc<ChunkSection>>> {
+        self.sections.orphan_readers()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.sections.pin().is_empty()
+        self.sections.snapshot().is_empty()
     }
 
     pub fn is_loaded(&self, y: i32) -> bool {
-        self.sections.pin().contains_key(&y)
+        self.sections.snapshot().contains_key(&y)
     }
 
     pub fn needs_persistence(&self) -> bool {
@@ -185,7 +195,7 @@ fn default_light(registry: &BlockRegistry, id: BlockId) -> LightValue {
 }
 
 impl ChunkSection {
-    pub fn new(
+    pub fn initialize(
         pos: ChunkSectionPos,
         block_data: ChunkData<BlockId>,
         registry: &BlockRegistry,
@@ -201,6 +211,25 @@ impl ChunkSection {
             }
         };
 
+        let inner = Orphan::new(ChunkSectionInner {
+            pos,
+            block_data,
+            light_data,
+        });
+
+        Self {
+            pos,
+            inner,
+            needs_persistence: AtomicBool::new(false),
+            updating: Default::default(),
+        }
+    }
+
+    pub fn new(
+        pos: ChunkSectionPos,
+        block_data: ChunkData<BlockId>,
+        light_data: ChunkData<LightValue>,
+    ) -> Self {
         let inner = Orphan::new(ChunkSectionInner {
             pos,
             block_data,
@@ -385,10 +414,6 @@ fn write_chunk_updates_to_chunk(
     block_updates: &mut HashMap<BlockPos, BlockUpdate>,
 ) {
     assert!(!updates.is_empty());
-    let _updating = chunk
-        .updating
-        .try_lock()
-        .expect("chunk update not exclusive");
 
     let mut light_queues = LightUpdateQueues::default();
 
@@ -664,7 +689,7 @@ pub struct ArrayChunk<T> {
 impl<T: Copy> ArrayChunk<T> {
     pub fn homogeneous(id: T) -> Self {
         Self {
-            data: vec![id; CHUNK_VOLUME].into_boxed_slice(),
+            data: vec![id; CHUNK_LENGTH_3].into_boxed_slice(),
         }
     }
 }
@@ -679,7 +704,7 @@ impl<T, I: Into<[usize; 3]>> Index<I> for ArrayChunk<T> {
     fn index(&self, index: I) -> &Self::Output {
         let [x, y, z] = index.into();
         if is_in_chunk_bounds(x, y, z) {
-            return &self.data[CHUNK_LENGTH * CHUNK_LENGTH * x + CHUNK_LENGTH * z + y];
+            return &self.data[CHUNK_LENGTH_2 * x + CHUNK_LENGTH * z + y];
         }
 
         panic!(
@@ -727,7 +752,7 @@ impl<T, I: Into<[usize; 3]>> IndexMut<I> for ArrayChunk<T> {
     fn index_mut(&mut self, index: I) -> &mut Self::Output {
         let [x, y, z] = index.into();
         if is_in_chunk_bounds(x, y, z) {
-            return &mut self.data[CHUNK_LENGTH * CHUNK_LENGTH * x + CHUNK_LENGTH * z + y];
+            return &mut self.data[CHUNK_LENGTH_2 * x + CHUNK_LENGTH * z + y];
         }
 
         panic!(
@@ -793,10 +818,10 @@ impl<T> TryFrom<Box<[T]>> for ArrayChunk<T> {
     type Error = ChunkTryFromError;
 
     fn try_from(data: Box<[T]>) -> Result<Self, Self::Error> {
-        if data.len() != CHUNK_VOLUME {
+        if data.len() != CHUNK_LENGTH_3 {
             return Err(ChunkTryFromError {
                 provided_size: data.len(),
-                expected_size: CHUNK_VOLUME,
+                expected_size: CHUNK_LENGTH_3,
             });
         }
 
@@ -840,13 +865,130 @@ impl CompactedChunkSection {
         match self.runs.len() {
             1 => ChunkData::Homogeneous(self.runs[0].1),
             _ => ChunkData::Array({
-                let mut res = Vec::with_capacity(CHUNK_VOLUME);
+                let mut res = Vec::with_capacity(CHUNK_LENGTH_3);
                 for &(run_len, id) in self.runs.iter() {
                     res.extend(std::iter::repeat(id).take(run_len));
                 }
-                assert!(res.len() == CHUNK_VOLUME);
+                assert!(res.len() == CHUNK_LENGTH_3);
                 ArrayChunk::try_from(res.into_boxed_slice()).unwrap()
             }),
         }
+    }
+}
+
+impl<T: Encode<W> + PartialEq, W: std::io::Write> Encode<W> for ChunkData<T> {
+    const KIND: NodeKind = NodeKind::List;
+
+    fn encode(&self, encoder: Encoder<W>) -> Result<()> {
+        match self {
+            ChunkData::Homogeneous(element) => {
+                encoder.encode_rle_list_runs(std::iter::once((CHUNK_LENGTH_3, element)))
+            }
+            ChunkData::Array(ArrayChunk { data }) => encoder.encode_rle_list(data.iter()),
+        }
+    }
+}
+
+// run-length encoded. format is `(usize ~ T ~ !0usize) ~ 0usize`. that is, it's
+// a sequence of (length, item) where length > 0, terminated by a 0.
+// impl<T: Codec + Clone + PartialEq> Codec for ChunkData<T> {
+//     fn decode<R: std::io::Read>(reader: &mut R) -> Result<Self> {
+//         Ok(match usize::decode(reader)? {
+//             // chunk data always has a length greater than 0, so the first
+// length we encounter             // should never be ther terminator sentinel.
+//             0 => bail!("chunk data had 0 runs"),
+
+//             CHUNK_LENGTH_3 => {
+//                 let element = T::decode(reader)?;
+//                 match usize::decode(reader)? {
+//                     0 => ChunkData::Homogeneous(element),
+//                     _ => bail!("homogenous chunk data did not terminate after
+// element"),                 }
+//             }
+
+//             len => ChunkData::Array({
+//                 let mut res = Vec::with_capacity(CHUNK_LENGTH_3);
+
+//                 let mut current_run_len = len;
+//                 let mut current_run_element = T::decode(reader)?;
+
+//                 while current_run_len != 0 {
+//                     if current_run_len > res.capacity() - res.len() {
+//                         bail!("chunk data had more than the maximum amount of
+// elements");                     }
+//
+// res.extend(std::iter::repeat(current_run_element).take(current_run_len));
+//                     current_run_len = usize::decode(reader)?;
+//                     current_run_element = T::decode(reader)?;
+//                 }
+
+//                 if res.len() != CHUNK_LENGTH_3 {
+//                     bail!(
+//                         "chunk data did not decompress to enough elements:
+// {}",                         res.len()
+//                     );
+//                 }
+
+//                 ArrayChunk {
+//                     data: res.into_boxed_slice(),
+//                 }
+//             }),
+//         })
+//     }
+// }
+
+impl<W: std::io::Write> Encode<W> for Chunk {
+    const KIND: NodeKind = NodeKind::Map;
+
+    fn encode(&self, encoder: Encoder<W>) -> Result<()> {
+        encoder.encode_map(|mut encoder| {
+            encoder.entry("pos").encode(&self.pos())?;
+            encoder
+                .entry("sky-light")
+                .encode(&*self.sky_light.snapshot())?;
+            // encoder
+            //     .entry("sections")
+            //     .encode_verbatim_list(self.sections().pin().iter())?;
+            todo!()
+        })
+    }
+}
+
+impl<W: std::io::Write> Encode<W> for ChunkSection {
+    const KIND: NodeKind = NodeKind::Map;
+
+    fn encode(&self, encoder: Encoder<W>) -> Result<()> {
+        let snapshot = self.snapshot();
+        encoder.encode_map(|mut encoder| {
+            encoder.entry("pos").encode(&snapshot.pos())?;
+            encoder.entry("blocks").encode(&snapshot.blocks())?;
+            encoder.entry("light").encode(&snapshot.light())?;
+            todo!()
+        })
+    }
+}
+
+impl<W: std::io::Write> Encode<W> for ChunkPos {
+    const KIND: NodeKind = NodeKind::Map;
+
+    fn encode(&self, encoder: Encoder<W>) -> Result<()> {
+        encoder.encode_map(|mut encoder| {
+            encoder.entry("x").encode(&self.x)?;
+            encoder.entry("z").encode(&self.z)?;
+            Ok(())
+        })
+    }
+}
+
+impl<W: std::io::Write> Encode<W> for ChunkSectionPos {
+    const KIND: NodeKind = NodeKind::Map;
+
+    fn encode(&self, encoder: Encoder<W>) -> Result<()> {
+        encoder.encode_map(|mut encoder| {
+            encoder.entry("x").encode(&self.x)?;
+            encoder.entry("y").encode(&self.y)?;
+            encoder.entry("z").encode(&self.z)?;
+            Ok(())
+        })
     }
 }

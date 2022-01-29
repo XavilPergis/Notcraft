@@ -17,7 +17,6 @@ use notcraft_common::{
     },
     Faces, Side,
 };
-use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{collections::HashSet, str::FromStr, sync::Arc};
 
 use self::{
@@ -32,7 +31,6 @@ pub mod tracker;
 pub struct MesherContext {
     completed_meshes: HashSet<ChunkSectionPos>,
 
-    mesher_pool: ThreadPool,
     mesh_tx: Sender<CompletedMesh>,
     mesh_rx: Receiver<CompletedMesh>,
     mode: MesherMode,
@@ -40,11 +38,9 @@ pub struct MesherContext {
 
 impl MesherContext {
     fn new(mode: MesherMode) -> Self {
-        let mesher_pool = ThreadPoolBuilder::new().build().unwrap();
         let (mesh_tx, mesh_rx) = crossbeam_channel::unbounded();
         Self {
             completed_meshes: Default::default(),
-            mesher_pool,
             mesh_tx,
             mesh_rx,
             mode,
@@ -170,7 +166,7 @@ fn queue_mesh_job(ctx: &mut MesherContext, world: &Arc<VoxelWorld>, chunk: &Chun
     // note that we explicittly dont move the locked chunk to the new thread,
     // because otherwise we would keep the chunk locked while no progress on
     // meshing the chunk would be made.
-    ctx.mesher_pool.spawn(move || {
+    rayon::spawn(move || {
         if let Some(neighbors) = ChunkNeighbors::lock(&world, pos) {
             let mesher = MeshCreationContext::new(pos, neighbors, &world.registry);
             match mode {
@@ -241,17 +237,18 @@ pub struct TerrainVertex {
 
     // - 4 bits for sky light
     // - 4 bits for block light
-    // (5 bit residual)
+    // - 1 bit for wind sway
+    // (4 bit residual)
     // - 1 bit for side
     // - 2 bits for axis
     // we can compute the UV coordinates from the surface normal and the world position, and we can
     // get the normal via a lookup table using the side
     // - 16 bits for block id
     // this seems substantial enough to never ever be a problem
-    pub light_side_id: u32,
+    pub light_flags_side_id: u32,
 }
 
-glium::implement_vertex!(TerrainVertex, pos_ao, light_side_id);
+glium::implement_vertex!(TerrainVertex, pos_ao, light_flags_side_id);
 
 fn pack_side(side: Side) -> u8 {
     match side {
@@ -267,7 +264,14 @@ fn pack_side(side: Side) -> u8 {
 }
 
 impl TerrainVertex {
-    pub fn pack(pos: [u16; 3], side: Side, light: LightValue, id: u16, ao: u8) -> Self {
+    pub fn pack(
+        pos: [u16; 3],
+        wind_sway: bool,
+        side: Side,
+        light: LightValue,
+        id: u16,
+        ao: u8,
+    ) -> Self {
         let [x, y, z] = pos;
         let mut pos_ao = 0u32;
         // while 10 bits are reserved for each axis, we only use 5 of them currently.
@@ -280,16 +284,17 @@ impl TerrainVertex {
         pos_ao <<= 2;
         pos_ao |= ao as u32;
 
-        // SSSS BBBB .... .DSS  IIII IIII IIII IIII
-        let mut light_side_id = 0u32;
-        light_side_id |= (light.raw() as u32) << 8;
-        light_side_id |= pack_side(side) as u32;
-        light_side_id <<= 16;
-        light_side_id |= id as u32;
+        // SSSS BBBB f... .DSS  IIII IIII IIII IIII
+        let mut light_flags_side_id = 0u32;
+        light_flags_side_id |= (light.raw() as u32) << 8;
+        light_flags_side_id |= (wind_sway as u32) << 7;
+        light_flags_side_id |= pack_side(side) as u32;
+        light_flags_side_id <<= 16;
+        light_flags_side_id |= id as u32;
 
         Self {
             pos_ao,
-            light_side_id,
+            light_flags_side_id,
         }
     }
 }
