@@ -108,6 +108,7 @@ pub struct BlockDescription {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockRegistryEntry {
+    name: String,
     properties: BlockProperties,
     mesh_type: BlockMeshType,
     textures: Option<Vec<Faces<TexturePoolId>>>,
@@ -167,6 +168,7 @@ fn make_entry(reg: &mut BlockRegistry, desc: BlockDescription) -> Result<BlockRe
     };
 
     Ok(BlockRegistryEntry {
+        name: desc.name,
         properties: desc.properties,
         mesh_type: desc.mesh_type,
         textures,
@@ -223,6 +225,10 @@ pub fn load_registry<P: AsRef<Path>>(path: P) -> Result<Arc<BlockRegistry>> {
 impl BlockRegistry {
     pub fn get_id(&self, name: &str) -> BlockId {
         self.name_map[name]
+    }
+
+    pub fn name(&self, id: BlockId) -> &str {
+        &self.entries[id.0].name
     }
 
     pub fn texture_paths<'a>(&'a self) -> impl Iterator<Item = &'a Path> {

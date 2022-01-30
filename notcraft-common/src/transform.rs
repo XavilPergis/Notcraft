@@ -25,6 +25,13 @@ pub struct Transform {
 }
 
 impl Transform {
+    pub fn to(point: Point3<f32>) -> Self {
+        Self {
+            translation: Translation3::from(point),
+            ..Default::default()
+        }
+    }
+
     pub fn translate_local(&mut self, translation: Vector3<f32>) {
         let transformed_translation = self.rotation.to_quaternion() * translation;
         self.translation.vector += transformed_translation;
@@ -43,8 +50,12 @@ impl Transform {
         }
     }
 
+    pub fn pos(&self) -> Point3<f32> {
+        self.translation.vector.into()
+    }
+
     pub fn to_matrix(&self) -> Matrix4<f32> {
-        // The model/world matrix takes points in local space and vonverts them to world
+        // The model/world matrix takes points in local space and converts them to world
         // space.
         self.rotation
             .to_quaternion()

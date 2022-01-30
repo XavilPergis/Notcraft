@@ -1,0 +1,17 @@
+# sound pools
+[[pools."stone-impact-debris"]]
+patterns = ["blocks/*stone-impact-rubble-debris*"]
+[[pools."tall-grass-hit"]]
+patterns = ["blocks/tall-grass-hit-*"]
+
+[[pools."music"]]
+patterns = ["music/*", "music/**"]
+
+# reference sound pools to build sounds
+[[sounds."blocks/break/stone"]]
+pools = ["stone-impact-debris"]
+[[sounds."blocks/break/grass"]]
+pools = ["tall-grass-hit"]
+
+[[sounds."music"]]
+pools = ["music", "stone-impact-debris"]

@@ -6,6 +6,7 @@ extern crate serde_derive;
 pub mod client;
 
 use crate::client::{
+    audio::AudioId,
     camera::{ActiveCamera, Camera},
     input::{keys, DigitalInput, InputPlugin, InputState, RawInputEvent},
     render::{
@@ -15,7 +16,12 @@ use crate::client::{
 };
 use bevy_app::{AppExit, Events};
 use bevy_core::CorePlugin;
-use client::render::renderer::RenderStage;
+use client::{
+    audio::{
+        ActiveAudioListener, AudioEvent, AudioListener, AudioPlugin, AudioState, EmitterSource,
+    },
+    render::renderer::RenderStage,
+};
 use glium::{
     glutin::{
         event::{ButtonId, Event, ModifiersState, VirtualKeyCode, WindowEvent},
@@ -31,6 +37,7 @@ use notcraft_common::{
     physics::{AabbCollider, CollisionPlugin, PhysicsPlugin, RigidBody},
     prelude::*,
     transform::Transform,
+    try_system,
     world::{
         self,
         chunk::ChunkAccess,
@@ -39,7 +46,16 @@ use notcraft_common::{
     },
     Axis, Side,
 };
-use std::{collections::HashSet, rc::Rc};
+use rand::{
+    distributions::{Distribution, Uniform},
+    Rng,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    path::Path,
+    rc::Rc,
+};
 use structopt::StructOpt;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -394,18 +410,18 @@ struct TerrainManipulationContext<'a> {
     manip: &'a mut TerrainManipulator,
     transform: &'a Transform,
     // collider: &'a AabbCollider,
+    broken_blocks: &'a mut HashMap<BlockId, HashSet<BlockPos>>,
 }
 
 impl<'a> TerrainManipulationContext<'a> {
     fn set_block(&mut self, pos: BlockPos, id: BlockId) {
-        // if !self
-        //     .collider
-        //     .aabb
-        //     .transformed(self.transform)
-        //     .intersects(&util::block_aabb(pos))
-        // {
-        // }
-        self.access.set_block(pos, id);
+        if let Some(prev) = self.access.block(pos) {
+            if id == AIR && id != prev {
+                self.broken_blocks.entry(prev).or_default().insert(pos);
+            }
+            // TODO: prevent placing blocks that would collide with any entity colliders
+            self.access.set_block(pos, id);
+        }
     }
 }
 
@@ -417,6 +433,8 @@ fn terrain_manipulation(
         // &AabbCollider,
         &mut TerrainManipulator,
     )>,
+    mut audio_events: EventWriter<AudioEvent>,
+    mut audio_pools: Res<RandomizedAudioPools>,
 ) {
     // transform: &Transform,
     // // collider: &AabbCollider,
@@ -430,6 +448,8 @@ fn terrain_manipulation(
     // button 1 - left click
     // button 2 - middle click
     // button 3 - right click
+
+    let mut broken_blocks = HashMap::default();
     query.for_each_mut(|(transform, mut manip)| {
         if input.key(VirtualKeyCode::Q).is_rising() {
             manip.block_name = match manip.block_name {
@@ -445,7 +465,7 @@ fn terrain_manipulation(
                 access: &mut access,
                 manip: &mut manip,
                 transform,
-                // collider,
+                broken_blocks: &mut broken_blocks,
             };
 
             if ctx.manip.start_pos.is_some() || (input.ctrl() && input.shift()) {
@@ -457,6 +477,24 @@ fn terrain_manipulation(
             }
         }
     });
+
+    let mut rng = rand::thread_rng();
+    for (&id, positions) in broken_blocks.iter() {
+        let block_name = format!("blocks/break/{}", access.registry().name(id));
+        let mut emitted_count = 0;
+        if let Some(sound_id) = audio_pools.id(&block_name) {
+            for &pos in positions.iter() {
+                if let Some(id) = audio_pools.select(&mut rng, sound_id) {
+                    if emitted_count > 8 {
+                        break;
+                    }
+                    let pos = Point3::from(pos.origin()) + vector![0.5, 0.5, 0.5];
+                    audio_events.send(AudioEvent::SpawnSpatial(pos, EmitterSource::Sample(id)));
+                    emitted_count += 1;
+                }
+            }
+        }
+    }
 }
 
 fn player_look_first_person(
@@ -575,6 +613,7 @@ fn setup_player(mut cmd: Commands) {
         .spawn()
         .insert(Camera::default())
         .insert(Transform::default())
+        .insert(AudioListener::default())
         .insert(TerrainManipulator {
             start_pos: None,
             start_button: None,
@@ -583,6 +622,7 @@ fn setup_player(mut cmd: Commands) {
         .id();
 
     cmd.insert_resource(ActiveCamera(Some(camera)));
+    cmd.insert_resource(ActiveAudioListener(Some(camera)));
     cmd.insert_resource(CameraController {
         mode: CameraControllerMode::Follow(player),
         camera,
@@ -600,6 +640,7 @@ impl PluginGroup for DefaultPlugins {
         group.add(InputPlugin::default());
         group.add(WorldPlugin::default());
         group.add(RenderPlugin::default());
+        group.add(AudioPlugin::default());
 
         #[cfg(feature = "hot-reload")]
         group.add(client::loader::HotReloadPlugin::default());
@@ -673,8 +714,180 @@ pub struct RunOptions {
     pub enable_debug_events: Option<Vec<String>>,
 }
 
+const fn default_weight() -> usize {
+    1
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct AudioPoolEntry {
+    pub patterns: Vec<String>,
+    #[serde(default = "default_weight")]
+    pub weight: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct AudioEntry {
+    pub pools: Vec<String>,
+    #[serde(default = "default_weight")]
+    pub weight: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct AudioManifest {
+    pub pools: HashMap<String, Vec<AudioPoolEntry>>,
+    pub sounds: HashMap<String, Vec<AudioEntry>>,
+}
+
+impl AudioManifest {
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        log::debug!("loading block sounds manifest from '{}'", path.display());
+        Ok(toml::from_str(&std::fs::read_to_string(path)?)?)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct WeightedList<T> {
+    items: Vec<(usize, T)>,
+    total_weight: usize,
+}
+
+impl<T> Default for WeightedList<T> {
+    fn default() -> Self {
+        Self {
+            items: Default::default(),
+            total_weight: Default::default(),
+        }
+    }
+}
+
+impl<T> WeightedList<T> {
+    pub fn push(&mut self, weight: usize, value: T) {
+        self.items.push((self.total_weight, value));
+        self.total_weight += weight;
+    }
+
+    pub fn select<'a, R>(&'a self, rng: &mut R) -> Option<&'a T>
+    where
+        R: Rng + ?Sized,
+    {
+        if self.items.is_empty() {
+            return None;
+        }
+
+        let num = Uniform::new_inclusive(0, self.total_weight - 1).sample(rng);
+        Some(match self.items.binary_search_by_key(&num, |&(w, _)| w) {
+            // we use the straight index here because our lower bound as described in the comment
+            // below is inclusive.
+            Ok(idx) => &self.items[idx].1,
+
+            // just using the straight index here would cause a "rounding up" sort of behavior, eg:
+            // given a weighted list [(0, A), (10, B)] and selected number 3, B would be selected,
+            // but we want A to be. you might think of this as each entry representing a start
+            // number and the next entry as defining an end number, defining the range [start, end)
+            // as mapping to the value in the start node.
+            //
+            // also note that unconditionally subtracting here is fine, since the first item of the
+            // item list always has a number of 0, which is the lowest value the generated number
+            // will be, meaning the `Ok` case will always be selected when the generated number is
+            // 0.
+            Err(idx) => &self.items[idx - 1].1,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct RandomizedAudioPools {
+    pool_idx_map: HashMap<String, usize>,
+    pools: Vec<WeightedList<AudioId>>,
+    sound_idx_map: HashMap<String, usize>,
+    sounds: Vec<WeightedList<usize>>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct SoundId(usize);
+
+impl RandomizedAudioPools {
+    fn select_from_pool<R>(&self, rng: &mut R, pool_index: usize) -> Option<AudioId>
+    where
+        R: Rng + ?Sized,
+    {
+        self.pools[pool_index].select(rng).copied()
+    }
+
+    fn select_pool<R>(&self, rng: &mut R, sound_index: usize) -> Option<usize>
+    where
+        R: Rng + ?Sized,
+    {
+        self.sounds[sound_index].select(rng).copied()
+    }
+
+    pub fn id(&self, name: &str) -> Option<SoundId> {
+        self.sound_idx_map.get(name).copied().map(SoundId)
+    }
+
+    pub fn select<R>(&self, rng: &mut R, id: SoundId) -> Option<AudioId>
+    where
+        R: Rng + ?Sized,
+    {
+        let pool = self.select_pool(rng, id.0)?;
+        let item = self.select_from_pool(rng, pool)?;
+        Some(item)
+    }
+}
+
+fn load_sounds(mut cmd: Commands, mut state: ResMut<AudioState>) -> Result<()> {
+    let manifest = AudioManifest::load("resources/audio/manifest.toml")?;
+
+    let mut pools = RandomizedAudioPools::default();
+
+    pools.pool_idx_map = HashMap::with_capacity(manifest.pools.len());
+    pools.pools = Vec::with_capacity(manifest.pools.len());
+    pools.sound_idx_map = HashMap::with_capacity(manifest.pools.len());
+    pools.sounds = Vec::with_capacity(manifest.sounds.len());
+
+    for (name, entries) in manifest.pools.into_iter() {
+        let mut items = WeightedList::default();
+        for entry in entries {
+            for pattern in entry.patterns.iter() {
+                // TODO: does this allow attackers to use `..` to escape the resources dir?
+                for path in glob::glob(&format!("resources/audio/{pattern}"))? {
+                    let id = state.add(File::open(path?)?)?;
+                    items.push(entry.weight, id);
+                }
+            }
+        }
+
+        pools.pool_idx_map.insert(name, pools.pools.len());
+        pools.pools.push(items);
+    }
+
+    for (name, entries) in manifest.sounds.into_iter() {
+        let mut items = WeightedList::default();
+        for entry in entries {
+            for pool_name in entry.pools.iter() {
+                if let Some(&pool_index) = pools.pool_idx_map.get(pool_name) {
+                    items.push(entry.weight, pool_index);
+                } else {
+                    log::warn!("sound '{name}' referenced non-existant pool '{pool_name}'.");
+                }
+            }
+        }
+
+        pools.sound_idx_map.insert(name, pools.sounds.len());
+        pools.sounds.push(items);
+    }
+
+    cmd.insert_resource(pools);
+
+    Ok(())
+}
+
 fn main() {
-    simple_logger::init_with_level(log::Level::Debug).unwrap();
+    env_logger::init();
 
     let options = RunOptions::from_args();
 
@@ -698,7 +911,7 @@ fn main() {
         .add_plugin(PhysicsPlugin::default())
         .add_plugin(CollisionPlugin::default())
         .add_startup_system(setup_player.system())
-        // .add_system(intermittent_music.system())
+        .add_startup_system(try_system!(load_sounds))
         .add_system(
             player_look_first_person
                 .system()
