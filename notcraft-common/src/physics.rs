@@ -74,7 +74,11 @@ fn does_block_collide(ctx: &mut CollisionContext, block_pos: BlockPos) -> Option
         max: ctx.previous.max.map(f32::ceil),
     });
 
-    match ctx.registry.collision_type(ctx.access.block(block_pos)?) {
+    match ctx
+        .registry
+        .get(ctx.access.block(block_pos)?)
+        .collision_type()
+    {
         CollisionType::Solid => Some(!prev_intersects),
         _ => Some(false),
     }
@@ -284,7 +288,8 @@ fn detect_liquid_collisions(access: &mut ChunkAccess, prev: &Aabb) -> Option<boo
             for z in make_collision_range(prev.min.z, prev.max.z) {
                 let block_pos = BlockPos { x, y, z };
                 if registry
-                    .collision_type(access.block(block_pos)?)
+                    .get(access.block(block_pos)?)
+                    .collision_type()
                     .is_liquid()
                 {
                     return Some(true);

@@ -118,6 +118,7 @@
             "properties": {
                 "collision-type": "none",
                 "light-transmissible": true,
+                "break-when-unrooted": true,
                 "wind-sway": true,
                 "liquid": false
             },

@@ -186,11 +186,11 @@ pub struct ChunkSection {
 }
 
 fn default_light(registry: &BlockRegistry, id: BlockId) -> LightValue {
-    let sky_light = match registry.light_transmissible(id) {
+    let sky_light = match registry.get(id).light_transmissible() {
         true => 15,
         false => 0,
     };
-    let block_light = registry.block_light(id);
+    let block_light = registry.get(id).block_light();
     LightValue::pack(sky_light, block_light)
 }
 
@@ -400,7 +400,7 @@ fn write_chunk_updates_to_section(
         access,
         updates.iter().map(|update| {
             let pos = index_to_block(chunk.pos(), update.index);
-            let light = registry.block_light(update.id);
+            let light = registry.get(update.id).block_light();
             (pos, light)
         }),
     );
@@ -435,8 +435,8 @@ fn write_chunk_updates_to_chunk(
 
     let mut updated_sky_columns: HashMap<[usize; 2], HashMap<i32, bool>> = HashMap::default();
     for (&pos, update) in ctx.block_updates.iter() {
-        let old_solid = !ctx.registry.light_transmissible(update.old_id);
-        let new_solid = !ctx.registry.light_transmissible(update.new_id);
+        let old_solid = !ctx.registry.get(update.old_id).light_transmissible();
+        let new_solid = !ctx.registry.get(update.new_id).light_transmissible();
         if old_solid != new_solid {
             let x = pos_to_index(pos.x);
             let z = pos_to_index(pos.z);

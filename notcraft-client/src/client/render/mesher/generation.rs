@@ -148,11 +148,11 @@ const fn idx(u: ChunkAxis, v: ChunkAxis) -> usize {
 }
 
 pub fn should_add_face(registry: &BlockRegistry, current: BlockId, neighbor: BlockId) -> bool {
-    let cur_solid = matches!(registry.mesh_type(current), BlockMeshType::FullCube);
-    let other_solid = matches!(registry.mesh_type(neighbor), BlockMeshType::FullCube);
+    let cur_solid = matches!(registry.get(current).mesh_type(), BlockMeshType::FullCube);
+    let other_solid = matches!(registry.get(neighbor).mesh_type(), BlockMeshType::FullCube);
 
-    let cur_liquid = registry.liquid(current);
-    let other_liquid = registry.liquid(neighbor);
+    let cur_liquid = registry.get(current).liquid();
+    let other_liquid = registry.get(neighbor).liquid();
 
     // note that cross-type blocks are not handled here; they're added in a
     // completely separate pass that doesn't depend on this function at all.
@@ -195,8 +195,8 @@ impl MeshCreationContext {
         let pos = pos.cast::<ChunkAxisOffset>();
         let contributes_ao = |pos| {
             let id = self.chunks.id(pos);
-            matches!(self.registry.mesh_type(id), BlockMeshType::FullCube)
-                && !self.registry.liquid(id)
+            matches!(self.registry.get(id).mesh_type(), BlockMeshType::FullCube)
+                && !self.registry.get(id).liquid()
         };
 
         let neg_neg = contributes_ao(pos + side.uvl_to_xyz(-1, -1, 1));
@@ -305,12 +305,14 @@ impl MeshCreationContext {
             for v in 0..(CHUNK_LENGTH as ChunkAxis) {
                 let cur = self.slice[idx(u, v)];
 
-                let is_liquid = self.registry.liquid(cur.id);
+                let is_liquid = self.registry.get(cur.id).liquid();
 
                 // if the face has been expanded onto already, skip it.
                 if cur.visited
-                    || !(matches!(self.registry.mesh_type(cur.id), BlockMeshType::FullCube)
-                        || is_liquid)
+                    || !(matches!(
+                        self.registry.get(cur.id).mesh_type(),
+                        BlockMeshType::FullCube
+                    ) || is_liquid)
                 {
                     continue;
                 }
@@ -393,7 +395,7 @@ impl MeshCreationContext {
                     let pos = point![x, y, z];
                     let cur_id = self.chunks.id(pos.cast());
                     let cur_light = self.chunks.light(pos.cast());
-                    match self.registry.mesh_type(cur_id) {
+                    match self.registry.get(cur_id).mesh_type() {
                         BlockMeshType::None => {}
                         BlockMeshType::Cross => {
                             mesh_cross(&mut self.mesh_constructor, cur_id, pos, cur_light)
@@ -438,7 +440,7 @@ impl MeshCreationContext {
                     let pos = point![x, y, z];
                     let id = self.chunks.id(pos.cast());
                     let light = self.chunks.light(pos.cast());
-                    if matches!(self.registry.mesh_type(id), BlockMeshType::Cross) {
+                    if matches!(self.registry.get(id).mesh_type(), BlockMeshType::Cross) {
                         // TODO: light
                         mesh_cross(&mut self.mesh_constructor, id, pos, light)
                     }
@@ -513,7 +515,7 @@ pub struct MeshBuilder {
 
 pub fn mesh_cross(ctx: &mut MeshBuilder, id: BlockId, pos: Point3<ChunkAxis>, light: LightValue) {
     let tex_id = choose_face_texture(ctx, id, Side::Right).0 as u16;
-    let wind_sway = ctx.registry.wind_sway(id);
+    let wind_sway = ctx.registry.get(id).wind_sway();
 
     {
         #[rustfmt::skip]
@@ -598,7 +600,7 @@ pub fn mesh_full_cube_side(
         .extend(indices.iter().copied().map(|idx| idx_start + idx));
 
     let tex_id = choose_face_texture(ctx, quad.id, side).0 as u16;
-    let wind_sway = ctx.registry.wind_sway(quad.id);
+    let wind_sway = ctx.registry.get(quad.id).wind_sway();
 
     let mut vert = |offset: Vector3<_>, ao, light| {
         let pos: Point3<u16> = (16 * pos) + (16 * offset);
@@ -649,7 +651,7 @@ fn ao_value(side1: bool, corner: bool, side2: bool) -> u8 {
 }
 
 fn choose_face_texture(ctx: &mut MeshBuilder, id: BlockId, side: Side) -> TextureId {
-    let pool_ids = ctx.registry.block_textures(id).unwrap();
+    let pool_ids = ctx.registry.get(id).block_textures().unwrap();
     let pool_ids = pool_ids.choose(&mut ctx.rng).unwrap();
     let pool_id = pool_ids[side];
 

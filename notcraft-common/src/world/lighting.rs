@@ -106,7 +106,7 @@ impl LightUpdateQueues {
             let prev_light = access.light(pos).unwrap();
 
             let id = access.block(pos).unwrap();
-            if access.registry().light_transmissible(id) {
+            if access.registry().get(id).light_transmissible() {
                 self.sky_removal.push_back((pos, prev_light.sky()));
                 self.block_removal.push_back((pos, prev_light.block()));
             }
@@ -202,7 +202,7 @@ pub(crate) fn propagate_block_light(
             let new_light = u16::max(queue_light - 1, neighbor_light);
 
             let id = access.block(dir).unwrap();
-            let neighbor_transmissible = access.registry().light_transmissible(id);
+            let neighbor_transmissible = access.registry().get(id).light_transmissible();
 
             if new_light != neighbor_light && neighbor_transmissible {
                 access.set_block_light(dir, new_light).unwrap();
@@ -264,7 +264,7 @@ pub(crate) fn propagate_sky_light(queues: &mut LightUpdateQueues, access: &mut M
             let new_light = u16::max(queue_light - 1, neighbor_light);
 
             let id = access.block(dir).unwrap();
-            let neighbor_transmissible = access.registry().light_transmissible(id);
+            let neighbor_transmissible = access.registry().get(id).light_transmissible();
 
             if new_light != neighbor_light && neighbor_transmissible {
                 access.set_sky_light(dir, new_light).unwrap();

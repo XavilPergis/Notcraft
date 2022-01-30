@@ -14,7 +14,7 @@ use std::{
     sync::Arc,
 };
 
-pub const AIR: BlockId = BlockId(0);
+pub const AIR_BLOCK: BlockId = BlockId(0);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct TexturePoolId(usize);
@@ -72,6 +72,8 @@ pub struct BlockProperties {
     block_light: u16,
     #[serde(default)]
     light_transmissible: bool,
+    #[serde(default)]
+    break_when_unrooted: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Deserialize)]
@@ -223,7 +225,11 @@ pub fn load_registry<P: AsRef<Path>>(path: P) -> Result<Arc<BlockRegistry>> {
 }
 
 impl BlockRegistry {
-    pub fn get_id(&self, name: &str) -> BlockId {
+    pub fn get(&self, id: BlockId) -> RegistryRef {
+        RegistryRef { registry: self, id }
+    }
+
+    pub fn lookup(&self, name: &str) -> BlockId {
         self.name_map[name]
     }
 
@@ -236,42 +242,67 @@ impl BlockRegistry {
     }
 
     #[inline(always)]
-    pub fn collision_type(&self, id: BlockId) -> CollisionType {
-        self.entries[id.0].properties.collision_type
-    }
-
-    #[inline(always)]
-    pub fn liquid(&self, id: BlockId) -> bool {
-        self.entries[id.0].properties.liquid
-    }
-
-    #[inline(always)]
-    pub fn wind_sway(&self, id: BlockId) -> bool {
-        self.entries[id.0].properties.wind_sway
-    }
-
-    #[inline(always)]
-    pub fn block_light(&self, id: BlockId) -> u16 {
-        self.entries[id.0].properties.block_light
-    }
-
-    #[inline(always)]
-    pub fn light_transmissible(&self, id: BlockId) -> bool {
-        self.entries[id.0].properties.light_transmissible
-    }
-
-    #[inline(always)]
-    pub fn mesh_type(&self, id: BlockId) -> BlockMeshType {
-        self.entries[id.0].mesh_type
-    }
-
-    #[inline(always)]
-    pub fn block_textures(&self, id: BlockId) -> Option<&Vec<Faces<TexturePoolId>>> {
-        self.entries[id.0].textures.as_ref()
-    }
-
-    #[inline(always)]
     pub fn pool_textures(&self, id: TexturePoolId) -> &[TextureId] {
         &self.texture_pools[id.0]
+    }
+}
+
+pub struct RegistryRef<'reg> {
+    registry: &'reg BlockRegistry,
+    id: BlockId,
+}
+
+impl<'reg> RegistryRef<'reg> {
+    pub fn registry(&self) -> &'reg BlockRegistry {
+        self.registry
+    }
+
+    #[inline(always)]
+    pub fn name(&self) -> &str {
+        &self.registry.entries[self.id.0].name
+    }
+
+    #[inline(always)]
+    pub fn collision_type(&self) -> CollisionType {
+        self.registry.entries[self.id.0].properties.collision_type
+    }
+
+    #[inline(always)]
+    pub fn liquid(&self) -> bool {
+        self.registry.entries[self.id.0].properties.liquid
+    }
+
+    #[inline(always)]
+    pub fn wind_sway(&self) -> bool {
+        self.registry.entries[self.id.0].properties.wind_sway
+    }
+
+    #[inline(always)]
+    pub fn block_light(&self) -> u16 {
+        self.registry.entries[self.id.0].properties.block_light
+    }
+
+    #[inline(always)]
+    pub fn light_transmissible(&self) -> bool {
+        self.registry.entries[self.id.0]
+            .properties
+            .light_transmissible
+    }
+
+    #[inline(always)]
+    pub fn break_when_unrooted(&self) -> bool {
+        self.registry.entries[self.id.0]
+            .properties
+            .break_when_unrooted
+    }
+
+    #[inline(always)]
+    pub fn mesh_type(&self) -> BlockMeshType {
+        self.registry.entries[self.id.0].mesh_type
+    }
+
+    #[inline(always)]
+    pub fn block_textures(&self) -> Option<&'reg Vec<Faces<TexturePoolId>>> {
+        self.registry.entries[self.id.0].textures.as_ref()
     }
 }

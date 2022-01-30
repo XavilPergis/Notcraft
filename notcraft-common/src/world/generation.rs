@@ -1,6 +1,6 @@
 use super::{
     chunk::ChunkData,
-    registry::{BlockId, BlockRegistry, AIR},
+    registry::{BlockId, BlockRegistry, AIR_BLOCK},
     ChunkPos, ChunkSectionPos,
 };
 use crate::{
@@ -175,12 +175,12 @@ pub struct ChunkGenerator {
 impl ChunkGenerator {
     pub fn new_default(registry: &BlockRegistry) -> Self {
         Self {
-            stone_id: registry.get_id("stone"),
-            dirt_id: registry.get_id("dirt"),
-            grass_id: registry.get_id("grass"),
-            water_id: registry.get_id("water"),
-            sand_id: registry.get_id("sand"),
-            detail_grass_id: registry.get_id("detail_grass"),
+            stone_id: registry.lookup("stone"),
+            dirt_id: registry.lookup("dirt"),
+            grass_id: registry.lookup("grass"),
+            water_id: registry.lookup("water"),
+            sand_id: registry.lookup("sand"),
+            detail_grass_id: registry.lookup("detail_grass"),
         }
     }
 
@@ -202,10 +202,10 @@ impl ChunkGenerator {
             if rng.gen_bool(1.0 / 3.0) {
                 self.detail_grass_id
             } else {
-                AIR
+                AIR_BLOCK
             }
         } else {
-            AIR
+            AIR_BLOCK
         }
     }
 
@@ -222,7 +222,7 @@ impl ChunkGenerator {
             if pos.y < 1 {
                 return ChunkData::Homogeneous(self.water_id);
             } else {
-                return ChunkData::Homogeneous(AIR);
+                return ChunkData::Homogeneous(AIR_BLOCK);
             }
         } else if (base_y + CHUNK_LENGTH as i32) < heights.min {
             return ChunkData::Homogeneous(self.stone_id);

@@ -41,7 +41,7 @@ use notcraft_common::{
     world::{
         self,
         chunk::ChunkAccess,
-        registry::{BlockId, AIR},
+        registry::{BlockId, AIR_BLOCK},
         trace_ray, BlockPos, DynamicChunkLoader, Ray3, RaycastHit, WorldPlugin,
     },
     Axis, Side,
@@ -184,7 +184,7 @@ fn terrain_manipulation_area(
             });
             if input.key(DigitalInput::Button(1)).is_falling() {
                 iter_blocks_in(start_pos, hit.pos, |pos| {
-                    ctx.set_block(pos, AIR);
+                    ctx.set_block(pos, AIR_BLOCK);
                 });
                 ctx.manip.start_pos = None;
                 ctx.manip.start_button = None;
@@ -207,7 +207,7 @@ fn terrain_manipulation_area(
                 kind: DebugBoxKind::Solid,
             });
             if input.key(DigitalInput::Button(3)).is_falling() {
-                let id = ctx.access.registry().get_id(ctx.manip.block_name);
+                let id = ctx.access.registry().lookup(ctx.manip.block_name);
                 iter_blocks_in(start_pos, end_pos, |pos| {
                     ctx.set_block(pos, id);
                 });
@@ -274,7 +274,7 @@ fn build_to_me_positive(
     for n in from[axis]..=to[axis] {
         let pos = replace_axis(from, axis, n);
         if ctx.access.block(pos).map_or(true, |id| {
-            ctx.access.registry().collision_type(id).is_solid()
+            ctx.access.registry().get(id).collision_type().is_solid()
         }) {
             break;
         }
@@ -310,7 +310,7 @@ fn build_to_me_negative(
     for n in (to[axis]..=from[axis]).rev() {
         let pos = replace_axis(from, axis, n);
         if ctx.access.block(pos).map_or(true, |id| {
-            ctx.access.registry().collision_type(id).is_solid()
+            ctx.access.registry().get(id).collision_type().is_solid()
         }) {
             break;
         }
@@ -335,7 +335,7 @@ fn terrain_manipulation_build_to_me(
     hit: &RaycastHit,
     ctx: &mut TerrainManipulationContext,
 ) {
-    let id = ctx.access.registry().get_id(ctx.manip.block_name);
+    let id = ctx.access.registry().lookup(ctx.manip.block_name);
     if let Some(side) = hit.side {
         let offset = side.normal::<i32>();
         let start_pos = BlockPos {
@@ -383,7 +383,7 @@ fn terrain_manipulation_single(
         kind: DebugBoxKind::Solid,
     });
     if input.key(DigitalInput::Button(1)).is_rising() {
-        ctx.set_block(hit.pos, AIR);
+        ctx.set_block(hit.pos, AIR_BLOCK);
     }
 
     if let Some(side) = hit.side {
@@ -399,7 +399,7 @@ fn terrain_manipulation_single(
             kind: DebugBoxKind::Solid,
         });
         if input.key(DigitalInput::Button(3)).is_rising() {
-            let id = ctx.access.registry().get_id(ctx.manip.block_name);
+            let id = ctx.access.registry().lookup(ctx.manip.block_name);
             ctx.set_block(offset, id);
         }
     }
@@ -416,7 +416,7 @@ struct TerrainManipulationContext<'a> {
 impl<'a> TerrainManipulationContext<'a> {
     fn set_block(&mut self, pos: BlockPos, id: BlockId) {
         if let Some(prev) = self.access.block(pos) {
-            if id == AIR && id != prev {
+            if id == AIR_BLOCK && id != prev {
                 self.broken_blocks.entry(prev).or_default().insert(pos);
             }
             // TODO: prevent placing blocks that would collide with any entity colliders
@@ -434,7 +434,7 @@ fn terrain_manipulation(
         &mut TerrainManipulator,
     )>,
     mut audio_events: EventWriter<AudioEvent>,
-    mut audio_pools: Res<RandomizedAudioPools>,
+    audio_pools: Res<RandomizedAudioPools>,
 ) {
     // transform: &Transform,
     // // collider: &AabbCollider,

@@ -18,7 +18,7 @@ pub use self::chunk::ArrayChunk;
 use self::{
     chunk::{Chunk, ChunkAccess, ChunkSection, ChunkSectionPos, CompactedChunkSection},
     persistence::{update_persistence, WorldPersistence},
-    registry::{load_registry, BlockRegistry, CollisionType},
+    registry::{load_registry, BlockId, BlockRegistry, CollisionType, AIR_BLOCK},
 };
 use crate::{
     aabb::Aabb, debug::send_debug_event, prelude::*, transform::Transform, util::ChannelPair,
@@ -342,12 +342,14 @@ impl Plugin for WorldPlugin {
         app.insert_resource(WorldPersistence::new());
 
         app.add_event::<WorldEvent>();
+        app.add_event::<BlockUpdateEvent>();
         app.add_event::<Handleable<ChunkLoadEvent>>();
         app.add_event::<Handleable<ChunkSectionLoadEvent>>();
         app.add_event::<Handleable<ChunkUnloadEvent>>();
         app.add_event::<Handleable<ChunkSectionUnloadEvent>>();
 
         app.add_system(load_chunks.system());
+        app.add_system(remove_unrooted_blocks.system());
         app.add_system(emit_load_events.system().label(WorldLabel("load_events")));
         app.add_system(
             update_persistence
@@ -531,10 +533,18 @@ fn run_chunk_section_generation_task(
     let _ = generator.finished_sections.tx.send(chunk);
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct BlockUpdateEvent {
+    pub pos: BlockPos,
+    pub old_id: BlockId,
+    pub new_id: BlockId,
+}
+
 fn apply_chunk_updates(
     world: Res<Arc<VoxelWorld>>,
     mut access: ResMut<ChunkAccess>,
     mut chunk_events: EventWriter<WorldEvent>,
+    mut block_update_events: EventWriter<BlockUpdateEvent>,
 ) {
     let mut rebuild_set = HashSet::new();
     let mut block_updates = HashMap::default();
@@ -549,6 +559,12 @@ fn apply_chunk_updates(
             send_debug_event(debug::WorldLoadEvent::ModifiedSection(pos));
         }
     }
+
+    block_update_events.send_batch(block_updates.iter().map(|(&k, &v)| BlockUpdateEvent {
+        pos: k,
+        old_id: v.old_id,
+        new_id: v.new_id,
+    }))
 }
 
 #[derive(Debug)]
@@ -734,6 +750,26 @@ fn generate_world(
     }
 }
 
+fn remove_unrooted_blocks(
+    mut access: ResMut<ChunkAccess>,
+    mut block_update_events: EventReader<BlockUpdateEvent>,
+) {
+    for update in block_update_events.iter() {
+        let pos = update.pos.offset([0, 1, 0]);
+        if let Some(id) = access.block(pos) {
+            if !access
+                .registry()
+                .get(update.new_id)
+                .collision_type()
+                .is_solid()
+                && access.registry().get(id).break_when_unrooted()
+            {
+                access.set_block(pos, AIR_BLOCK);
+            }
+        }
+    }
+}
+
 pub fn chunk_section_aabb(pos: ChunkSectionPos) -> Aabb {
     let len = chunk::CHUNK_LENGTH as f32;
     let pos = len * nalgebra::point![pos.x as f32, pos.y as f32, pos.z as f32];
@@ -889,7 +925,7 @@ pub fn trace_ray(cache: &mut ChunkAccess, ray: Ray3<f32>, radius: f32) -> Option
             None => return RaycastStep::Exit,
             Some(id) => id,
         };
-        match cache.registry().collision_type(id) {
+        match cache.registry().get(id).collision_type() {
             CollisionType::Solid => RaycastStep::Hit,
             _ => RaycastStep::Continue,
         }
