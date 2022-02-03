@@ -3,22 +3,28 @@ extern crate log;
 #[macro_use]
 extern crate serde_derive;
 
+pub mod audio_pool;
 pub mod client;
 
-use crate::client::{
-    audio::AudioId,
-    camera::{ActiveCamera, Camera},
-    input::{keys, DigitalInput, InputPlugin, InputState, RawInputEvent},
-    render::{
-        mesher::{ChunkMesherPlugin, MesherMode},
-        renderer::{add_debug_box, DebugBox, DebugBoxKind, RenderPlugin},
+use crate::{
+    audio_pool::SoundId,
+    client::{
+        audio::AudioId,
+        camera::{ActiveCamera, Camera},
+        input::{keys, DigitalInput, InputPlugin, InputState, RawInputEvent},
+        render::{
+            mesher::{ChunkMesherPlugin, MesherMode},
+            renderer::{add_debug_box, DebugBox, DebugBoxKind, RenderPlugin},
+        },
     },
 };
+use audio_pool::{load_audio, RandomizedAudioPools};
 use bevy_app::{AppExit, Events};
 use bevy_core::CorePlugin;
 use client::{
     audio::{
-        ActiveAudioListener, AudioEvent, AudioListener, AudioPlugin, AudioState, EmitterSource,
+        ActiveAudioListener, AudioEvent, AudioListener, AudioPlugin, AudioState, EmitterParameters,
+        EmitterSource, ParameterizedSource,
     },
     render::renderer::RenderStage,
 };
@@ -428,7 +434,7 @@ impl<'a> TerrainManipulationContext<'a> {
 fn terrain_manipulation(
     input: Res<InputState>,
     mut access: ResMut<ChunkAccess>,
-    query: Query<(
+    mut query: Query<(
         &Transform,
         // &AabbCollider,
         &mut TerrainManipulator,
@@ -468,6 +474,21 @@ fn terrain_manipulation(
                 broken_blocks: &mut broken_blocks,
             };
 
+            if input.key(VirtualKeyCode::E).is_rising() {
+                for x in hit.pos.x - 10..hit.pos.x + 10 {
+                    for y in hit.pos.y - 10..hit.pos.y + 10 {
+                        for z in hit.pos.z - 10..hit.pos.z + 10 {
+                            let dx = hit.pos.x - x;
+                            let dy = hit.pos.y - y;
+                            let dz = hit.pos.z - z;
+                            if dx * dx + dy * dy + dz * dz < 100 {
+                                ctx.set_block(BlockPos { x, y, z }, AIR_BLOCK);
+                            }
+                        }
+                    }
+                }
+            }
+
             if ctx.manip.start_pos.is_some() || (input.ctrl() && input.shift()) {
                 terrain_manipulation_area(&input, &hit, &mut ctx);
             } else if ctx.manip.start_pos.is_none() && input.ctrl() {
@@ -478,20 +499,73 @@ fn terrain_manipulation(
         }
     });
 
-    let mut rng = rand::thread_rng();
-    for (&id, positions) in broken_blocks.iter() {
-        let block_name = format!("blocks/break/{}", access.registry().name(id));
-        let mut emitted_count = 0;
-        if let Some(sound_id) = audio_pools.id(&block_name) {
-            for &pos in positions.iter() {
-                if let Some(id) = audio_pools.select(&mut rng, sound_id) {
-                    if emitted_count > 8 {
-                        break;
+    if let Some(transform) = query.iter_mut().next().map(|(t, _)| t) {
+        // how many sounds of the same type can be playing at once
+        const SOUND_TYPE_LIMIT: usize = 3;
+        const MAX_AMPLITUDE: f32 = 6.0;
+
+        #[derive(Debug)]
+        struct SoundEntry {
+            amplitude: f32,
+            count: usize,
+        }
+
+        let mut sounds = HashMap::new();
+        let mut near = None;
+        let mut far = None;
+        let mut near_dist = f32::MAX;
+        let mut far_dist = f32::MIN;
+        for (&id, positions) in broken_blocks.iter() {
+            let block_name = format!("blocks/break/{}", access.registry().name(id));
+            if let Some(sound_id) = audio_pools.id(&block_name) {
+                assert!(!positions.is_empty());
+                let count = positions.len().min(SOUND_TYPE_LIMIT);
+                let amplitude = (positions.len() as f32) / (count as f32);
+
+                sounds.insert(sound_id, SoundEntry { amplitude, count });
+
+                for pos in positions.iter() {
+                    let dx = transform.pos().x - pos.x as f32 + 0.5;
+                    let dy = transform.pos().y - pos.y as f32 + 0.5;
+                    let dz = transform.pos().z - pos.z as f32 + 0.5;
+                    let dist_sq = dx * dx + dy * dy + dz * dz;
+
+                    if dist_sq < near_dist {
+                        near_dist = dist_sq;
+                        near = Some(pos);
                     }
-                    let pos = Point3::from(pos.origin()) + vector![0.5, 0.5, 0.5];
-                    audio_events.send(AudioEvent::SpawnSpatial(pos, EmitterSource::Sample(id)));
-                    emitted_count += 1;
+
+                    if dist_sq > far_dist {
+                        far_dist = dist_sq;
+                        far = Some(pos);
+                    }
                 }
+            }
+        }
+
+        let mut rng = rand::thread_rng();
+        for (id, entry) in sounds.into_iter() {
+            let start = Point3::from(near.unwrap().origin());
+            let end = Point3::from(far.unwrap().origin());
+
+            let step = match entry.count {
+                0 => unreachable!(),
+                1 => vector![0.0, 0.0, 0.0], // could be anything
+                n => (end - start) / (n as f32 - 1.0),
+            };
+
+            let mut pos = start;
+            for _ in 0..entry.count {
+                pos += step;
+
+                audio_pools.select(&mut rng, id, |id, mut params| {
+                    // 1.0 / (1.0 + f32::exp(-));
+                    let curved = entry.amplitude.sqrt().min(MAX_AMPLITUDE);
+                    params.min_amplitude *= curved;
+                    params.max_amplitude *= curved;
+                    let source = ParameterizedSource::from_sample(id).with_parameters(params);
+                    audio_events.send(AudioEvent::SpawnSpatial(pos, source));
+                });
             }
         }
     }
@@ -600,7 +674,7 @@ fn setup_player(mut cmd: Commands) {
         .spawn()
         .insert(Transform::default().translated(&nalgebra::vector![0.0, 20.0, 0.0]))
         .insert(AabbCollider::new(Aabb::with_dimensions(nalgebra::vector![
-            0.8, 2.0, 0.8
+            0.7, 1.7, 0.7
         ])))
         .insert(RigidBody::default())
         .insert(DynamicChunkLoader {
@@ -714,41 +788,6 @@ pub struct RunOptions {
     pub enable_debug_events: Option<Vec<String>>,
 }
 
-const fn default_weight() -> usize {
-    1
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct AudioPoolEntry {
-    pub patterns: Vec<String>,
-    #[serde(default = "default_weight")]
-    pub weight: usize,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct AudioEntry {
-    pub pools: Vec<String>,
-    #[serde(default = "default_weight")]
-    pub weight: usize,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct AudioManifest {
-    pub pools: HashMap<String, Vec<AudioPoolEntry>>,
-    pub sounds: HashMap<String, Vec<AudioEntry>>,
-}
-
-impl AudioManifest {
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path = path.as_ref();
-        log::debug!("loading block sounds manifest from '{}'", path.display());
-        Ok(toml::from_str(&std::fs::read_to_string(path)?)?)
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct WeightedList<T> {
     items: Vec<(usize, T)>,
@@ -799,88 +838,8 @@ impl<T> WeightedList<T> {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-struct RandomizedAudioPools {
-    pool_idx_map: HashMap<String, usize>,
-    pools: Vec<WeightedList<AudioId>>,
-    sound_idx_map: HashMap<String, usize>,
-    sounds: Vec<WeightedList<usize>>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct SoundId(usize);
-
-impl RandomizedAudioPools {
-    fn select_from_pool<R>(&self, rng: &mut R, pool_index: usize) -> Option<AudioId>
-    where
-        R: Rng + ?Sized,
-    {
-        self.pools[pool_index].select(rng).copied()
-    }
-
-    fn select_pool<R>(&self, rng: &mut R, sound_index: usize) -> Option<usize>
-    where
-        R: Rng + ?Sized,
-    {
-        self.sounds[sound_index].select(rng).copied()
-    }
-
-    pub fn id(&self, name: &str) -> Option<SoundId> {
-        self.sound_idx_map.get(name).copied().map(SoundId)
-    }
-
-    pub fn select<R>(&self, rng: &mut R, id: SoundId) -> Option<AudioId>
-    where
-        R: Rng + ?Sized,
-    {
-        let pool = self.select_pool(rng, id.0)?;
-        let item = self.select_from_pool(rng, pool)?;
-        Some(item)
-    }
-}
-
 fn load_sounds(mut cmd: Commands, mut state: ResMut<AudioState>) -> Result<()> {
-    let manifest = AudioManifest::load("resources/audio/manifest.toml")?;
-
-    let mut pools = RandomizedAudioPools::default();
-
-    pools.pool_idx_map = HashMap::with_capacity(manifest.pools.len());
-    pools.pools = Vec::with_capacity(manifest.pools.len());
-    pools.sound_idx_map = HashMap::with_capacity(manifest.pools.len());
-    pools.sounds = Vec::with_capacity(manifest.sounds.len());
-
-    for (name, entries) in manifest.pools.into_iter() {
-        let mut items = WeightedList::default();
-        for entry in entries {
-            for pattern in entry.patterns.iter() {
-                // TODO: does this allow attackers to use `..` to escape the resources dir?
-                for path in glob::glob(&format!("resources/audio/{pattern}"))? {
-                    let id = state.add(File::open(path?)?)?;
-                    items.push(entry.weight, id);
-                }
-            }
-        }
-
-        pools.pool_idx_map.insert(name, pools.pools.len());
-        pools.pools.push(items);
-    }
-
-    for (name, entries) in manifest.sounds.into_iter() {
-        let mut items = WeightedList::default();
-        for entry in entries {
-            for pool_name in entry.pools.iter() {
-                if let Some(&pool_index) = pools.pool_idx_map.get(pool_name) {
-                    items.push(entry.weight, pool_index);
-                } else {
-                    log::warn!("sound '{name}' referenced non-existant pool '{pool_name}'.");
-                }
-            }
-        }
-
-        pools.sound_idx_map.insert(name, pools.sounds.len());
-        pools.sounds.push(items);
-    }
-
+    let pools = load_audio("resources/audio/manifest.ron", &mut *state)?;
     cmd.insert_resource(pools);
 
     Ok(())

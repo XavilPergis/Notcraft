@@ -14,6 +14,11 @@ pub fn lerp_vec(a: Vector3<f32>, b: Vector3<f32>, t: f32) -> Vector3<f32> {
     vector![lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t)]
 }
 
+#[inline(always)]
+pub fn lerp_point(a: Point3<f32>, b: Point3<f32>, t: f32) -> Point3<f32> {
+    point![lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t)]
+}
+
 /// Version of `min` that only requires `PartialOrd`
 #[inline(always)]
 pub fn min<S: PartialOrd + Copy>(lhs: S, rhs: S) -> S {

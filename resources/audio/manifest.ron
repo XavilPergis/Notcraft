@@ -1,0 +1,28 @@
+#![enable(implicit_some)]
+
+AudioManifest({
+    "blocksound": Pool(min_pitch: 0.7, max_pitch: 1.2),
+
+    "stone-hit": Pool(inherit: "blocksound", patterns: ["blocks/*stone-impact-rubble-debris*"]),
+    "grass-hit": Pool(inherit: "blocksound", patterns: ["blocks/tall-grass-hit-*"]),
+    "dirt-hit-bassy": Pool(inherit: "blocksound", patterns: ["blocks/bassy-dirt-hit-*"]),
+    "dirt-hit": Pool(inherit: "blocksound", patterns: ["blocks/dirt-hit-*"]),
+
+    "music": Pool(patterns: ["music/*", "music/**"]),
+    
+    "blocks/break/stone": Ref("stone-hit"),
+    "blocks/break/dirt": Layered(
+        default: Ref("dirt-hit"),
+        layers: [
+            (1.0, Ref("dirt-hit")),
+            (0.5, Ref("dirt-hit-bassy")),
+        ],
+    ),
+    "blocks/break/grass": Layered(
+        default: Ref("grass-hit"),
+        layers: [
+            (1.0, Pool(inherit: "dirt-hit-bassy", min_amplitude: 0.0, max_amplitude: 0.0)),
+            (1.0, Ref("grass-hit")),
+        ],
+    ),
+})

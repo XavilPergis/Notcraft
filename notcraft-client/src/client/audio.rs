@@ -2,8 +2,10 @@ use ambisonic::{
     rodio::{Decoder, Source},
     Ambisonic, AmbisonicBuilder, SoundController,
 };
-use nalgebra::{Point3, Vector3};
+use nalgebra::{Point3, SimdComplexField, Vector3};
 use notcraft_common::{prelude::*, transform::Transform};
+use num_traits::Pow;
+use rand::distributions::{Distribution, Uniform};
 use std::{
     collections::HashMap,
     io::{Cursor, Read},
@@ -61,6 +63,25 @@ pub enum EmitterSource {
     Sample(AudioId),
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct EmitterParameters {
+    pub min_pitch: f32,
+    pub max_pitch: f32,
+    pub min_amplitude: f32,
+    pub max_amplitude: f32,
+}
+
+impl Default for EmitterParameters {
+    fn default() -> Self {
+        Self {
+            min_pitch: 1.0,
+            max_pitch: 1.0,
+            min_amplitude: 1.0,
+            max_amplitude: 1.0,
+        }
+    }
+}
+
 pub struct AudioEmitter {
     sound: SoundController,
     start: Instant,
@@ -113,6 +134,18 @@ fn update_emitters(
     });
 }
 
+fn curve_audio_amplitude(distance: f32) -> f32 {
+    const NEAR_EXP: f32 = 0.85;
+    const FAR_EXP: f32 = 0.5;
+    const CUTOFF: f32 = 7.0;
+
+    if distance <= CUTOFF {
+        distance.pow(NEAR_EXP)
+    } else {
+        distance.pow(FAR_EXP) - CUTOFF.pow(FAR_EXP) + CUTOFF.pow(NEAR_EXP)
+    }
+}
+
 fn process_audio_events(
     mut cmd: Commands,
     audio_scene: NonSend<Ambisonic>,
@@ -127,12 +160,21 @@ fn process_audio_events(
         _ => return,
     };
 
+    let mut rng = rand::thread_rng();
     for event in events.iter() {
-        let source = match event.source() {
+        let source = match &event.source().source {
             &EmitterSource::Sample(id) => Decoder::new(Cursor::new(state.get(id))),
         };
+        let params = &event.source().params;
+        let speed = Uniform::new_inclusive(params.min_pitch, params.max_pitch).sample(&mut rng);
+        let amplitude =
+            Uniform::new_inclusive(params.min_amplitude, params.max_amplitude).sample(&mut rng);
         // TODO: unwrap
-        let source = source.unwrap().convert_samples();
+        let source = source
+            .unwrap()
+            .convert_samples()
+            .speed(speed)
+            .amplify(amplitude);
         match event {
             AudioEvent::PlaySpatial(entity, _) => {
                 if let Ok((entity, transform)) = emitter_query.get(*entity) {
@@ -141,7 +183,13 @@ fn process_audio_events(
                     let matrix = listener_transform.to_matrix().try_inverse().unwrap();
                     let audio_pos = matrix.transform_point(&transform.pos());
 
-                    let sound = audio_scene.play_at(source, audio_pos.into());
+                    // TODO: curving amplitude via `.amplify()` mostly works, though the amplitude
+                    // is not modified when the listener moves, so initially-distant long-running
+                    // sounds could get really loud if the listener moves close to it.
+                    let sound = audio_scene.play_at(
+                        source.amplify(curve_audio_amplitude(audio_pos.coords.magnitude())),
+                        audio_pos.into(),
+                    );
                     cmd.entity(entity).insert(AudioEmitter {
                         sound,
                         start: Instant::now(),
@@ -156,7 +204,10 @@ fn process_audio_events(
                 let matrix = listener_transform.to_matrix().try_inverse().unwrap();
                 let audio_pos = matrix.transform_point(&pos);
 
-                let sound = audio_scene.play_at(source, audio_pos.into());
+                let sound = audio_scene.play_at(
+                    source.amplify(curve_audio_amplitude(audio_pos.coords.magnitude())),
+                    audio_pos.into(),
+                );
                 cmd.spawn()
                     .insert(Transform::to(pos))
                     .insert(DespawnEmitter)
@@ -179,26 +230,78 @@ fn process_audio_events(
 pub struct AudioId(usize);
 
 #[derive(Debug)]
+pub struct ParameterizedSource {
+    pub source: EmitterSource,
+    pub params: EmitterParameters,
+}
+
+impl ParameterizedSource {
+    pub fn from_sample(id: AudioId) -> Self {
+        Self {
+            source: EmitterSource::Sample(id),
+            params: Default::default(),
+        }
+    }
+
+    pub fn with_parameters(mut self, value: EmitterParameters) -> Self {
+        self.params = value;
+        self
+    }
+
+    pub fn with_min_pitch(mut self, value: f32) -> Self {
+        self.params.min_pitch = value;
+        self
+    }
+
+    pub fn with_max_pitch(mut self, value: f32) -> Self {
+        self.params.max_pitch = value;
+        self
+    }
+
+    pub fn with_pitch(mut self, value: f32) -> Self {
+        self.params.min_pitch = value;
+        self.params.max_pitch = value;
+        self
+    }
+
+    pub fn with_min_amplitude(mut self, value: f32) -> Self {
+        self.params.min_amplitude = value;
+        self
+    }
+
+    pub fn with_max_amplitude(mut self, value: f32) -> Self {
+        self.params.max_amplitude = value;
+        self
+    }
+
+    pub fn with_amplitude(mut self, value: f32) -> Self {
+        self.params.min_amplitude = value;
+        self.params.max_amplitude = value;
+        self
+    }
+}
+
+#[derive(Debug)]
 pub enum AudioEvent {
     /// Notifies the sound system to play a 3D sound at the given entity's
     /// location, and attaches an [`AudioEmitter`] component to the entity.
     /// If the entity is moved, the audio emitter will be as well. The component
     /// will be removed from the entity when the sound is done playing.
-    PlaySpatial(Entity, EmitterSource),
+    PlaySpatial(Entity, ParameterizedSource),
 
     /// Similar to [`AudioEvent::PlaySpatial`], except this also spawns a
     /// temporary "holder" object to contain the emitter. The temporary
     /// entity is managed by the audio system and is despawned after the
     /// sound is done playing.
-    SpawnSpatial(Point3<f32>, EmitterSource),
+    SpawnSpatial(Point3<f32>, ParameterizedSource),
 
     /// Notifies the sound system to play a sound directly to the active audio
     /// listener, without spatial effects.
-    PlayGlobal(EmitterSource),
+    PlayGlobal(ParameterizedSource),
 }
 
 impl AudioEvent {
-    pub fn source(&self) -> &EmitterSource {
+    pub fn source(&self) -> &ParameterizedSource {
         match self {
             AudioEvent::PlaySpatial(_, source)
             | AudioEvent::SpawnSpatial(_, source)
