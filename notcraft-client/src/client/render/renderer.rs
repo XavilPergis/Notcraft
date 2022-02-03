@@ -874,6 +874,10 @@ pub fn array4x4<T: Copy + Into<[[U; 4]; 4]>, U>(mat: &T) -> [[U; 4]; 4] {
     (*mat).into()
 }
 
+pub fn array2<T: Copy + Into<[U; 2]>, U>(vec: &T) -> [U; 2] {
+    (*vec).into()
+}
+
 pub fn array3<T: Copy + Into<[U; 3]>, U>(vec: &T) -> [U; 3] {
     (*vec).into()
 }
@@ -1086,7 +1090,9 @@ fn render_post(
     mut ctx: RenderParams,
     camera: CurrentCamera,
     misc: NonSend<RendererMisc>,
+    mut time: ShaderTime,
 ) -> anyhow::Result<()> {
+    let (elapsed_seconds, elapsed_subseconds) = time.get();
     let program = ctx.shaders.get("post")?;
 
     let world_buffer = ctx.targets.get("world")?;
@@ -1106,19 +1112,24 @@ fn render_post(
     let mut final_buffer = ctx.targets.get("final")?.framebuffer(ctx.display())?;
     final_buffer.clear_color(0.0, 0.0, 0.0, 0.0);
 
-    let proj = camera.projection(ctx.display.get_framebuffer_dimensions());
+    let dimensions = ctx.display().get_framebuffer_dimensions();
+    let proj = camera.projection(dimensions);
 
     final_buffer.draw(
         &misc.fullscreen_quad,
         glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
         &program,
         &uniform! {
-            b_color: color,
-            b_depth: depth,
+            colorBuffer: color,
+            depthBuffer: depth,
 
-            camera_pos: array3(&camera.pos()),
-            projection_matrix: array4x4(&proj.to_homogeneous()),
-            view_matrix: array4x4(&camera.view()),
+            elapsedSeconds: elapsed_seconds,
+            elapsedSubseconds: elapsed_subseconds,
+            screenDimensions: [dimensions.0, dimensions.1],
+
+            cameraPosWorld: array3(&camera.pos()),
+            projectionMatrix: array4x4(&proj.to_homogeneous()),
+            viewMatrix: array4x4(&camera.view()),
         },
         &Default::default(),
     )?;
@@ -1147,24 +1158,49 @@ fn render_sky(
     mut ctx: RenderParams,
     camera: CurrentCamera,
     misc: NonSend<RendererMisc>,
+    mut time: ShaderTime,
 ) -> anyhow::Result<()> {
+    let (elapsed_seconds, elapsed_subseconds) = time.get();
     let program = ctx.shaders.get("sky")?;
     let mut target = ctx.targets.get("world")?.framebuffer(ctx.display())?;
 
-    let proj = camera.projection(ctx.display().get_framebuffer_dimensions());
+    let dimensions = ctx.display().get_framebuffer_dimensions();
+    let proj = camera.projection(dimensions);
     target.draw(
         &misc.fullscreen_quad,
         glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
         &program,
         &uniform! {
-            camera_pos: array3(&camera.pos()),
-            projection_matrix: array4x4(&proj.to_homogeneous()),
-            view_matrix: array4x4(&camera.view()),
+            elapsedSeconds: elapsed_seconds,
+            elapsedSubseconds: elapsed_subseconds,
+            screenDimensions: [dimensions.0, dimensions.1],
+            cameraPosWorld: array3(&camera.pos()),
+            projectionMatrix: array4x4(&proj.to_homogeneous()),
+            viewMatrix: array4x4(&camera.view()),
         },
         &Default::default(),
     )?;
 
     Ok(())
+}
+
+#[derive(SystemParam)]
+pub struct ShaderTime<'a> {
+    time: Res<'a, Time>,
+    elapsed_seconds: Local<'a, u32>,
+    elapsed_subseconds: Local<'a, f32>,
+}
+
+impl<'a> ShaderTime<'a> {
+    pub fn get(&mut self) -> (u32, f32) {
+        *self.elapsed_subseconds += self.time.delta_seconds();
+        while *self.elapsed_subseconds >= 1.0 {
+            *self.elapsed_seconds += 1;
+            *self.elapsed_subseconds -= 1.0;
+        }
+
+        (*self.elapsed_seconds, *self.elapsed_subseconds)
+    }
 }
 
 fn render_terrain(
@@ -1173,20 +1209,11 @@ fn render_terrain(
     mesh_query: Query<(&Transform, &RenderMeshComponent<TerrainMesh>)>,
     mut terrain_meshes: NonSendMut<LocalMeshContext<TerrainMesh>>,
     misc: NonSend<RendererMisc>,
-    time: Res<Time>,
-    mut time_counters: Local<(u32, f32)>,
+    mut time: ShaderTime,
 ) -> anyhow::Result<()> {
     terrain_meshes.update(ctx.display())?;
 
-    let (elapsed_seconds, subseconds) = &mut *time_counters;
-    {
-        *subseconds += time.delta_seconds();
-        while *subseconds >= 1.0 {
-            *elapsed_seconds += 1;
-            *subseconds -= 1.0;
-        }
-    }
-
+    let (elapsed_seconds, elapsed_subseconds) = time.get();
     let mut target = ctx.targets.get("world")?.framebuffer(ctx.display())?;
     let program = ctx.shaders.get("terrain")?;
 
@@ -1212,14 +1239,14 @@ fn render_terrain(
             &buffers.indices,
             &program,
             &uniform! {
-                model: array4x4(&model),
-                view: array4x4(&view),
-                projection: array4x4(&proj.to_homogeneous()),
-                albedo_maps: misc.block_textures.sampled()
-                    .wrap_function(glium::uniforms::SamplerWrapFunction::Repeat)
-                    .magnify_filter(MagnifySamplerFilter::Nearest),
-                elapsed_seconds: *elapsed_seconds,
-                subseconds: *subseconds,
+            model: array4x4(&model),
+            view: array4x4(&view),
+            projection: array4x4(&proj.to_homogeneous()),
+            albedo_maps: misc.block_textures.sampled()
+                .wrap_function(glium::uniforms::SamplerWrapFunction::Repeat)
+                .magnify_filter(MagnifySamplerFilter::Nearest),
+                elapsedSeconds: elapsed_seconds,
+                elapsedSubseconds: elapsed_subseconds,
             },
             &glium::DrawParameters {
                 depth: glium::Depth {

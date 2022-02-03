@@ -1,4 +1,5 @@
 #pragma include "/noise.glsl"
+#pragma include "/adjustables.glsl"
 
 #define WIND_INTENSITY_SCROLL_DIRECTION vec2(1.0, 0.1)
 #define WIND_INTENSITY_SCROLL_SPEED 3.0
@@ -14,23 +15,58 @@ float remap01(float t) {
     return 0.5 * t + 0.5;
 }
 
+struct NoiseParameters {
+    int octaveCount;
+    float baseFrequency;
+    float frequencyScale;
+    float baseAmplitude;
+    float amplitudeScale;
+    float scrollSpeed;
+    float bubbleSpeed;
+};
+
+float calculateNoise(NoiseParameters params, vec3 worldPos, float t) {
+    float frequency = params.baseFrequency;
+    float amplitude = params.baseAmplitude;
+    float total = 0.0;
+    float maxTotal = 0.0;
+
+    for (int octave = 0; octave < params.octaveCount; ++octave) {
+        vec3 motionDirection = vec3(0.0, 0.0, 0.0);
+        motionDirection.x = random(float(octave) / float(params.octaveCount));
+        motionDirection.z = random(float(octave) / float(params.octaveCount));
+        motionDirection.y = params.bubbleSpeed / float(octave + 1);
+
+        vec3 scrollOffset = params.scrollSpeed * t * motionDirection;
+        vec3 pos = worldPos + scrollOffset;
+
+        // can almost think of this as a map of wind pockets that scroll over the landscape over time
+        total += amplitude * simplexNoise(frequency * pos);
+        maxTotal += amplitude;
+
+        frequency *= params.frequencyScale;
+        amplitude *= params.amplitudeScale;
+    }
+
+    return total / maxTotal;
+}
+
+float cloudDensity(vec3 worldPos, float t) {
+    NoiseParameters params = CLOUD_NOISE_PARAMS;
+    float densityNoise = calculateNoise(params, worldPos, t);
+    
+    vec3 coverageOffset = vec3(0.0, 0.0, 0.0);
+    coverageOffset.xz = CLOUD_NOISE_COVERAGE_SCROLL_DIRECTION;
+    coverageOffset.xz *= CLOUD_NOISE_COVERAGE_SCROLL_SPEED * t;
+    float coverageNoise = simplexNoise(CLOUD_NOISE_COVERAGE_SCALE * (worldPos + vec3(coverageOffset.x, 0.0, coverageOffset.y)));
+    coverageNoise = smoothstep(-1.0, 1.0, coverageNoise);
+    // return coverageNoise;
+    
+    return max(1.0 - coverageNoise, 0.5 * densityNoise + 0.5) - (1.0 - coverageNoise);
+}
+
 float windIntensity(vec3 worldPos, float t) {
-    vec2 pos = vec2(0.0, 0.0);
-
-    // can almost think of this as a map of wind pockets that scroll over the landscape over time
-    pos = worldPos.xz + 0.4 * t * vec2(0.2, 0.5);
-    float f0 = 1.0 * simplexNoise(0.001 * pos);
-
-    pos = worldPos.xz + 1.5 * t * vec2(1.0, 0.1);
-    float f1 = 0.7 * simplexNoise(0.01 * pos);
-    
-    pos = worldPos.xz + 3.0 * t * -vec2(0.2, 0.5);
-    float f2 = 0.15 * simplexNoise(0.07 * pos);
-    
-    pos = worldPos.xz + 2.0 * t * vec2(-1.0, 0.3);
-    float f3 = 0.075 * simplexNoise(0.4 * pos);
-
-    return max(0.0, f0 + f1 + f2 + f3);
+    return max(0.0, cloudDensity(worldPos, t));
 }
 
 float windLocalStrength(vec3 worldPos, float t) {
