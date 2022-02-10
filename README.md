@@ -17,6 +17,8 @@ Some controls listed here are subject to change in the future, as they are place
 ### Miscellaneous
 - `Ctrl+C`: Toggle mouse grab
 - `Q`: Switch block used for placement
+- `Ctrl+shift+S`: Fix the camera in its current transform (easy to do by accident when using area select, can fix via the input below)
+- `Ctrl+shift+F`: Make the camera follow the player entity
 ### Terrain Manipulation
 - `E`: Destroy sphere of blocks
 - `Ctrl(Hold)`: Increase movement speed
