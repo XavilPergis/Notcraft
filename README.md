@@ -28,6 +28,14 @@ Some controls listed here are subject to change in the future, as they are place
 - `Ctrl+Shift+LeftClick`: Destroy area of blocks
 - `Ctrl+Shift+RightClick`: Place area of blocks
 
+## Command Line Arguments
+
+- `--mesher-mode <simple|greedy>`: Changes whether the chunk mesher uses greedy meshing (combining similar block faces) or simple meshing (only does block face occlusion culling). currently, greedy meshing looks a bit strange due to randomized face textures, and is significantly slower
+- `-D, --enable-debug-events <events>...`: Debug events with names listed here will be toggled on, and may be processed by a debug event sink, like the one in `notcraft-client/src/client/debug.rs`. If the flag is specified, but no event names are given, then all debug events are enabled. The currently supported debug events are:
+  - `world-load`: Chunk loading/unloading/modification events
+  - `world-access`: Chunk reading/writing/orphaning events
+  - `mesher`: Chunk meshing events
+
 # Hacking
 
 ## Static
