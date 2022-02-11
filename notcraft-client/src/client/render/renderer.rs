@@ -1,7 +1,11 @@
 use super::{super::camera::CurrentCamera, Tex};
-use crate::client::{
-    loader::{self, ShaderLoaderState},
-    render::mesher::TerrainMesh,
+use crate::{
+    client::{
+        camera::Camera,
+        loader::{self, ShaderLoaderState},
+        render::mesher::TerrainMesh,
+    },
+    total_float::TotalFloat,
 };
 use bevy_ecs::system::SystemParam;
 use crossbeam_channel::{Receiver, Sender};
@@ -12,7 +16,7 @@ use glium::{
         StencilAttachment, ToColorAttachment, ToDepthAttachment, ToDepthStencilAttachment,
         ToStencilAttachment,
     },
-    index::IndexBuffer,
+    index::{IndexBuffer, PrimitiveType},
     texture::*,
     uniform,
     uniforms::{AsUniformValue, MagnifySamplerFilter, Sampler, UniformValue},
@@ -105,6 +109,9 @@ pub enum RenderStage {
     EndRender,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, SystemLabel)]
+pub struct RenderLabel<T>(pub T);
+
 #[derive(Debug, Default)]
 pub struct RenderPlugin {}
 
@@ -145,6 +152,8 @@ impl Plugin for RenderPlugin {
         app.insert_resource(Arc::clone(&local.shared));
         app.insert_non_send_resource(local);
 
+        app.init_resource::<ImmediateLines>();
+
         app.add_stage_after(
             CoreStage::PostUpdate,
             RenderStage::Render,
@@ -173,24 +182,35 @@ impl Plugin for RenderPlugin {
 
         app.add_system_to_stage(
             RenderStage::Render,
-            util::try_system!(render_sky).label("sky").label("world"),
+            util::try_system!(render_sky)
+                .label(RenderLabel("sky"))
+                .label(RenderLabel("world")),
         )
         .add_system_to_stage(
             RenderStage::Render,
-            util::try_system!(render_post).label("post").after("world"),
+            util::try_system!(render_post)
+                .label(RenderLabel("post"))
+                .after(RenderLabel("world")),
         )
         .add_system_to_stage(
             RenderStage::Render,
             util::try_system!(render_terrain)
-                .label("world")
-                .label("terrain")
-                .after("sky"),
+                .label(RenderLabel("world"))
+                .label(RenderLabel("terrain"))
+                .after(RenderLabel("sky")),
         )
         .add_system_to_stage(
             RenderStage::Render,
-            util::try_system!(render_debug)
-                .label("world")
-                .after("terrain"),
+            add_global_debug_lines
+                .system()
+                .label(RenderLabel("add_global_debug_lines")),
+        )
+        .add_system_to_stage(
+            RenderStage::Render,
+            util::try_system!(render_lines)
+                .label(RenderLabel("world"))
+                .after(RenderLabel("terrain"))
+                .after(RenderLabel("add_global_debug_lines")),
         );
         app.add_system_to_stage(RenderStage::BeginRender, util::try_system!(begin_render));
         app.add_system_to_stage(RenderStage::EndRender, util::try_system!(end_render));
@@ -899,15 +919,6 @@ pub fn add_transient_debug_box(duration: Duration, debug_box: DebugBox) {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
-#[repr(C)]
-struct DebugVertex {
-    pub pos: [f32; 3],
-    pub color: [f32; 4],
-    pub kind_end: u32,
-}
-glium::implement_vertex!(DebugVertex, pos, color, kind_end);
-
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
 pub enum DebugBoxKind {
@@ -920,10 +931,30 @@ pub enum DebugBoxKind {
 pub struct DebugBox {
     pub bounds: Aabb,
     pub rgba: [f32; 4],
+    pub width: f32,
     pub kind: DebugBoxKind,
 }
 
 impl DebugBox {
+    pub fn new(bounds: Aabb) -> Self {
+        Self {
+            bounds,
+            rgba: [1.0; 4],
+            width: 1.0,
+            kind: DebugBoxKind::Solid,
+        }
+    }
+
+    pub fn with_color<C: Into<[f32; 4]>>(mut self, color: C) -> Self {
+        self.rgba = color.into();
+        self
+    }
+
+    pub fn with_width(mut self, width: f32) -> Self {
+        self.width = width;
+        self
+    }
+
     pub fn with_kind(mut self, kind: DebugBoxKind) -> Self {
         self.kind = kind;
         self
@@ -936,7 +967,6 @@ struct DebugLines {
     next_transient_id: usize,
     transient_debug_boxes: HashMap<usize, (Instant, Duration, DebugBox)>,
     dead_transient_debug_boxes: HashSet<usize>,
-    line_buf: Vec<DebugVertex>,
 }
 
 impl DebugLines {
@@ -953,9 +983,162 @@ impl DebugLines {
             next_transient_id: 0,
             transient_debug_boxes: Default::default(),
             dead_transient_debug_boxes: Default::default(),
-            line_buf: Default::default(),
         }
     }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[repr(C)]
+pub struct ImmediateLineVertex {
+    pub pos: [f32; 3],
+    pub color_rg: u32,
+    pub color_ba: u32,
+}
+glium::implement_vertex!(ImmediateLineVertex, pos, color_rg, color_ba);
+
+fn translate_color(color: [f32; 4]) -> [u32; 2] {
+    let [r, g, b, a] = color.map(|comp| (util::clamp(0.0, 1.0, comp) * u16::MAX as f32) as u32);
+    [(r << 16) | g, (b << 16) | a]
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ImmediateLines {
+    vertices: Vec<ImmediateLineVertex>,
+    lines: HashMap<TotalFloat<f32>, Vec<u32>>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct LineCanvasParams {
+    pub width: f32,
+    pub color: [f32; 4],
+}
+
+impl Default for LineCanvasParams {
+    fn default() -> Self {
+        Self {
+            width: 1.0,
+            color: [1.0; 4],
+        }
+    }
+}
+
+pub struct LineCanvas<'lines> {
+    lines: &'lines mut ImmediateLines,
+    current_color_rg: u32,
+    current_color_ba: u32,
+    current_width: TotalFloat<f32>,
+    last_pos: [f32; 3],
+}
+
+impl<'lines> LineCanvas<'lines> {
+    pub fn goto<I: Into<[f32; 3]>>(&mut self, pos: I) -> &mut Self {
+        self.last_pos = pos.into();
+        self.lines.vertices.push(ImmediateLineVertex {
+            pos: self.last_pos,
+            color_rg: self.current_color_rg,
+            color_ba: self.current_color_ba,
+        });
+        self
+    }
+
+    pub fn line<I: Into<[f32; 3]>>(&mut self, pos: I) -> &mut Self {
+        let entry = self.lines.lines.entry(self.current_width).or_default();
+
+        self.last_pos = pos.into();
+        entry.push(self.lines.vertices.len() as u32 - 1);
+        entry.push(self.lines.vertices.len() as u32);
+        self.lines.vertices.push(ImmediateLineVertex {
+            pos: self.last_pos,
+            color_rg: self.current_color_rg,
+            color_ba: self.current_color_ba,
+        });
+        self
+    }
+
+    pub fn color<I: Into<[f32; 4]>>(&mut self, color: I) -> &mut Self {
+        let [rg, ba] = translate_color(color.into());
+        self.current_color_rg = rg;
+        self.current_color_ba = ba;
+        self
+    }
+
+    pub fn width(&mut self, width: f32) -> &mut Self {
+        self.current_width = TotalFloat(width);
+        self
+    }
+}
+
+impl ImmediateLines {
+    pub fn start_default(&mut self) -> LineCanvas {
+        self.start([0.0; 3], Default::default())
+    }
+
+    pub fn start<I: Into<[f32; 3]>>(&mut self, pos: I, params: LineCanvasParams) -> LineCanvas {
+        let [rg, ba] = translate_color(params.color);
+        LineCanvas {
+            lines: self,
+            current_color_rg: rg,
+            current_color_ba: ba,
+            current_width: TotalFloat(params.width),
+            last_pos: pos.into(),
+        }
+    }
+}
+
+pub fn immediate_draw_box_edges(canvas: &mut LineCanvas, aabb: &Aabb) {
+    let [nnn, nnp, npn, npp, pnn, pnp, ppn, ppp] = aabb_corners(aabb);
+
+    // bottom
+    canvas.goto(nnn).line(nnp).line(pnp).line(pnn).line(nnn);
+    // top
+    canvas.goto(npn).line(npp).line(ppp).line(ppn).line(npn);
+
+    // connecting lines
+    canvas.goto(nnn).line(npn);
+    canvas.goto(nnp).line(npp);
+    canvas.goto(pnp).line(ppp);
+    canvas.goto(pnn).line(ppn);
+}
+
+fn debug_lines_camera(canvas: &mut LineCanvas, transform: &Transform, camera: &Camera) {
+    const K: f32 = 1.5;
+
+    let half_fovy = camera.projection.fovy() / 2.0;
+    let inv_aspect = 1.0 / camera.projection.aspect();
+
+    let distance = K * f32::cos(half_fovy);
+    let hypot = 2.0 * K * f32::tan(half_fovy);
+
+    let aspect_angle = f32::atan(inv_aspect);
+    let base = hypot * f32::cos(aspect_angle) / 2.0;
+    let height = hypot * f32::sin(aspect_angle) / 2.0;
+
+    let to_world = transform.to_matrix();
+
+    let origin = transform.pos();
+    let nn = (to_world * vector![-base, -height, -distance, 1.0]).xyz();
+    let np = (to_world * vector![-base, height, -distance, 1.0]).xyz();
+    let pn = (to_world * vector![base, -height, -distance, 1.0]).xyz();
+    let pp = (to_world * vector![base, height, -distance, 1.0]).xyz();
+
+    let tri_left = (to_world * vector![-0.2, height + 0.2, -distance, 1.0]).xyz();
+    let tri_right = (to_world * vector![0.2, height + 0.2, -distance, 1.0]).xyz();
+    let tri_top = (to_world * vector![0.0, height + 0.4, -distance, 1.0]).xyz();
+
+    canvas.width(1.0);
+
+    canvas.goto(origin);
+    canvas.line(nn).line(np).line(origin);
+    canvas.line(pp).line(pn).line(origin);
+    canvas.goto(nn).line(pn);
+    canvas.goto(pp).line(np);
+
+    canvas
+        .color([1.0, 0.8, 0.3, 1.0])
+        .goto(tri_top)
+        .line(tri_left)
+        .line(tri_right)
+        .line(tri_top);
 }
 
 fn aabb_corners(aabb: &Aabb) -> [Vector3<f32>; 8] {
@@ -971,39 +1154,9 @@ fn aabb_corners(aabb: &Aabb) -> [Vector3<f32>; 8] {
     ]
 }
 
-fn write_debug_box(buf: &mut Vec<DebugVertex>, debug_box: &DebugBox) {
-    let [nnn, nnp, npn, npp, pnn, pnp, ppn, ppp] = aabb_corners(&debug_box.bounds);
-
-    let mut line = |start: &Vector3<f32>, end: &Vector3<f32>| {
-        buf.push(DebugVertex {
-            pos: array3(start),
-            color: debug_box.rgba,
-            kind_end: (debug_box.kind as u32) << 1,
-        });
-        buf.push(DebugVertex {
-            pos: array3(end),
-            color: debug_box.rgba,
-            kind_end: ((debug_box.kind as u32) << 1) | 1,
-        });
-    };
-
-    // bottom
-    line(&nnn, &nnp);
-    line(&nnp, &pnp);
-    line(&pnp, &pnn);
-    line(&pnn, &nnn);
-
-    // top
-    line(&npn, &npp);
-    line(&npp, &ppp);
-    line(&ppp, &ppn);
-    line(&ppn, &npn);
-
-    // connecting lines
-    line(&nnn, &npn);
-    line(&nnp, &npp);
-    line(&pnp, &ppp);
-    line(&pnn, &ppn);
+fn debug_lines_debug_box(canvas: &mut LineCanvas, debug_box: &DebugBox) {
+    canvas.color(debug_box.rgba);
+    immediate_draw_box_edges(canvas, &debug_box.bounds);
 }
 
 fn begin_render(mut ctx: RenderParams) -> anyhow::Result<()> {
@@ -1020,23 +1173,21 @@ fn end_render(mut ctx: RenderParams) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn render_debug(
-    mut ctx: RenderParams,
-    camera: CurrentCamera,
-    mut debug: NonSendMut<DebugLines>,
-) -> anyhow::Result<()> {
+fn add_global_debug_lines(mut lines: ResMut<ImmediateLines>, mut debug: NonSendMut<DebugLines>) {
+    let mut canvas = lines.start_default();
     let debug = &mut *debug;
-    debug.line_buf.clear();
+
     for debug_box in debug.debug_box_channel.rx.try_iter() {
-        write_debug_box(&mut debug.line_buf, &debug_box);
+        debug_lines_debug_box(&mut canvas, &debug_box);
     }
+
     for (duration, debug_box) in debug.transient_debug_box_channel.rx.try_iter() {
         debug.transient_debug_boxes.insert(
             debug.next_transient_id,
             (Instant::now(), duration, debug_box),
         );
         debug.next_transient_id += 1;
-        write_debug_box(&mut debug.line_buf, &debug_box);
+        debug_lines_debug_box(&mut canvas, &debug_box);
     }
 
     for (&i, (start, duration, debug_box)) in debug.transient_debug_boxes.iter_mut() {
@@ -1047,41 +1198,58 @@ fn render_debug(
             let percent_completed = elapsed.as_secs_f32() / duration.as_secs_f32();
             let mut rgba = debug_box.rgba;
             rgba[3] *= 1.0 - percent_completed;
-            write_debug_box(&mut debug.line_buf, &DebugBox { rgba, ..*debug_box });
+            debug_lines_debug_box(&mut canvas, &DebugBox { rgba, ..*debug_box });
         }
     }
 
     for i in debug.dead_transient_debug_boxes.drain() {
         debug.transient_debug_boxes.remove(&i);
     }
+}
 
-    let vertices = VertexBuffer::immutable(ctx.display(), &debug.line_buf)?;
+fn render_lines(
+    mut ctx: RenderParams,
+    camera: CurrentCamera,
+    mut lines: ResMut<ImmediateLines>,
+) -> anyhow::Result<()> {
+    // i wonder if it would be faster to use the GL_LINES and issue one draw call
+    // for each line weight, or to use GL_TRIANGLES and build the line geometry
+    // manually, drawing only once. for now, using GL_LINES is easier, so ill stick
+    // with that.
 
-    let view = camera.view();
-    let proj = camera.projection(ctx.display.get_framebuffer_dimensions());
+    let vertices = VertexBuffer::immutable(ctx.display(), &lines.vertices)?;
+    lines.vertices.clear();
 
-    let mut target = ctx.targets.get("world")?.framebuffer(ctx.display())?;
-    let program = ctx.shaders.get("debug")?;
+    for (&TotalFloat(width), buffer) in lines.lines.iter_mut() {
+        let indices = IndexBuffer::immutable(ctx.display(), PrimitiveType::LinesList, &buffer)?;
+        let view = camera.view();
+        let proj = camera.projection(ctx.display.get_framebuffer_dimensions());
 
-    target.draw(
-        &vertices,
-        glium::index::NoIndices(glium::index::PrimitiveType::LinesList),
-        &program,
-        &uniform! {
-            view: array4x4(&view),
-            projection: array4x4(&proj.to_homogeneous()),
-        },
-        &DrawParameters {
-            line_width: Some(1.0),
-            blend: Blend::alpha_blending(),
-            depth: glium::Depth {
-                test: glium::DepthTest::IfLess,
-                write: false,
+        let mut target = ctx.targets.get("world")?.framebuffer(ctx.display())?;
+        let program = ctx.shaders.get("debug")?;
+
+        target.draw(
+            &vertices,
+            &indices,
+            &program,
+            &uniform! {
+                view: array4x4(&view),
+                projection: array4x4(&proj.to_homogeneous()),
+            },
+            &DrawParameters {
+                line_width: Some(width),
+                blend: Blend::alpha_blending(),
+                depth: glium::Depth {
+                    test: glium::DepthTest::IfLess,
+                    write: false,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        },
-    )?;
+        )?;
+
+        buffer.clear();
+    }
 
     Ok(())
 }
@@ -1117,7 +1285,7 @@ fn render_post(
 
     final_buffer.draw(
         &misc.fullscreen_quad,
-        glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
+        glium::index::NoIndices(PrimitiveType::TrianglesList),
         &program,
         &uniform! {
             colorBuffer: color,
@@ -1138,7 +1306,7 @@ fn render_post(
     let program = ctx.shaders.get("crosshair")?;
     final_buffer.draw(
         &misc.fullscreen_quad,
-        glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
+        glium::index::NoIndices(PrimitiveType::TrianglesList),
         &program,
         &uniform! {
             screen_width: width as f32,
@@ -1168,7 +1336,7 @@ fn render_sky(
     let proj = camera.projection(dimensions);
     target.draw(
         &misc.fullscreen_quad,
-        glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
+        glium::index::NoIndices(PrimitiveType::TrianglesList),
         &program,
         &uniform! {
             elapsedSeconds: elapsed_seconds,

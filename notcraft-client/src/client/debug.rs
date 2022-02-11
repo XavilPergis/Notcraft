@@ -35,87 +35,81 @@ pub fn debug_chunk_aabb(pos: ChunkPos) -> Aabb {
 // require it as a resource here.
 pub fn debug_event_handler() {
     drain_debug_events::<WorldLoadEvent, _>(|event| match event {
-        WorldLoadEvent::Loaded(pos) => add_transient_debug_box(Duration::from_secs(1), DebugBox {
-            bounds: debug_chunk_aabb(pos),
-            rgba: [0.0, 1.0, 0.0, 0.8],
-            kind: DebugBoxKind::Solid,
-        }),
-        WorldLoadEvent::Unloaded(pos) => {
-            add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                bounds: debug_chunk_aabb(pos),
-                rgba: [1.0, 0.0, 0.0, 0.8],
-                kind: DebugBoxKind::Solid,
-            })
-        }
-        WorldLoadEvent::Modified(pos) => {
-            add_transient_debug_box(Duration::from_secs_f32(0.5), DebugBox {
-                bounds: debug_chunk_aabb(pos),
-                rgba: [1.0, 1.0, 0.0, 0.3],
-                kind: DebugBoxKind::Dashed,
-            })
-        }
-        WorldLoadEvent::LoadedSection(pos) => {
-            add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                bounds: chunk_section_aabb(pos),
-                rgba: [0.0, 1.0, 0.0, 0.8],
-                kind: DebugBoxKind::Solid,
-            })
-        }
-        WorldLoadEvent::UnloadedSection(pos) => {
-            add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                bounds: chunk_section_aabb(pos),
-                rgba: [1.0, 0.0, 0.0, 0.8],
-                kind: DebugBoxKind::Solid,
-            })
-        }
-        WorldLoadEvent::ModifiedSection(pos) => {
-            add_transient_debug_box(Duration::from_secs_f32(0.5), DebugBox {
-                bounds: chunk_section_aabb(pos),
-                rgba: [1.0, 1.0, 0.0, 0.3],
-                kind: DebugBoxKind::Dashed,
-            })
-        }
+        WorldLoadEvent::Loaded(pos) => add_transient_debug_box(
+            Duration::from_secs(1),
+            DebugBox::new(debug_chunk_aabb(pos))
+                .with_color([0.0, 1.0, 0.0, 0.8])
+                .with_kind(DebugBoxKind::Solid),
+        ),
+        WorldLoadEvent::Unloaded(pos) => add_transient_debug_box(
+            Duration::from_secs(1),
+            DebugBox::new(debug_chunk_aabb(pos))
+                .with_color([1.0, 0.0, 0.0, 0.8])
+                .with_kind(DebugBoxKind::Solid),
+        ),
+        WorldLoadEvent::Modified(pos) => add_transient_debug_box(
+            Duration::from_secs_f32(0.5),
+            DebugBox::new(debug_chunk_aabb(pos))
+                .with_color([1.0, 1.0, 0.0, 0.3])
+                .with_kind(DebugBoxKind::Dashed),
+        ),
+        WorldLoadEvent::LoadedSection(pos) => add_transient_debug_box(
+            Duration::from_secs(1),
+            DebugBox::new(chunk_section_aabb(pos))
+                .with_color([0.0, 1.0, 0.0, 0.8])
+                .with_kind(DebugBoxKind::Solid),
+        ),
+        WorldLoadEvent::UnloadedSection(pos) => add_transient_debug_box(
+            Duration::from_secs(1),
+            DebugBox::new(chunk_section_aabb(pos))
+                .with_color([1.0, 0.0, 0.0, 0.8])
+                .with_kind(DebugBoxKind::Solid),
+        ),
+        WorldLoadEvent::ModifiedSection(pos) => add_transient_debug_box(
+            Duration::from_secs_f32(0.5),
+            DebugBox::new(chunk_section_aabb(pos))
+                .with_color([1.0, 1.0, 0.0, 0.3])
+                .with_kind(DebugBoxKind::Dashed),
+        ),
     });
 
     drain_debug_events::<WorldAccessEvent, _>(|event| match event {
-        WorldAccessEvent::Read(pos) => add_debug_box(DebugBox {
-            bounds: chunk_section_aabb(pos),
-            rgba: [0.4, 0.4, 1.0, 0.1],
-            kind: DebugBoxKind::Dotted,
-        }),
-        WorldAccessEvent::Written(pos) => add_debug_box(DebugBox {
-            bounds: chunk_section_aabb(pos),
-            rgba: [1.0, 0.8, 0.4, 0.1],
-            kind: DebugBoxKind::Dotted,
-        }),
-        WorldAccessEvent::Orphaned(pos) => {
-            add_transient_debug_box(Duration::from_secs(2), DebugBox {
-                bounds: chunk_section_aabb(pos),
-                rgba: [1.0, 0.0, 0.0, 1.0],
-                kind: DebugBoxKind::Solid,
-            })
-        }
+        WorldAccessEvent::Read(pos) => add_debug_box(
+            DebugBox::new(chunk_section_aabb(pos))
+                .with_color([0.4, 0.4, 1.0, 0.1])
+                .with_kind(DebugBoxKind::Dotted),
+        ),
+        WorldAccessEvent::Written(pos) => add_debug_box(
+            DebugBox::new(chunk_section_aabb(pos))
+                .with_color([1.0, 0.8, 0.4, 0.1])
+                .with_kind(DebugBoxKind::Dotted),
+        ),
+        WorldAccessEvent::Orphaned(pos) => add_transient_debug_box(
+            Duration::from_secs(2),
+            DebugBox::new(chunk_section_aabb(pos))
+                .with_color([1.0, 0.0, 0.0, 1.0])
+                .with_kind(DebugBoxKind::Solid),
+        ),
     });
 
     drain_debug_events::<MesherEvent, _>(|event| match event {
-        MesherEvent::Meshed { cheap: true, pos } => {
-            add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                bounds: chunk_section_aabb(pos),
-                rgba: [1.0, 0.0, 1.0, 0.3],
-                kind: DebugBoxKind::Dashed,
-            })
-        }
-        MesherEvent::Meshed { cheap: false, pos } => {
-            add_transient_debug_box(Duration::from_secs(1), DebugBox {
-                bounds: chunk_section_aabb(pos),
-                rgba: [1.0, 1.0, 0.0, 0.3],
-                kind: DebugBoxKind::Dashed,
-            })
-        }
-        MesherEvent::MeshFailed(pos) => add_transient_debug_box(Duration::from_secs(2), DebugBox {
-            bounds: chunk_section_aabb(pos),
-            rgba: [1.0, 0.0, 0.0, 1.0],
-            kind: DebugBoxKind::Solid,
-        }),
+        MesherEvent::Meshed { cheap: true, pos } => add_transient_debug_box(
+            Duration::from_secs(1),
+            DebugBox::new(chunk_section_aabb(pos))
+                .with_color([1.0, 0.0, 1.0, 0.3])
+                .with_kind(DebugBoxKind::Dashed),
+        ),
+        MesherEvent::Meshed { cheap: false, pos } => add_transient_debug_box(
+            Duration::from_secs(1),
+            DebugBox::new(chunk_section_aabb(pos))
+                .with_color([1.0, 1.0, 0.0, 0.3])
+                .with_kind(DebugBoxKind::Dashed),
+        ),
+        MesherEvent::MeshFailed(pos) => add_transient_debug_box(
+            Duration::from_secs(2),
+            DebugBox::new(chunk_section_aabb(pos))
+                .with_color([1.0, 0.0, 0.0, 1.0])
+                .with_kind(DebugBoxKind::Solid),
+        ),
     });
 }

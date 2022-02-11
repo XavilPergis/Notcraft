@@ -39,7 +39,7 @@ pub fn max<S: PartialOrd + Copy>(lhs: S, rhs: S) -> S {
 
 /// Limits the range of `x` to be within `[a, b]`
 #[inline(always)]
-pub fn clamp<T: PartialOrd + Copy>(x: T, a: T, b: T) -> T {
+pub fn clamp<T: PartialOrd + Copy>(a: T, b: T, x: T) -> T {
     if x < a {
         a
     } else if x > b {

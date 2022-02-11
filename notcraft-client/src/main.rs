@@ -1,21 +1,17 @@
-#[macro_use]
 extern crate log;
 #[macro_use]
 extern crate serde_derive;
 
 pub mod audio_pool;
 pub mod client;
+pub mod total_float;
 
-use crate::{
-    audio_pool::SoundId,
-    client::{
-        audio::AudioId,
-        camera::{ActiveCamera, Camera},
-        input::{keys, DigitalInput, InputPlugin, InputState, RawInputEvent},
-        render::{
-            mesher::{ChunkMesherPlugin, MesherMode},
-            renderer::{add_debug_box, DebugBox, DebugBoxKind, RenderPlugin},
-        },
+use crate::client::{
+    camera::{ActiveCamera, Camera},
+    input::{keys, DigitalInput, InputPlugin, InputState, RawInputEvent},
+    render::{
+        mesher::{ChunkMesherPlugin, MesherMode},
+        renderer::{add_debug_box, DebugBox, RenderPlugin},
     },
 };
 use audio_pool::{load_audio, RandomizedAudioPools};
@@ -23,10 +19,10 @@ use bevy_app::{AppExit, Events};
 use bevy_core::CorePlugin;
 use client::{
     audio::{
-        ActiveAudioListener, AudioEvent, AudioListener, AudioPlugin, AudioState, EmitterParameters,
-        EmitterSource, ParameterizedSource,
+        ActiveAudioListener, AudioEvent, AudioListener, AudioPlugin, AudioState,
+        ParameterizedSource,
     },
-    render::renderer::RenderStage,
+    render::renderer::{immediate_draw_box_edges, ImmediateLines, LineCanvas, RenderStage},
 };
 use glium::{
     glutin::{
@@ -58,8 +54,6 @@ use rand::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
-    path::Path,
     rc::Rc,
 };
 use structopt::StructOpt;
@@ -183,11 +177,11 @@ fn terrain_manipulation_area(
         let start_button = ctx.manip.start_button.unwrap();
 
         if start_button == 1 {
-            add_debug_box(DebugBox {
-                bounds: box_enclosing(start_pos, hit.pos),
-                rgba: [1.0, 0.2, 0.2, 0.8],
-                kind: DebugBoxKind::Solid,
-            });
+            {
+                let mut canvas = ctx.lines.start_default();
+                draw_selection_box(&mut canvas, start_pos, hit.pos, [1.0, 0.2, 0.2, 0.8]);
+            }
+
             if input.key(DigitalInput::Button(1)).is_falling() {
                 iter_blocks_in(start_pos, hit.pos, |pos| {
                     ctx.set_block(pos, AIR_BLOCK);
@@ -207,11 +201,12 @@ fn terrain_manipulation_area(
                 y: hit.pos.y + offset.y,
                 z: hit.pos.z + offset.z,
             };
-            add_debug_box(DebugBox {
-                bounds: box_enclosing(start_pos, end_pos),
-                rgba: [0.2, 0.2, 1.0, 0.8],
-                kind: DebugBoxKind::Solid,
-            });
+
+            {
+                let mut canvas = ctx.lines.start_default();
+                draw_selection_box(&mut canvas, start_pos, end_pos, [0.2, 0.2, 1.0, 0.8]);
+            }
+
             if input.key(DigitalInput::Button(3)).is_falling() {
                 let id = ctx.access.registry().lookup(ctx.manip.block_name);
                 iter_blocks_in(start_pos, end_pos, |pos| {
@@ -222,11 +217,11 @@ fn terrain_manipulation_area(
             }
         }
     } else {
-        add_debug_box(DebugBox {
-            bounds: util::block_aabb(hit.pos),
-            rgba: [1.0, 0.2, 0.2, 0.8],
-            kind: DebugBoxKind::Solid,
-        });
+        {
+            let mut canvas = ctx.lines.start_default();
+            draw_selection_box(&mut canvas, hit.pos, hit.pos, [1.0, 0.2, 0.2, 0.8]);
+        }
+
         if let Some(side) = hit.side {
             let norm = side.normal::<i32>();
             let offset = BlockPos {
@@ -234,11 +229,11 @@ fn terrain_manipulation_area(
                 y: hit.pos.y + norm.y,
                 z: hit.pos.z + norm.z,
             };
-            add_debug_box(DebugBox {
-                bounds: util::block_aabb(offset),
-                rgba: [0.2, 0.2, 1.0, 0.8],
-                kind: DebugBoxKind::Solid,
-            });
+
+            {
+                let mut canvas = ctx.lines.start_default();
+                draw_selection_box(&mut canvas, offset, offset, [0.2, 0.2, 1.0, 0.8]);
+            }
         }
         if input.key(DigitalInput::Button(1)).is_rising() {
             ctx.manip.start_pos = Some(hit.pos);
@@ -287,11 +282,12 @@ fn build_to_me_positive(
         max_n = n;
     }
 
-    add_debug_box(DebugBox {
-        bounds: box_enclosing(from, replace_axis(from, axis, max_n)),
-        rgba: [0.2, 0.2, 1.0, 0.8],
-        kind: DebugBoxKind::Solid,
-    });
+    {
+        let mut canvas = ctx.lines.start_default();
+        draw_selection_box(&mut canvas, from, replace_axis(from, axis, max_n), [
+            0.2, 0.2, 1.0, 0.8,
+        ]);
+    }
 
     if input.key(DigitalInput::Button(3)).is_rising() {
         for n in from[axis]..=max_n {
@@ -323,11 +319,12 @@ fn build_to_me_negative(
         min_n = n;
     }
 
-    add_debug_box(DebugBox {
-        bounds: box_enclosing(from, replace_axis(from, axis, min_n)),
-        rgba: [0.2, 0.2, 1.0, 0.8],
-        kind: DebugBoxKind::Solid,
-    });
+    {
+        let mut canvas = ctx.lines.start_default();
+        draw_selection_box(&mut canvas, from, replace_axis(from, axis, min_n), [
+            0.2, 0.2, 1.0, 0.8,
+        ]);
+    }
 
     if input.key(DigitalInput::Button(3)).is_rising() {
         for n in min_n..=from[axis] {
@@ -383,11 +380,11 @@ fn terrain_manipulation_single(
     hit: &RaycastHit,
     ctx: &mut TerrainManipulationContext,
 ) {
-    add_debug_box(DebugBox {
-        bounds: util::block_aabb(hit.pos),
-        rgba: [1.0, 0.2, 0.2, 0.8],
-        kind: DebugBoxKind::Solid,
-    });
+    {
+        let mut canvas = ctx.lines.start_default();
+        draw_selection_box(&mut canvas, hit.pos, hit.pos, [1.0, 0.2, 0.2, 0.8]);
+    }
+
     if input.key(DigitalInput::Button(1)).is_rising() {
         ctx.set_block(hit.pos, AIR_BLOCK);
     }
@@ -399,14 +396,79 @@ fn terrain_manipulation_single(
             y: hit.pos.y + norm.y,
             z: hit.pos.z + norm.z,
         };
-        add_debug_box(DebugBox {
-            bounds: util::block_aabb(offset),
-            rgba: [0.2, 0.2, 1.0, 0.8],
-            kind: DebugBoxKind::Solid,
-        });
+
+        {
+            let mut canvas = ctx.lines.start_default();
+            draw_selection_box(&mut canvas, offset, offset, [0.2, 0.2, 1.0, 0.8]);
+        }
+
         if input.key(DigitalInput::Button(3)).is_rising() {
             let id = ctx.access.registry().lookup(ctx.manip.block_name);
             ctx.set_block(offset, id);
+        }
+    }
+}
+
+fn draw_selection_box(canvas: &mut LineCanvas, start: BlockPos, end: BlockPos, color: [f32; 4]) {
+    let aabb = box_enclosing(start, end);
+
+    // draw outer border
+    canvas.color(color).width(2.0);
+    immediate_draw_box_edges(canvas, &aabb);
+
+    canvas.color([color[0], color[1], color[2], color[3] / 3.0]);
+    canvas.width(1.0);
+    if start.x != end.x {
+        let min_x = i32::min(start.x, end.x);
+        let max_x = i32::max(start.x, end.x);
+
+        let ny = aabb.min.y;
+        let py = aabb.max.y;
+        let nz = aabb.min.z;
+        let pz = aabb.max.z;
+        for x in min_x..max_x {
+            let x = x + 1;
+            let nn = vector![x as f32, ny, nz];
+            let np = vector![x as f32, ny, pz];
+            let pn = vector![x as f32, py, nz];
+            let pp = vector![x as f32, py, pz];
+            canvas.goto(nn).line(np).line(pp).line(pn).line(nn);
+        }
+    }
+
+    if start.y != end.y {
+        let min_y = i32::min(start.y, end.y);
+        let max_y = i32::max(start.y, end.y);
+
+        let nx = aabb.min.x;
+        let px = aabb.max.x;
+        let nz = aabb.min.z;
+        let pz = aabb.max.z;
+        for y in min_y..max_y {
+            let y = y + 1;
+            let nn = vector![nx, y as f32, nz];
+            let np = vector![nx, y as f32, pz];
+            let pn = vector![px, y as f32, nz];
+            let pp = vector![px, y as f32, pz];
+            canvas.goto(nn).line(np).line(pp).line(pn).line(nn);
+        }
+    }
+
+    if start.z != end.z {
+        let min_z = i32::min(start.z, end.z);
+        let max_z = i32::max(start.z, end.z);
+
+        let nx = aabb.min.x;
+        let px = aabb.max.x;
+        let ny = aabb.min.y;
+        let py = aabb.max.y;
+        for z in min_z..max_z {
+            let z = z + 1;
+            let nn = vector![nx, ny, z as f32];
+            let np = vector![nx, py, z as f32];
+            let pn = vector![px, ny, z as f32];
+            let pp = vector![px, py, z as f32];
+            canvas.goto(nn).line(np).line(pp).line(pn).line(nn);
         }
     }
 }
@@ -417,6 +479,7 @@ struct TerrainManipulationContext<'a> {
     transform: &'a Transform,
     // collider: &'a AabbCollider,
     broken_blocks: &'a mut HashMap<BlockId, HashSet<BlockPos>>,
+    lines: &'a mut ImmediateLines,
 }
 
 impl<'a> TerrainManipulationContext<'a> {
@@ -439,6 +502,7 @@ fn terrain_manipulation(
         // &AabbCollider,
         &mut TerrainManipulator,
     )>,
+    mut lines: ResMut<ImmediateLines>,
     mut audio_events: EventWriter<AudioEvent>,
     audio_pools: Res<RandomizedAudioPools>,
 ) {
@@ -472,6 +536,7 @@ fn terrain_manipulation(
                 manip: &mut manip,
                 transform,
                 broken_blocks: &mut broken_blocks,
+                lines: &mut lines,
             };
 
             if input.key(VirtualKeyCode::E).is_rising() {
@@ -584,7 +649,7 @@ fn player_look_first_person(
     if let Some(mut transform) = query.get_mut(player_controller.player).ok() {
         transform.rotation.yaw -= yaw_delta;
         transform.rotation.pitch -= pitch_delta;
-        transform.rotation.pitch = util::clamp(transform.rotation.pitch, -PI / 2.0, PI / 2.0);
+        transform.rotation.pitch = util::clamp(-PI / 2.0, PI / 2.0, transform.rotation.pitch);
     }
 }
 

@@ -51,8 +51,8 @@ void main() {
     vec3 worldPos = (inverse(viewMatrix) * viewPos).xyz;
 
     float distToSurface = length(worldPos - cameraPosWorld) / DAY_NIGHT(900.0, 900.0);
-    // float fogStrength = fogFactorExp(0.4, distToSurface);
-    float fogStrength = 0.0;
+    float fogStrength = fogFactorExp(0.4, distToSurface);
+    // float fogStrength = 0.0;
 
     vec3 fogColor = DAY_NIGHT(FOG_COLOR, FOG_COLOR_NIGHT);
     vec3 finalColor = mix(color, fogColor, fogStrength);
