@@ -658,7 +658,7 @@ fn player_controller(
     input: Res<InputState>,
     player_controller: ResMut<PlayerController>,
     camera_controller: Res<CameraController>,
-    mut player_query: Query<(&mut Transform, &mut RigidBody, &AabbCollider)>,
+    mut player_query: Query<(&mut Transform /* &mut RigidBody, &AabbCollider */,)>,
 ) {
     if input
         .key(VirtualKeyCode::C)
@@ -674,9 +674,41 @@ fn player_controller(
         return;
     }
 
-    if let Some((mut transform, mut rigidbody, collider)) =
+    if let Some((mut transform /* mut rigidbody, collider */,)) =
         player_query.get_mut(player_controller.player).ok()
     {
+        let mut vert_speed = 0.2;
+        let mut horiz_speed = 0.2;
+
+        if input.key(VirtualKeyCode::LControl).is_pressed() {
+            horiz_speed *= 10.0;
+            vert_speed *= 10.0;
+        }
+
+        if input.key(keys::FORWARD).is_pressed() {
+            let offset = transform_project_xz(&transform, nalgebra::vector![0.0, -horiz_speed]);
+            transform.translate_global(offset);
+        }
+        if input.key(keys::BACKWARD).is_pressed() {
+            let offset = transform_project_xz(&transform, nalgebra::vector![0.0, horiz_speed]);
+            transform.translate_global(offset);
+        }
+        if input.key(keys::RIGHT).is_pressed() {
+            let offset = transform_project_xz(&transform, nalgebra::vector![horiz_speed, 0.0]);
+            transform.translate_global(offset);
+        }
+        if input.key(keys::LEFT).is_pressed() {
+            let offset = transform_project_xz(&transform, nalgebra::vector![-horiz_speed, 0.0]);
+            transform.translate_global(offset);
+        }
+        if input.key(keys::UP).is_pressed() {
+            transform.translate_global(vector![0.0, vert_speed, 0.0]);
+        }
+        if input.key(keys::DOWN).is_pressed() {
+            transform.translate_global(vector![0.0, -vert_speed, 0.0]);
+        }
+
+        /*
         let mut vert_acceleration = 9.0;
         let mut horiz_acceleration = 70.0;
 
@@ -724,6 +756,7 @@ fn player_controller(
         if collider.in_liquid {
             rigidbody.velocity.y *= util::lerp(0.96, 0.0, time.delta_seconds());
         }
+        */
     }
 }
 
@@ -738,10 +771,10 @@ fn setup_player(mut cmd: Commands) {
     let player = cmd
         .spawn()
         .insert(Transform::default().translated(&nalgebra::vector![0.0, 20.0, 0.0]))
-        .insert(AabbCollider::new(Aabb::with_dimensions(nalgebra::vector![
-            0.7, 1.7, 0.7
-        ])))
-        .insert(RigidBody::default())
+        // .insert(AabbCollider::new(Aabb::with_dimensions(nalgebra::vector![
+        //     0.7, 1.7, 0.7
+        // ])))
+        // .insert(RigidBody::default())
         .insert(DynamicChunkLoader {
             load_radius: 7,
             unload_radius: 8,
@@ -770,14 +803,20 @@ fn setup_player(mut cmd: Commands) {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
-pub struct DefaultPlugins;
+pub struct DefaultPlugins {
+    seed: Option<u64>,
+}
 
 impl PluginGroup for DefaultPlugins {
     fn build(&mut self, group: &mut bevy_app::PluginGroupBuilder) {
         group.add(CorePlugin);
         group.add(WindowingPlugin::default());
         group.add(InputPlugin::default());
-        group.add(WorldPlugin::default());
+        let mut world_plugin = WorldPlugin::default();
+        if let Some(seed) = self.seed {
+            world_plugin = world_plugin.with_seed(seed);
+        }
+        group.add(world_plugin);
         group.add(RenderPlugin::default());
         group.add(AudioPlugin::default());
 
@@ -848,6 +887,9 @@ fn glutin_runner(mut app: App) {
 pub struct RunOptions {
     #[structopt(default_value = "simple", long)]
     pub mesher_mode: MesherMode,
+
+    #[structopt(long)]
+    pub seed: Option<u64>,
 
     #[structopt(long, short = "D")]
     pub enable_debug_events: Option<Vec<String>>,
@@ -930,7 +972,7 @@ fn main() {
     }
 
     App::build()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins { seed: options.seed })
         .add_plugin(ChunkMesherPlugin::default().with_mode(options.mesher_mode))
         .add_plugin(PhysicsPlugin::default())
         .add_plugin(CollisionPlugin::default())

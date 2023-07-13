@@ -5,6 +5,7 @@ use std::ops::Neg;
 
 pub mod aabb;
 pub mod codec;
+pub mod net;
 pub mod physics;
 pub mod transform;
 pub mod util;

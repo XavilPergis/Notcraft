@@ -146,6 +146,8 @@ fn curve_audio_amplitude(distance: f32) -> f32 {
     }
 }
 
+// fn make_spatial_source() -> impl ambisonic::rodio::Source {}
+
 fn process_audio_events(
     mut cmd: Commands,
     audio_scene: NonSend<Ambisonic>,

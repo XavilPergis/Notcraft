@@ -102,7 +102,7 @@ impl ChunkSectionSnapshotMut {
     }
 
     pub fn was_cloned(&self) -> bool {
-        self.inner.was_cloned()
+        OrphanWriter::was_cloned(&self.inner)
     }
 }
 
@@ -114,7 +114,7 @@ pub struct Chunk {
     needs_persistence: AtomicBool,
 
     sections: Orphan<HashMap<i32, Arc<ChunkSection>>>,
-    compacted_sections: flurry::HashMap<ChunkSectionPos, CompactedChunkSection>,
+    unloaded_modified_sections: Orphan<HashMap<i32, Arc<ChunkSection>>>,
 }
 
 impl Chunk {
@@ -125,7 +125,7 @@ impl Chunk {
             heights: Orphan::new(heights),
             needs_persistence: AtomicBool::new(false),
             sections: Default::default(),
-            compacted_sections: Default::default(),
+            unloaded_modified_sections: Default::default(),
         }
     }
 
@@ -136,7 +136,7 @@ impl Chunk {
             heights: Orphan::new(heights),
             needs_persistence: AtomicBool::new(false),
             sections: Default::default(),
-            compacted_sections: Default::default(),
+            unloaded_modified_sections: Default::default(),
         }
     }
 
@@ -162,6 +162,36 @@ impl Chunk {
 
     pub fn sections_mut(&self) -> OrphanWriter<HashMap<i32, Arc<ChunkSection>>> {
         self.sections.orphan_readers()
+    }
+
+    /// try to load a section from the chunk's unloaded modified chunk list,
+    /// returning the newly loaded chunk if successful, and None, otherwise
+    pub fn try_load_section(&self, y: i32) -> Option<Arc<ChunkSection>> {
+        self.unloaded_modified_sections
+            .orphan_readers()
+            .remove(&y)
+            .map(|section| {
+                self.sections
+                    .orphan_readers()
+                    .insert(y, Arc::clone(&section));
+                section
+            })
+    }
+
+    pub fn unload_section(&self, y: i32) -> Arc<ChunkSection> {
+        match self.sections.orphan_readers().remove(&y) {
+            Some(section) => {
+                self.unloaded_modified_sections
+                    .orphan_readers()
+                    .insert(y, Arc::clone(&section));
+                section
+            }
+            None => panic!(
+                "tried to unload section y{y} from chunk x{x} z{z}, which was not loaded!",
+                x = self.pos.x,
+                z = self.pos.z
+            ),
+        }
     }
 
     pub fn is_empty(&self) -> bool {

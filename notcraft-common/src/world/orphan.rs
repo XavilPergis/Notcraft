@@ -95,8 +95,8 @@ pub struct OrphanWriter<T> {
 }
 
 impl<T> OrphanWriter<T> {
-    pub fn was_cloned(&self) -> bool {
-        self.was_cloned
+    pub fn was_cloned(this: &OrphanWriter<T>) -> bool {
+        this.was_cloned
     }
 }
 

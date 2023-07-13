@@ -5,8 +5,34 @@ use nalgebra::{point, vector, Point3, Vector3};
 use std::{cmp::Ordering, fmt::Display};
 
 #[inline(always)]
+pub fn invlerp(a: f32, b: f32, n: f32) -> f32 {
+    // you can get this by solving for `t` in the equation for `lerp`
+    (n - a) / (b - a)
+}
+
+#[inline(always)]
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a * (1.0 - t) + b * t
+}
+
+#[inline(always)]
+pub fn remap(input_start: f32, input_end: f32, output_start: f32, output_end: f32, n: f32) -> f32 {
+    lerp(output_start, output_end, invlerp(input_start, input_end, n))
+}
+
+#[cfg(test)]
+mod tests {
+    use approx::assert_relative_eq;
+
+    use super::*;
+
+    #[test]
+    fn test_remap() {
+        assert_relative_eq!(remap(0.0, 1.0, 0.0, 1.0, 0.5), 0.5);
+        assert_relative_eq!(remap(0.0, 2.0, 0.0, 1.0, 0.5), 0.25);
+        assert_relative_eq!(remap(0.0, 1.0, 0.0, 2.0, 0.5), 1.0);
+        assert_relative_eq!(remap(0.0, 2.0, 0.0, 2.0, 0.5), 0.5);
+    }
 }
 
 #[inline(always)]
